@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: skarpine-postgres
+    environment:
+      POSTGRES_USER: skarpine
+      POSTGRES_PASSWORD: skarpine123
+      POSTGRES_DB: skarpine_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - skarpine_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: skarpine-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  skarpine_postgres_data:

@@ -1,0 +1,961 @@
+// Prisma Schema for Skarpine ERP
+// Multi-tenant: tenant_id on every table
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =====================
+// PLATFORM (public schema)
+// =====================
+
+model Tenant {
+  id         String   @id @default(uuid()) @db.Uuid
+  slug       String   @unique
+  name       String
+  plan       String   @default("starter")
+  modules    Json
+  branding   Json?
+  language   String   @default("en")
+  timezone   String   @default("UTC")
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("tenants")
+}
+
+// =====================
+// USERS & AUTH
+// =====================
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenant_id     String    @db.Uuid
+  email         String
+  password_hash String
+  first_name    String
+  last_name     String
+  role          String    @default("employee")
+  is_active     Boolean   @default(true)
+  last_login_at DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  refresh_tokens RefreshToken[]
+  sales_orders   SalesOrder[]   @relation("created_by")
+  employees      Employee[]
+
+  @@unique([tenant_id, email])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  token_hash String
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// =====================
+// LOCATION HIERARCHY
+// =====================
+
+model Site {
+  id         String      @id @default(uuid()) @db.Uuid
+  tenant_id  String      @db.Uuid
+  code       String
+  name       String
+  city       String
+  country    String      @default("TR")
+  address    String?
+  is_active  Boolean     @default(true)
+  created_at DateTime    @default(now())
+
+  warehouses  Warehouse[]
+  employees   Employee[]
+  sales_orders SalesOrder[]
+
+  @@unique([tenant_id, code])
+  @@map("sites")
+}
+
+model Warehouse {
+  id         String           @id @default(uuid()) @db.Uuid
+  tenant_id  String           @db.Uuid
+  site_id    String           @db.Uuid
+  code       String
+  name       String
+  type       String           @default("standard")
+  is_active  Boolean          @default(true)
+  created_at DateTime         @default(now())
+
+  site             Site               @relation(fields: [site_id], references: [id])
+  zones            WarehouseZone[]
+  purchase_orders  PurchaseOrder[]
+  sales_orders     SalesOrder[]
+  warehouse_work   WarehouseWork[]
+  waves            Wave[]
+  arrival_journals ArrivalJournal[]
+  location_directives LocationDirective[]
+  work_templates   WorkTemplate[]
+  wave_templates   WaveTemplate[]
+
+  @@unique([tenant_id, code])
+  @@map("warehouses")
+}
+
+model WarehouseZone {
+  id           String              @id @default(uuid()) @db.Uuid
+  tenant_id    String              @db.Uuid
+  warehouse_id String              @db.Uuid
+  code         String
+  name         String
+  zone_type    String              @default("storage")
+  created_at   DateTime            @default(now())
+
+  warehouse        Warehouse               @relation(fields: [warehouse_id], references: [id])
+  locations        WarehouseLocation[]
+  directive_lines  LocationDirectiveLine[]
+
+  @@unique([warehouse_id, code])
+  @@map("warehouse_zones")
+}
+
+model WarehouseLocation {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenant_id           String   @db.Uuid
+  zone_id             String   @db.Uuid
+  code                String
+  aisle               String?
+  rack                String?
+  shelf               String?
+  bin                 String?
+  location_type       String   @default("bulk")
+  is_pick_location    Boolean  @default(false)
+  is_receive_location Boolean  @default(false)
+  max_weight          Decimal? @db.Decimal(10, 2)
+  max_volume          Decimal? @db.Decimal(10, 2)
+  is_active           Boolean  @default(true)
+  created_at          DateTime @default(now())
+
+  zone            WarehouseZone        @relation(fields: [zone_id], references: [id])
+  inventory_stock InventoryStock[]
+  count_lines InventoryCountLine[]
+  pick_work_lines  WarehouseWorkLine[] @relation("from_location")
+  put_work_lines   WarehouseWorkLine[] @relation("to_location")
+  directive_lines  LocationDirectiveLine[]
+  inv_tx_from      InventoryTransaction[] @relation("inv_tx_from")
+  inv_tx_to        InventoryTransaction[] @relation("inv_tx_to")
+  inventory_batches InventoryBatch[]
+
+  @@unique([zone_id, code])
+  @@map("warehouse_locations")
+}
+
+// =====================
+// PRODUCTS
+// =====================
+
+model ProductCategory {
+  id         String           @id @default(uuid()) @db.Uuid
+  tenant_id  String           @db.Uuid
+  parent_id  String?          @db.Uuid
+  code       String
+  name       String
+  created_at DateTime         @default(now())
+
+  parent   ProductCategory?  @relation("subcategories", fields: [parent_id], references: [id])
+  children ProductCategory[] @relation("subcategories")
+  products Product[]
+
+  @@unique([tenant_id, code])
+  @@map("product_categories")
+}
+
+model Product {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  sku             String
+  barcode         String?
+  name            String
+  description     String?
+  category_id     String?  @db.Uuid
+  brand           String?
+  attributes      Json?
+  unit_of_measure String   @default("pair")
+  cost_price      Decimal? @db.Decimal(12, 2)
+  selling_price   Decimal  @db.Decimal(12, 2)
+  sale_price      Decimal? @db.Decimal(12, 2)
+  weight_kg       Decimal? @db.Decimal(8, 3)
+  images          String[]
+  is_active       Boolean  @default(true)
+  is_published    Boolean  @default(false)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  category              ProductCategory?     @relation(fields: [category_id], references: [id])
+  variants              ProductVariant[]
+  inventory_stock       InventoryStock[]
+  inventory_transactions InventoryTransaction[]
+  inventory_batches     InventoryBatch[]
+  sales_order_lines     SalesOrderLine[]
+  purchase_order_lines  PurchaseOrderLine[]
+  count_lines InventoryCountLine[]
+  work_lines            WarehouseWorkLine[]
+
+  @@unique([tenant_id, sku])
+  @@map("products")
+}
+
+model ProductVariant {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  product_id      String   @db.Uuid
+  sku_variant     String
+  attributes      Json?
+  size            String?
+  color           String?
+  barcode         String?
+  additional_cost Decimal  @default(0) @db.Decimal(12, 2)
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now())
+
+  product                Product                @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  inventory_stock        InventoryStock[]
+  count_lines            InventoryCountLine[]
+  inventory_transactions InventoryTransaction[]
+  inventory_batches      InventoryBatch[]
+
+  @@unique([tenant_id, sku_variant])
+  @@map("product_variants")
+}
+
+// =====================
+// INVENTORY
+// =====================
+
+model InventoryStock {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
+  product_id   String   @db.Uuid
+  variant_id   String?  @db.Uuid
+  location_id  String   @db.Uuid
+  quantity     Int      @default(0)
+  reserved_qty Int      @default(0)
+  updated_at   DateTime @updatedAt
+
+  product  Product           @relation(fields: [product_id], references: [id])
+  location WarehouseLocation @relation(fields: [location_id], references: [id])
+  variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
+
+  @@unique([tenant_id, product_id, variant_id, location_id], name: "tenant_id_product_id_variant_id_location_id")
+  @@map("inventory_stock")
+}
+
+model InventoryTransaction {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenant_id        String   @db.Uuid
+  transaction_type String
+  reference_type   String?
+  reference_id     String?  @db.Uuid
+  reference_number String?  // human-readable: PO-2026-00004 / SO-2026-00004
+  product_id       String   @db.Uuid
+  variant_id       String?  @db.Uuid
+  from_location_id String?  @db.Uuid
+  to_location_id   String?  @db.Uuid
+  quantity         Int
+  unit_cost        Decimal? @db.Decimal(12, 4)
+  notes            String?
+  performed_by     String?  @db.Uuid
+  created_at       DateTime @default(now())
+
+  product       Product              @relation(fields: [product_id], references: [id])
+  variant       ProductVariant?      @relation(fields: [variant_id], references: [id])
+  from_location WarehouseLocation?   @relation("inv_tx_from", fields: [from_location_id], references: [id])
+  to_location   WarehouseLocation?   @relation("inv_tx_to", fields: [to_location_id], references: [id])
+
+  @@index([tenant_id, product_id])
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@map("inventory_transactions")
+}
+
+// =====================
+// FIFO BATCH LEDGER
+// =====================
+
+model InventoryBatch {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String    @db.Uuid
+  product_id   String    @db.Uuid
+  variant_id   String?   @db.Uuid
+  location_id  String    @db.Uuid
+  source_po_id String?   @db.Uuid   // which PO created this batch
+  po_number    String?               // human-readable "PO-2026-00004"
+  quantity     Int                   // remaining quantity in this batch
+  unit_cost    Decimal   @db.Decimal(14, 4) @default(0)
+  received_at  DateTime  @default(now())
+  created_at   DateTime  @default(now())
+
+  product  Product           @relation(fields: [product_id], references: [id])
+  variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
+  location WarehouseLocation @relation(fields: [location_id], references: [id])
+
+  @@index([tenant_id, product_id, variant_id, received_at(sort: Asc)])
+  @@map("inventory_batches")
+}
+
+// =====================
+// WAREHOUSE WORK
+// =====================
+
+model WorkTemplate {
+  id           String             @id @default(uuid()) @db.Uuid
+  tenant_id    String             @db.Uuid
+  code         String
+  name         String
+  work_type    String
+  warehouse_id String             @db.Uuid
+  is_active    Boolean            @default(true)
+  created_at   DateTime           @default(now())
+
+  warehouse Warehouse          @relation(fields: [warehouse_id], references: [id])
+  lines     WorkTemplateLine[]
+
+  @@unique([tenant_id, code])
+  @@map("work_templates")
+}
+
+model WorkTemplateLine {
+  id          String @id @default(uuid()) @db.Uuid
+  template_id String @db.Uuid
+  sequence    Int
+  work_type   String
+  location_type String?
+  sort_order  Int    @default(0)
+
+  template WorkTemplate @relation(fields: [template_id], references: [id], onDelete: Cascade)
+
+  @@map("work_template_lines")
+}
+
+model LocationDirective {
+  id             String                  @id @default(uuid()) @db.Uuid
+  tenant_id      String                  @db.Uuid
+  code           String
+  name           String
+  directive_type String
+  warehouse_id   String                  @db.Uuid
+  work_type      String
+  sequence       Int
+  is_active      Boolean                 @default(true)
+  created_at     DateTime                @default(now())
+
+  warehouse Warehouse               @relation(fields: [warehouse_id], references: [id])
+  lines     LocationDirectiveLine[]
+
+  @@unique([tenant_id, code])
+  @@map("location_directives")
+}
+
+model LocationDirectiveLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  directive_id String  @db.Uuid
+  sequence     Int
+  from_qty     Decimal @default(0) @db.Decimal(12, 2)
+  to_qty       Decimal? @db.Decimal(12, 2)
+  strategy     String  @default("CONSOLIDATE")
+  zone_id      String? @db.Uuid
+  location_id  String? @db.Uuid
+
+  directive LocationDirective  @relation(fields: [directive_id], references: [id], onDelete: Cascade)
+  zone      WarehouseZone?     @relation(fields: [zone_id], references: [id])
+  location  WarehouseLocation? @relation(fields: [location_id], references: [id])
+
+  @@map("location_directive_lines")
+}
+
+model WaveTemplate {
+  id           String  @id @default(uuid()) @db.Uuid
+  tenant_id    String  @db.Uuid
+  code         String
+  name         String
+  warehouse_id String  @db.Uuid
+  wave_type    String  @default("SHIPPING")
+  auto_process Boolean @default(false)
+  auto_release Boolean @default(false)
+  created_at   DateTime @default(now())
+
+  warehouse Warehouse @relation(fields: [warehouse_id], references: [id])
+
+  @@unique([tenant_id, code])
+  @@map("wave_templates")
+}
+
+model Wave {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String    @db.Uuid
+  template_id  String?   @db.Uuid
+  warehouse_id String    @db.Uuid
+  status       String    @default("OPEN")
+  created_at   DateTime  @default(now())
+  released_at  DateTime?
+  completed_at DateTime?
+
+  warehouse    Warehouse       @relation(fields: [warehouse_id], references: [id])
+  work         WarehouseWork[]
+  sales_orders SalesOrder[]
+
+  @@map("waves")
+}
+
+model WarehouseWork {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenant_id      String    @db.Uuid
+  work_id_code   String    @unique
+  work_type      String
+  status         String    @default("OPEN")
+  wave_id        String?   @db.Uuid
+  warehouse_id   String    @db.Uuid
+  assigned_to    String?   @db.Uuid
+  reference_type String?
+  reference_id   String?   @db.Uuid
+  priority       Int       @default(5)
+  started_at     DateTime?
+  completed_at   DateTime?
+  created_at     DateTime  @default(now())
+
+  wave      Wave?               @relation(fields: [wave_id], references: [id])
+  warehouse Warehouse           @relation(fields: [warehouse_id], references: [id])
+  lines     WarehouseWorkLine[]
+
+  @@index([tenant_id, status])
+  @@map("warehouse_work")
+}
+
+model WarehouseWorkLine {
+  id               String    @id @default(uuid()) @db.Uuid
+  work_id          String    @db.Uuid
+  sequence         Int
+  line_type        String
+  product_id       String    @db.Uuid
+  variant_id       String?   @db.Uuid
+  quantity         Decimal   @db.Decimal(12, 2)
+  quantity_done    Decimal   @default(0) @db.Decimal(12, 2)
+  from_location_id String?   @db.Uuid
+  to_location_id   String?   @db.Uuid
+  status           String    @default("PENDING")
+  completed_at     DateTime?
+
+  work          WarehouseWork      @relation(fields: [work_id], references: [id], onDelete: Cascade)
+  product       Product            @relation(fields: [product_id], references: [id])
+  from_location WarehouseLocation? @relation("from_location", fields: [from_location_id], references: [id])
+  to_location   WarehouseLocation? @relation("to_location", fields: [to_location_id], references: [id])
+
+  @@map("warehouse_work_lines")
+}
+
+model ArrivalJournal {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenant_id         String    @db.Uuid
+  journal_number    String    @unique
+  purchase_order_id String?   @db.Uuid
+  warehouse_id      String    @db.Uuid
+  status            String    @default("DRAFT")
+  arrival_date      DateTime  @default(now()) @db.Date
+  notes             String?
+  created_by        String?   @db.Uuid
+  posted_at         DateTime?
+  created_at        DateTime  @default(now())
+
+  warehouse       Warehouse            @relation(fields: [warehouse_id], references: [id])
+  purchase_order  PurchaseOrder?       @relation(fields: [purchase_order_id], references: [id])
+  lines           ArrivalJournalLine[]
+
+  @@map("arrival_journals")
+}
+
+model ArrivalJournalLine {
+  id                  String  @id @default(uuid()) @db.Uuid
+  journal_id          String  @db.Uuid
+  product_id          String  @db.Uuid
+  variant_id          String? @db.Uuid
+  expected_qty        Decimal? @db.Decimal(12, 2)
+  received_qty        Decimal  @default(0) @db.Decimal(12, 2)
+  receive_location_id String?  @db.Uuid
+
+  journal ArrivalJournal @relation(fields: [journal_id], references: [id], onDelete: Cascade)
+
+  @@map("arrival_journal_lines")
+}
+
+// =====================
+// SUPPLIERS & PURCHASE
+// =====================
+
+model Supplier {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenant_id     String   @db.Uuid
+  code          String
+  name          String
+  contact_name  String?
+  email         String?
+  phone         String?
+  address       String?
+  city          String?
+  country       String?
+  payment_terms Int?     @default(30)
+  currency      String   @default("BOB")
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  purchase_orders PurchaseOrder[]
+
+  @@unique([tenant_id, code])
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String    @db.Uuid
+  po_number    String    @unique
+  supplier_id  String    @db.Uuid
+  warehouse_id String    @db.Uuid
+  status       String    @default("DRAFT")
+  order_date   DateTime  @default(now()) @db.Date
+  expected_date DateTime? @db.Date
+  currency     String    @default("TRY")
+  subtotal     Decimal   @default(0) @db.Decimal(14, 2)
+  tax_amount   Decimal   @default(0) @db.Decimal(14, 2)
+  total_amount Decimal   @default(0) @db.Decimal(14, 2)
+  notes        String?
+  created_by   String?   @db.Uuid
+  confirmed_at        DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  receive_location_id String?   @db.Uuid
+  received_at         DateTime?
+  received_by         String?   @db.Uuid
+  packing_slip_url    String?
+  paid_at             DateTime?
+  paid_by             String?   @db.Uuid
+
+  supplier         Supplier           @relation(fields: [supplier_id], references: [id])
+  warehouse        Warehouse          @relation(fields: [warehouse_id], references: [id])
+  lines            PurchaseOrderLine[]
+  arrival_journals ArrivalJournal[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  po_id        String  @db.Uuid
+  product_id   String  @db.Uuid
+  variant_id   String? @db.Uuid
+  quantity     Decimal @db.Decimal(12, 2)
+  received_qty Decimal @default(0) @db.Decimal(12, 2)
+  unit_cost    Decimal @db.Decimal(12, 4)
+  line_total   Decimal @db.Decimal(14, 2)
+  sort_order   Int     @default(0)
+
+  purchase_order PurchaseOrder @relation(fields: [po_id], references: [id], onDelete: Cascade)
+  product        Product       @relation(fields: [product_id], references: [id])
+
+  @@map("purchase_order_lines")
+}
+
+// =====================
+// CUSTOMERS & SALES
+// =====================
+
+model Customer {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  user_id         String?  @db.Uuid
+  code            String
+  first_name      String
+  last_name       String
+  email           String?
+  phone           String?
+  address         String?
+  city            String?
+  country         String?
+  date_of_birth   DateTime? @db.Date
+  segment         String   @default("regular")
+  tags            String[]
+  notes           String?
+  lifetime_value  Decimal  @default(0) @db.Decimal(14, 2)
+  total_orders    Int      @default(0)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  sales_orders SalesOrder[]
+
+  @@unique([tenant_id, code])
+  @@map("customers")
+}
+
+model SalesOrder {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenant_id        String    @db.Uuid
+  order_number     String    @unique
+  customer_id      String?   @db.Uuid
+  source           String    @default("manual")
+  status           String    @default("DRAFT")
+  site_id          String?   @db.Uuid
+  warehouse_id     String?   @db.Uuid
+  currency         String    @default("BOB")
+  subtotal         Decimal   @default(0) @db.Decimal(14, 2)
+  discount_amount  Decimal   @default(0) @db.Decimal(14, 2)
+  tax_amount       Decimal   @default(0) @db.Decimal(14, 2)
+  total_amount     Decimal   @default(0) @db.Decimal(14, 2)
+  shipping_address Json?
+  notes            String?
+  wave_id          String?   @db.Uuid
+  invoice_id       String?   @db.Uuid  // soft ref to Factura — set when invoiced
+  paid_at          DateTime?
+  paid_by          String?   @db.Uuid
+  returned_at      DateTime?
+  created_by       String?   @db.Uuid
+  confirmed_at     DateTime?
+  shipped_at       DateTime?
+  completed_at     DateTime?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  customer  Customer?      @relation(fields: [customer_id], references: [id])
+  site      Site?          @relation(fields: [site_id], references: [id])
+  warehouse Warehouse?     @relation(fields: [warehouse_id], references: [id])
+  wave      Wave?          @relation(fields: [wave_id], references: [id])
+  lines     SalesOrderLine[]
+  shipments Shipment[]
+  created_by_user User?    @relation("created_by", fields: [created_by], references: [id])
+
+  @@index([tenant_id, status])
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@map("sales_orders")
+}
+
+model SalesOrderLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  order_id     String  @db.Uuid
+  product_id   String  @db.Uuid
+  variant_id   String? @db.Uuid
+  quantity     Int
+  unit_price   Decimal @db.Decimal(12, 4)
+  discount_pct Decimal @default(0) @db.Decimal(5, 2)
+  line_total   Decimal @db.Decimal(14, 2)
+  sort_order   Int     @default(0)
+
+  order   SalesOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [product_id], references: [id])
+
+  @@map("sales_order_lines")
+}
+
+model Shipment {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenant_id         String    @db.Uuid
+  shipment_number   String    @unique
+  order_id          String    @db.Uuid
+  status            String    @default("PENDING")
+  carrier           String?
+  tracking_number   String?
+  shipped_at        DateTime?
+  delivered_at      DateTime?
+  from_warehouse_id String?   @db.Uuid
+  created_at        DateTime  @default(now())
+
+  order SalesOrder @relation(fields: [order_id], references: [id])
+
+  @@map("shipments")
+}
+
+// =====================
+// HR
+// =====================
+
+model Employee {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenant_id        String    @db.Uuid
+  user_id          String?   @db.Uuid
+  employee_code    String
+  department       String?
+  position         String?
+  hire_date        DateTime? @db.Date
+  salary           Decimal?  @db.Decimal(12, 2)
+  assigned_site_id String?   @db.Uuid
+  is_active        Boolean   @default(true)
+  // POS device credentials
+  pos_device_id    String?   // human label e.g. "CAJA-01"
+  pos_pin_hash     String?   // bcrypt hash of cashier PIN
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  user          User? @relation(fields: [user_id], references: [id])
+  assigned_site Site? @relation(fields: [assigned_site_id], references: [id])
+
+  @@unique([tenant_id, employee_code])
+  @@map("employees")
+}
+
+// =====================
+// IMPORT
+// =====================
+
+model ImportJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenant_id      String    @db.Uuid
+  import_type    String
+  file_name      String
+  file_url       String
+  status         String    @default("PENDING")
+  column_mapping Json?
+  total_rows     Int?
+  valid_rows     Int?
+  error_rows     Int?
+  errors         Json?
+  created_by     String?   @db.Uuid
+  completed_at   DateTime?
+  created_at     DateTime  @default(now())
+
+  @@map("import_jobs")
+}
+
+// =====================
+// VARIANT TYPES
+// =====================
+
+model VariantType {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  name       String
+  values     String[]
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([tenant_id, name])
+  @@map("variant_types")
+}
+
+// =====================
+// INVENTORY COUNTING
+// =====================
+
+model InventoryCount {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String    @db.Uuid
+  reference    String    @unique
+  status       String    @default("DRAFT")
+  notes        String?
+  counted_by   String?   @db.Uuid
+  created_at   DateTime  @default(now())
+  finalized_at DateTime?
+
+  lines InventoryCountLine[]
+
+  @@map("inventory_counts")
+}
+
+model InventoryCountLine {
+  id          String  @id @default(uuid()) @db.Uuid
+  count_id    String  @db.Uuid
+  product_id  String  @db.Uuid
+  variant_id  String? @db.Uuid
+  location_id String  @db.Uuid
+  system_qty  Int     @default(0)
+  counted_qty Int?
+
+  count    InventoryCount    @relation(fields: [count_id], references: [id], onDelete: Cascade)
+  product  Product           @relation(fields: [product_id], references: [id])
+  variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
+  location WarehouseLocation @relation(fields: [location_id], references: [id])
+
+  @@map("inventory_count_lines")
+}
+
+// =====================
+// FINANCE
+// =====================
+
+model Account {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenant_id      String   @db.Uuid
+  code           String
+  name           String
+  type           String   // ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE
+  normal_balance String   @default("DEBIT") // DEBIT or CREDIT
+  parent_id      String?  @db.Uuid
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now())
+
+  parent        Account?      @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children      Account[]     @relation("AccountHierarchy")
+  journal_lines JournalLine[]
+
+  @@unique([tenant_id, code])
+  @@map("accounts")
+}
+
+model JournalEntry {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenant_id     String   @db.Uuid
+  entry_number  String   @unique
+  entry_date    DateTime @db.Date
+  description   String
+  source_module String?  // SALE, PURCHASE, MANUAL, ADJUSTMENT
+  source_id     String?  @db.Uuid
+  status        String   @default("DRAFT") // DRAFT, POSTED
+  created_by    String?  @db.Uuid
+  posted_at     DateTime?
+  created_at    DateTime @default(now())
+
+  lines JournalLine[]
+
+  @@index([tenant_id, entry_date(sort: Desc)])
+  @@index([tenant_id, source_module, source_id])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id               String  @id @default(uuid()) @db.Uuid
+  journal_entry_id String  @db.Uuid
+  account_id       String  @db.Uuid
+  debit_amount     Decimal @default(0) @db.Decimal(14, 2)
+  credit_amount    Decimal @default(0) @db.Decimal(14, 2)
+  description      String?
+
+  journal_entry JournalEntry @relation(fields: [journal_entry_id], references: [id], onDelete: Cascade)
+  account       Account      @relation(fields: [account_id], references: [id])
+
+  @@map("journal_lines")
+}
+
+model Factura {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenant_id      String    @db.Uuid
+  factura_number Int
+  source_type    String    // SALE, MANUAL
+  source_id      String?   @db.Uuid
+  customer_name  String
+  customer_nit   String?   // NIT or CI
+  invoice_date   DateTime  @db.Date
+  subtotal       Decimal   @db.Decimal(14, 2)  // net before IVA
+  iva_amount     Decimal   @db.Decimal(14, 2)  // IVA 13%
+  it_amount      Decimal   @default(0) @db.Decimal(14, 2) // IT 3%
+  total_amount   Decimal   @db.Decimal(14, 2)
+  status         String    @default("ISSUED")  // ISSUED, CANCELLED
+  notes          String?
+  created_by     String?   @db.Uuid
+  created_at     DateTime  @default(now())
+
+  @@unique([tenant_id, factura_number])
+  @@index([tenant_id, invoice_date(sort: Desc)])
+  @@map("facturas")
+}
+
+// =====================
+// FACTURA COUNTER
+// =====================
+
+model FacturaCounter {
+  tenant_id      String   @id @db.Uuid
+  last_number    Int      @default(0)
+  updated_at     DateTime @updatedAt
+
+  @@map("factura_counters")
+}
+
+// =====================
+// POS REGISTER SESSION
+// =====================
+
+model RegisterSession {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenant_id         String    @db.Uuid
+  terminal_name     String
+  opened_by         String    @db.Uuid
+  opened_at         DateTime  @default(now())
+  closed_by         String?   @db.Uuid
+  closed_at         DateTime?
+  opening_float     Decimal   @db.Decimal(12, 2)
+  closing_float     Decimal?  @db.Decimal(12, 2)
+  total_sales       Decimal   @default(0) @db.Decimal(14, 2)
+  transaction_count Int       @default(0)
+  status            String    @default("OPEN") // OPEN | CLOSED
+  site_id           String?   @db.Uuid
+  warehouse_id      String?   @db.Uuid
+  created_at        DateTime  @default(now())
+
+  @@index([tenant_id, status])
+  @@map("register_sessions")
+}
+
+// =====================
+// ACCOUNTING PERIODS
+// =====================
+
+model AccountingPeriod {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenant_id  String    @db.Uuid
+  year       Int
+  month      Int
+  status     String    @default("OPEN")  // OPEN | CLOSED
+  closed_at  DateTime?
+  closed_by  String?   @db.Uuid
+  created_at DateTime  @default(now())
+
+  @@unique([tenant_id, year, month])
+  @@map("accounting_periods")
+}
+
+// =====================
+// AUDIT LOGS
+// =====================
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenant_id   String?  @db.Uuid
+  user_id     String?  @db.Uuid
+  user_email  String?
+  user_role   String?
+  method      String   // POST | PUT | PATCH | DELETE
+  path        String
+  status_code Int
+  body        Json?    // sanitised request body (passwords stripped)
+  ip          String?
+  user_agent  String?
+  duration_ms Int?
+  created_at  DateTime @default(now())
+
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("audit_logs")
+}
+
+// =====================
+// ORDER COUNTERS
+// =====================
+
+model OrderCounter {
+  tenant_id   String   @db.Uuid
+  doc_type    String
+  last_number Int      @default(0)
+  updated_at  DateTime @updatedAt
+
+  @@id([tenant_id, doc_type])
+  @@map("order_counters")
+}

@@ -1,0 +1,184 @@
+'use client';
+
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
+import {
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
+} from 'recharts';
+
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+export default function ReportsPage() {
+  const currentYear = new Date().getFullYear();
+  const [from, setFrom] = useState(`${currentYear}-01-01`);
+  const [to, setTo] = useState(`${currentYear}-12-31`);
+
+  const params = `?from=${from}&to=${to}`;
+
+  const { data: monthlySales } = useQuery({
+    queryKey: ['monthly-sales', from, to],
+    queryFn: () => api.get(`/reports/sales/monthly${params}`).then((r) => r.data.data),
+  });
+
+  const { data: topProducts } = useQuery({
+    queryKey: ['top-products', from, to],
+    queryFn: () => api.get(`/reports/products/top-selling${params}&limit=10`).then((r) => r.data.data),
+  });
+
+  const { data: byCity } = useQuery({
+    queryKey: ['sales-by-city', from, to],
+    queryFn: () => api.get(`/reports/sales/by-city${params}`).then((r) => r.data.data),
+  });
+
+  const { data: growth } = useQuery({
+    queryKey: ['growth'],
+    queryFn: () => api.get('/reports/trends/growth').then((r) => r.data.data),
+  });
+
+  const { data: turnover } = useQuery({
+    queryKey: ['turnover', from, to],
+    queryFn: () => api.get(`/reports/inventory/turnover${params}`).then((r) => r.data.data),
+  });
+
+  const chartData = (monthlySales ?? [])
+    .slice()
+    .reverse()
+    .map((row: any) => ({
+      month: new Date(row.month).toLocaleDateString('en', { month: 'short', year: '2-digit' }),
+      revenue: Number(row.revenue),
+      orders: row.order_count,
+    }));
+
+  const growthData = (growth ?? [])
+    .slice(0, 12)
+    .reverse()
+    .map((row: any) => ({
+      month: new Date(row.month).toLocaleDateString('en', { month: 'short', year: '2-digit' }),
+      revenue: Number(row.revenue),
+      growth: Number(row.growth_pct ?? 0),
+    }));
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Reports & Analytics</h1>
+          <p className="text-gray-500">Business intelligence at a glance</p>
+        </div>
+        <div className="flex gap-3 items-center">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+          <span className="text-gray-400">to</span>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+      </div>
+
+      {/* Monthly Revenue Chart */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold mb-4">Monthly Revenue</h2>
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+            <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `₺${(v/1000).toFixed(0)}k`} />
+            <Tooltip formatter={(v: number) => [`₺${v.toLocaleString()}`, 'Revenue']} />
+            <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* MoM Growth */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold mb-4">Month-over-Month Growth</h2>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={growthData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}%`} />
+              <Tooltip formatter={(v: number) => [`${v}%`, 'Growth']} />
+              <Line type="monotone" dataKey="growth" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Sales by City */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold mb-4">Revenue by City</h2>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <Pie
+                data={byCity ?? []}
+                dataKey="revenue"
+                nameKey="city"
+                cx="50%"
+                cy="50%"
+                outerRadius={80}
+                label={({ city, percent }) => `${city} (${(percent * 100).toFixed(0)}%)`}
+              >
+                {(byCity ?? []).map((_: any, idx: number) => (
+                  <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(v: number) => `₺${v.toLocaleString()}`} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Top Products */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold mb-4">Top Selling Products</h2>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-3 px-2 font-medium text-gray-500">Product</th>
+                <th className="text-right py-3 px-2 font-medium text-gray-500">Units Sold</th>
+                <th className="text-right py-3 px-2 font-medium text-gray-500">Revenue</th>
+                <th className="text-right py-3 px-2 font-medium text-gray-500">COGS</th>
+                <th className="text-right py-3 px-2 font-medium text-gray-500">Gross Profit</th>
+                <th className="text-right py-3 px-2 font-medium text-gray-500">Margin %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(topProducts ?? []).map((p: any) => (
+                <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50">
+                  <td className="py-3 px-2">
+                    <div className="font-medium text-gray-900">{p.name}</div>
+                    <div className="text-gray-400 text-xs">{p.sku}</div>
+                  </td>
+                  <td className="py-3 px-2 text-right">{p.units_sold}</td>
+                  <td className="py-3 px-2 text-right">₺{Number(p.revenue).toLocaleString()}</td>
+                  <td className="py-3 px-2 text-right">₺{Number(p.cogs ?? 0).toLocaleString()}</td>
+                  <td className="py-3 px-2 text-right text-green-600">₺{Number(p.gross_profit ?? 0).toLocaleString()}</td>
+                  <td className="py-3 px-2 text-right">
+                    <span className={`font-medium ${Number(p.margin_pct) > 30 ? 'text-green-600' : 'text-yellow-600'}`}>
+                      {p.margin_pct}%
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Inventory Turnover */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold mb-4">Inventory Turnover</h2>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={(turnover ?? []).slice(0, 10)} layout="vertical">
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis type="number" tick={{ fontSize: 11 }} />
+            <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={120} />
+            <Tooltip formatter={(v: number) => [v.toFixed(2), 'Turnover Ratio']} />
+            <Bar dataKey="turnover_ratio" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
