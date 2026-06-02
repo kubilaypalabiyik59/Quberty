@@ -1,8 +1,8 @@
 import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { TAX }      from '../../config/tax';
-import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { TAX, resolveTax } from '../../config/tax';
+import { nextSalesOrderNumber, nextJournalEntryNumber } from '../../shared/utils/orderCounter';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
 import { OpenSessionSchema, CloseSessionSchema, PosSaleSchema } from '../../shared/schemas';
@@ -133,9 +133,11 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
   const tenantId = c.get('tenantId');
   const userId   = c.get('user').id;
 
-  // Get counters BEFORE the transaction (atomic SQL — safe outside tx)
+  // Get counters BEFORE the transaction (atomic SQL — race-condition safe)
   const facturaNumber = await nextFacturaNumber(tenantId);
   const orderNumber   = await nextSalesOrderNumber(tenantId);
+  const je1Number     = await nextJournalEntryNumber(tenantId); // Sales JE
+  const je2Number     = await nextJournalEntryNumber(tenantId); // COGS JE
 
   const result = await db.$transaction(async (tx) => {
 
@@ -211,7 +213,8 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
 
     // 3. Totals
     const totalAmount = processedLines.reduce((s, l) => s + l.line_total, 0);
-    const { subtotal, iva: ivaAmount, it: itAmount } = TAX.breakdown(totalAmount);
+    const tax = resolveTax(c.get('taxConfig'));
+    const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(totalAmount);
     const cogsTotal = processedLines.reduce((s, l) => s + l.cost_price * l.quantity, 0);
     const changeDue = cash_tendered !== undefined ? Number(cash_tendered) - totalAmount : 0;
 
@@ -266,9 +269,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     // Link factura back to order
     await tx.salesOrder.update({ where: { id: order.id }, data: { invoice_id: factura.id } });
 
-    // 7. GL Journal Entries
-    const jeCount = await tx.journalEntry.count({ where: { tenant_id: tenantId } });
-
+    // 7. GL Journal Entries — numbers pre-allocated atomically above (no race condition)
     const [ventasAcc, ivaDebitoAcc, cxcAcc, inventoryAcc, cogsAcc] = await Promise.all([
       tx.account.findFirst({ where: { tenant_id: tenantId, code: '4101' } }),
       tx.account.findFirst({ where: { tenant_id: tenantId, code: '2105' } }),
@@ -281,7 +282,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
       await tx.journalEntry.create({
         data: {
           tenant_id:    tenantId,
-          entry_number: `JE-${String(jeCount + 1).padStart(6, '0')}`,
+          entry_number: je1Number,
           entry_date:   new Date(),
           description:  `POS Sale: ${orderNumber} — Factura #${String(facturaNumber).padStart(6, '0')}`,
           source_module: 'POS_SALE',
@@ -304,7 +305,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
       await tx.journalEntry.create({
         data: {
           tenant_id:    tenantId,
-          entry_number: `JE-${String(jeCount + 2).padStart(6, '0')}`,
+          entry_number: je2Number,
           entry_date:   new Date(),
           description:  `COGS: ${orderNumber}`,
           source_module: 'POS_COGS',
@@ -314,7 +315,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
           created_by:   userId,
           lines: {
             create: [
-              { account_id: cogsAcc.id,      debit_amount: cogsTotal, credit_amount: 0,        description: `COGS — ${orderNumber}` },
+              { account_id: cogsAcc.id,      debit_amount: cogsTotal, credit_amount: 0,         description: `COGS — ${orderNumber}` },
               { account_id: inventoryAcc.id, debit_amount: 0,         credit_amount: cogsTotal, description: `Inventario — ${orderNumber}` },
             ],
           },
@@ -429,32 +430,71 @@ app.post('/sales/:orderId/void', async (c) => {
     // 3. Reversal GL entries
     try {
       const totalAmount = Number(order.total_amount);
-      const { subtotal, iva: ivaAmount } = TAX.breakdown(totalAmount);
+      const tax = resolveTax(c.get('taxConfig'));
+      const { subtotal, iva: ivaAmount } = tax.breakdown(totalAmount);
 
-      const [ventasAcc, ivaDebitoAcc, cxcAcc] = await Promise.all([
+      // Calculate COGS from current product cost prices
+      let cogsTotal = 0;
+      for (const line of order.lines) {
+        const product = await tx.product.findFirst({
+          where:  { id: line.product_id, tenant_id: tenantId },
+          select: { cost_price: true },
+        });
+        cogsTotal += Number(product?.cost_price ?? 0) * line.quantity;
+      }
+
+      // Pre-allocate JE numbers atomically
+      const voidJe1 = await nextJournalEntryNumber(tenantId); // Sales reversal
+      const voidJe2 = cogsTotal > 0 ? await nextJournalEntryNumber(tenantId) : null; // COGS reversal
+
+      const [ventasAcc, ivaDebitoAcc, cxcAcc, inventoryAcc, cogsAcc] = await Promise.all([
         tx.account.findFirst({ where: { tenant_id: tenantId, code: '4101' } }),
         tx.account.findFirst({ where: { tenant_id: tenantId, code: '2105' } }),
         tx.account.findFirst({ where: { tenant_id: tenantId, code: '1201' } }),
+        tx.account.findFirst({ where: { tenant_id: tenantId, code: '1110' } }),
+        tx.account.findFirst({ where: { tenant_id: tenantId, code: '5101' } }),
       ]);
 
       if (ventasAcc && ivaDebitoAcc && cxcAcc) {
-        const jeCount = await tx.journalEntry.count({ where: { tenant_id: tenantId } });
         await tx.journalEntry.create({
           data: {
-            tenant_id:    tenantId,
-            entry_number: `JE-${String(jeCount + 1).padStart(6, '0')}`,
-            entry_date:   new Date(),
-            description:  `VOID: ${order.order_number}`,
+            tenant_id:     tenantId,
+            entry_number:  voidJe1,
+            entry_date:    new Date(),
+            description:   `VOID: ${order.order_number}`,
             source_module: 'POS_VOID',
-            source_id:    orderId,
-            status:       'POSTED',
-            posted_at:    new Date(),
-            created_by:   userId,
+            source_id:     orderId,
+            status:        'POSTED',
+            posted_at:     new Date(),
+            created_by:    userId,
             lines: {
               create: [
                 { account_id: ventasAcc.id,    debit_amount: subtotal,     credit_amount: 0,           description: `Reverse Ventas — ${order.order_number}` },
                 { account_id: ivaDebitoAcc.id, debit_amount: ivaAmount,    credit_amount: 0,           description: `Reverse IVA Débito — ${order.order_number}` },
                 { account_id: cxcAcc.id,       debit_amount: 0,            credit_amount: totalAmount, description: `Reverse CxC — ${order.order_number}` },
+              ],
+            },
+          },
+        });
+      }
+
+      // COGS reversal — was missing before (Dr 1110 Inventario / Cr 5101 COGS)
+      if (voidJe2 && inventoryAcc && cogsAcc && cogsTotal > 0) {
+        await tx.journalEntry.create({
+          data: {
+            tenant_id:     tenantId,
+            entry_number:  voidJe2,
+            entry_date:    new Date(),
+            description:   `VOID COGS: ${order.order_number}`,
+            source_module: 'POS_VOID',
+            source_id:     orderId,
+            status:        'POSTED',
+            posted_at:     new Date(),
+            created_by:    userId,
+            lines: {
+              create: [
+                { account_id: inventoryAcc.id, debit_amount: cogsTotal, credit_amount: 0,         description: `Restore Inventario — ${order.order_number}` },
+                { account_id: cogsAcc.id,      debit_amount: 0,         credit_amount: cogsTotal, description: `Reverse COGS — ${order.order_number}` },
               ],
             },
           },

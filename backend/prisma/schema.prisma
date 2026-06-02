@@ -22,9 +22,11 @@ model Tenant {
   plan       String   @default("starter")
   modules    Json
   branding   Json?
-  language   String   @default("en")
-  timezone   String   @default("UTC")
-  is_active  Boolean  @default(true)
+  language      String   @default("en")
+  timezone      String   @default("UTC")
+  currency_code String   @default("USD")
+  tax_config    Json?
+  is_active     Boolean  @default(true)
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -194,18 +196,22 @@ model Product {
   category_id     String?  @db.Uuid
   brand           String?
   attributes      Json?
-  unit_of_measure String   @default("pair")
+  uom_id          String?  @db.Uuid
+  product_type    String   @default("physical")  // physical, service, digital
   cost_price      Decimal? @db.Decimal(12, 2)
   selling_price   Decimal  @db.Decimal(12, 2)
   sale_price      Decimal? @db.Decimal(12, 2)
   weight_kg       Decimal? @db.Decimal(8, 3)
+  reorder_point   Int      @default(0)  // low-stock alert threshold; 0 = no alerting
   images          String[]
+  video_urls      String[]
   is_active       Boolean  @default(true)
   is_published    Boolean  @default(false)
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
   category              ProductCategory?     @relation(fields: [category_id], references: [id])
+  uom                   UnitOfMeasure?       @relation(fields: [uom_id], references: [id])
   variants              ProductVariant[]
   inventory_stock       InventoryStock[]
   inventory_transactions InventoryTransaction[]
@@ -859,6 +865,7 @@ model Factura {
   total_amount   Decimal   @db.Decimal(14, 2)
   status         String    @default("ISSUED")  // ISSUED, CANCELLED
   notes          String?
+  invoice_metadata Json?   // snapshot: { vat_label, secondary_tax_name, invoice_label, currency_code }
   created_by     String?   @db.Uuid
   created_at     DateTime  @default(now())
 
@@ -958,4 +965,23 @@ model OrderCounter {
 
   @@id([tenant_id, doc_type])
   @@map("order_counters")
+}
+
+// =====================
+// UNIT OF MEASURE
+// =====================
+
+model UnitOfMeasure {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenant_id   String   @db.Uuid
+  code        String   // e.g. "PCS", "KG", "LTR", "MTR", "BOX", "PAIR"
+  name        String   // e.g. "Pieces", "Kilograms", "Liters"
+  symbol      String   // e.g. "pcs", "kg", "L", "m", "box", "pair"
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+
+  products Product[]
+
+  @@unique([tenant_id, code])
+  @@map("units_of_measure")
 }

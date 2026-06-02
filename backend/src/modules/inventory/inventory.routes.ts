@@ -35,6 +35,43 @@ app.get('/transactions', async (c) => {
   return ok(c, data);
 });
 
+// GET /inventory/low-stock — products whose available qty is at/below their reorder point.
+// Only products with reorder_point > 0 are monitored.
+app.get('/low-stock', async (c) => {
+  const tenantId = c.get('tenantId');
+
+  const products = await db.product.findMany({
+    where: { tenant_id: tenantId, is_active: true, reorder_point: { gt: 0 } },
+    select: { id: true, name: true, sku: true, reorder_point: true },
+    orderBy: { name: 'asc' },
+  });
+  if (products.length === 0) return ok(c, []);
+
+  const stockAgg = await db.inventoryStock.groupBy({
+    by: ['product_id'],
+    where: { tenant_id: tenantId, product_id: { in: products.map((p) => p.id) } },
+    _sum: { quantity: true, reserved_qty: true },
+  });
+  const availableByProduct = new Map(
+    stockAgg.map((s: any) => [s.product_id, Math.max(0, (s._sum.quantity ?? 0) - (s._sum.reserved_qty ?? 0))])
+  );
+
+  const lowStock = products
+    .map((p) => {
+      const available = availableByProduct.get(p.id) ?? 0;
+      return {
+        id: p.id, name: p.name, sku: p.sku,
+        reorder_point: p.reorder_point,
+        available,
+        shortfall: Math.max(0, p.reorder_point - available),
+      };
+    })
+    .filter((p) => p.available <= p.reorder_point)
+    .sort((a, b) => b.shortfall - a.shortfall);
+
+  return ok(c, lowStock);
+});
+
 app.post('/transfers', requireRole('admin', 'store_manager'), async (c) => {
   const body = await c.req.json();
   await inventoryService.transferStock(c.get('tenantId'), body, c.get('user').id);

@@ -611,7 +611,9 @@ export default function SalesOrdersPage() {
     onError: (err: any) => setEditError(apiErr(err)),
   });
 
-  const confirm = useMutation({
+  // NOTE: do not name this `confirm` — it shadows window.confirm(), which the
+  // Cancel/Return buttons below rely on for their confirmation dialogs.
+  const confirmOrder = useMutation({
     mutationFn: (id: string) => api.post(`/sales/orders/${id}/confirm`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sales-orders'] }),
     onError: (err: any) => alert(apiErr(err)),
@@ -801,7 +803,7 @@ export default function SalesOrdersPage() {
                         </button>
                       )}
                       {order.status === 'DRAFT' && (
-                        <button onClick={() => confirm.mutate(order.id)} disabled={confirm.isPending}
+                        <button onClick={() => confirmOrder.mutate(order.id)} disabled={confirmOrder.isPending}
                           className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium bg-blue-50 hover:bg-blue-100 px-2.5 py-1.5 rounded-lg">
                           <CheckCircle className="h-3.5 w-3.5" /> Confirm
                         </button>

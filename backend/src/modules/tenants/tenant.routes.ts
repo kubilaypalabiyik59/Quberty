@@ -38,4 +38,22 @@ app.put('/:id/config', async (c) => {
   return ok(c, tenant);
 });
 
+app.put('/:id/setup', async (c) => {
+  const tenantId = c.req.param('id');
+  const { currency_code, tax_config } = await c.req.json();
+
+  const tenant = await db.tenant.findUnique({ where: { id: tenantId } });
+  if (!tenant) throw new AppError('Tenant not found', 404);
+
+  const updated = await db.tenant.update({
+    where: { id: tenantId },
+    data: {
+      ...(currency_code ? { currency_code } : {}),
+      ...(tax_config    ? { tax_config }    : {}),
+    },
+  });
+
+  return ok(c, updated);
+});
+
 export default app;

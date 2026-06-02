@@ -1,56 +1,58 @@
 /**
- * Bolivia Tax Configuration
+ * Bolivia Tax Configuration (defaults)
+ * IVA  = 13% price-inclusive
+ * IT   =  3% on net subtotal
  *
- * IVA  = 13% price-inclusive (Impuesto al Valor Agregado)
- * IT   =  3% on net subtotal  (Impuesto a las Transacciones)
- *
- * Usage:
- *   import { TAX } from '../../config/tax';
- *   const subtotal  = total / (1 + TAX.IVA_RATE);   // 88.496...
- *   const iva       = total - subtotal;               // 11.504...
- *   const it        = subtotal * TAX.IT_RATE;         //  2.655...
+ * Use resolveTax(tenantTaxConfig) to get a dynamic tax helper.
+ * TAX export kept for backward-compatibility.
  */
 
-export const TAX = {
-  /** IVA inclusive divisor — price already contains IVA */
-  IVA_RATE: 0.13,
+export interface TaxConfig {
+  vat_rate: number;
+  vat_inclusive: boolean;
+  vat_label: string;
+  secondary_tax_rate: number;
+  secondary_tax_name: string;
+  invoice_label: string;
+}
 
-  /** IT (Impuesto a las Transacciones) — applied to net subtotal */
-  IT_RATE: 0.03,
+export const BOLIVIA_DEFAULTS: TaxConfig = {
+  vat_rate:           0.13,
+  vat_inclusive:      true,
+  vat_label:          'IVA',
+  secondary_tax_rate: 0.03,
+  secondary_tax_name: 'IT',
+  invoice_label:      'Factura',
+};
 
-  /**
-   * Extract subtotal (net) from a price-inclusive total.
-   * subtotal = total / 1.13
-   */
-  subtotal(total: number): number {
-    return total / (1 + this.IVA_RATE);
-  },
+export function resolveTax(cfg?: any) {
+  const c: TaxConfig = { ...BOLIVIA_DEFAULTS, ...(cfg ?? {}) };
 
-  /**
-   * Extract IVA amount from a price-inclusive total.
-   * iva = total - total/1.13
-   */
-  iva(total: number): number {
-    return total - this.subtotal(total);
-  },
+  function subtotal(total: number): number {
+    return c.vat_inclusive ? total / (1 + c.vat_rate) : total;
+  }
 
-  /**
-   * Calculate IT (Impuesto a las Transacciones) from a price-inclusive total.
-   * it = subtotal * 0.03
-   */
-  it(total: number): number {
-    return this.subtotal(total) * this.IT_RATE;
-  },
+  function vat(total: number): number {
+    return c.vat_inclusive ? total - subtotal(total) : total * c.vat_rate;
+  }
 
-  /**
-   * Full tax breakdown from a price-inclusive total amount.
-   */
-  breakdown(total: number): { subtotal: number; iva: number; it: number } {
-    const subtotal = this.subtotal(total);
-    return {
-      subtotal,
-      iva: total - subtotal,
-      it:  subtotal * this.IT_RATE,
-    };
-  },
-} as const;
+  function secondary(total: number): number {
+    return subtotal(total) * c.secondary_tax_rate;
+  }
+
+  function breakdown(total: number): { subtotal: number; iva: number; it: number } {
+    const sub = subtotal(total);
+    return { subtotal: sub, iva: vat(total), it: sub * c.secondary_tax_rate };
+  }
+
+  // `iva`/`it` are backward-compat aliases for `vat`/`secondary` (Bolivia naming);
+  // `IVA_RATE`/`IT_RATE` expose the raw rates the same way the old TAX const did.
+  return {
+    config: c, subtotal, vat, secondary, breakdown,
+    iva: vat, it: secondary,
+    IVA_RATE: c.vat_rate, IT_RATE: c.secondary_tax_rate,
+  };
+}
+
+// Backward-compat: Bolivia defaults — same as old TAX const
+export const TAX = resolveTax(BOLIVIA_DEFAULTS);

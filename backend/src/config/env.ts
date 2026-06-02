@@ -12,6 +12,8 @@ const envSchema = z.object({
   CORS_ORIGINS: z.string().transform((s) => s.split(',')),
   STORAGE_BUCKET: z.string().optional(),
   STORAGE_URL: z.string().optional(),
+  SUPABASE_SERVICE_KEY: z.string().optional(),
+  FAL_API_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

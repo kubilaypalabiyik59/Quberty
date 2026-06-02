@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, X, Users, Mail, Briefcase } from 'lucide-react';
 
-const ROLES = ['employee', 'warehouse_worker', 'store_manager', 'admin'];
+const ROLES = ['employee', 'warehouse_worker', 'store_manager', 'admin', 'cashier'];
 
 const emptyForm = {
   first_name: '', last_name: '', email: '', password: '',

@@ -7,11 +7,11 @@ import { ProductForm } from '@/components/erp/products/ProductForm';
 
 export default function EditProductPage() {
   const { id } = useParams();
-  const router = useRouter();
+  const router  = useRouter();
 
   const { data: product, isLoading } = useQuery({
     queryKey: ['product-erp', id],
-    queryFn: () => api.get(`/products/${id}`).then(r => r.data.data),
+    queryFn:  () => api.get(`/products/${id}`).then(r => r.data.data),
   });
 
   if (isLoading) return (

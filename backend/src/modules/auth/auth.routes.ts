@@ -1,4 +1,5 @@
 import { Hono }    from 'hono';
+import { setCookie, getCookie } from 'hono/cookie';
 import * as bcrypt  from 'bcryptjs';
 import * as jwt     from 'jsonwebtoken';
 import { db }       from '../../infrastructure/database/client';
@@ -9,6 +10,19 @@ import { validate }       from '../../shared/middleware/validate';
 import { ok, created }    from '../../shared/response';
 import { LoginSchema, RegisterSchema } from '../../shared/schemas';
 import type { AppEnv }    from '../../shared/context';
+
+const REFRESH_COOKIE = 'refresh_token';
+const REFRESH_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+
+function setRefreshCookie(c: any, token: string) {
+  setCookie(c, REFRESH_COOKIE, token, {
+    httpOnly: true,
+    secure:   config.NODE_ENV === 'production',
+    sameSite: 'Strict',
+    maxAge:   REFRESH_TTL_SECONDS,
+    path:     '/api/v1/auth',
+  });
+}
 
 const app = new Hono<AppEnv>();
 
@@ -53,10 +67,11 @@ app.post('/login', validate(LoginSchema), async (c) => {
 
   await db.user.update({ where: { id: user.id }, data: { last_login_at: new Date() } });
 
+  setRefreshCookie(c, refreshToken);
+
   return ok(c, {
-    access_token:  accessToken,
-    refresh_token: refreshToken,
-    tenant_id:     tenant.id,
+    access_token: accessToken,
+    tenant_id:    tenant.id,
     user: { id: user.id, email: user.email, first_name: user.first_name, last_name: user.last_name, role: user.role },
   });
 });
@@ -77,8 +92,12 @@ app.post('/register', validate(RegisterSchema), async (c) => {
 
   const password_hash = await bcrypt.hash(password, 12);
 
+  // First user in a tenant becomes admin
+  const userCount = await db.user.count({ where: { tenant_id: tenant.id } });
+  const role = userCount === 0 ? 'admin' : 'customer';
+
   const user = await db.user.create({
-    data: { email, password_hash, first_name, last_name, role: 'customer', tenant_id: tenant.id },
+    data: { email, password_hash, first_name, last_name, role, tenant_id: tenant.id },
     select: { id: true, email: true, first_name: true, last_name: true, role: true },
   });
 
@@ -114,11 +133,15 @@ app.post('/register', validate(RegisterSchema), async (c) => {
     },
   });
 
-  return created(c, { access_token: accessToken, refresh_token: refreshToken, tenant_id: tenant.id, user });
+  setRefreshCookie(c, refreshToken);
+
+  return created(c, { access_token: accessToken, tenant_id: tenant.id, user });
 });
 
 app.post('/refresh', async (c) => {
-  const { refresh_token } = await c.req.json();
+  let refresh_token: string | undefined;
+  try { ({ refresh_token } = await c.req.json()); } catch { /* body may be empty */ }
+  if (!refresh_token) refresh_token = getCookie(c, REFRESH_COOKIE);
   if (!refresh_token) throw new AppError('Refresh token required');
 
   const payload = jwt.verify(refresh_token, config.JWT_REFRESH_SECRET) as any;
@@ -169,6 +192,16 @@ app.put('/account', authMiddleware, async (c) => {
     },
   });
   return ok(c, null);
+});
+
+// Self-promote to admin — only works if there is exactly 1 user in the tenant (bootstrap scenario)
+app.post('/make-admin', authMiddleware, async (c) => {
+  const tenantId = c.get('tenantId');
+  const userId   = c.get('user').id;
+  const count    = await db.user.count({ where: { tenant_id: tenantId } });
+  if (count > 1) throw new AppError('Self-promotion only allowed when you are the only user', 403);
+  await db.user.update({ where: { id: userId }, data: { role: 'admin' } });
+  return ok(c, { message: 'Role updated to admin. Please log out and log back in.' });
 });
 
 export default app;

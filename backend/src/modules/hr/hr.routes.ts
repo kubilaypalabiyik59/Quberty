@@ -10,7 +10,7 @@ const app = new Hono<AppEnv>();
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
-app.get('/users', requireRole('admin'), async (c) => {
+app.get('/users', requireRole('admin', 'store_manager'), async (c) => {
   const users = await db.user.findMany({
     where:   { tenant_id: c.get('tenantId') },
     select:  { id: true, email: true, first_name: true, last_name: true, role: true, is_active: true, last_login_at: true, created_at: true },
@@ -21,7 +21,7 @@ app.get('/users', requireRole('admin'), async (c) => {
 
 app.put('/users/:id/role', requireRole('admin'), async (c) => {
   const { role } = await c.req.json();
-  const validRoles = ['admin', 'store_manager', 'warehouse_worker', 'employee', 'customer'];
+  const validRoles = ['admin', 'store_manager', 'warehouse_worker', 'employee', 'customer', 'cashier'];
   if (!validRoles.includes(role)) throw new AppError('Invalid role', 400);
   await db.user.updateMany({ where: { id: c.req.param('id'), tenant_id: c.get('tenantId') }, data: { role } });
   return ok(c, null);
@@ -34,7 +34,7 @@ app.put('/users/:id/deactivate', requireRole('admin'), async (c) => {
 
 // ── Employees ─────────────────────────────────────────────────────────────────
 
-app.get('/employees', requireRole('admin'), async (c) => {
+app.get('/employees', requireRole('admin', 'store_manager'), async (c) => {
   const employees = await db.employee.findMany({
     where:   { tenant_id: c.get('tenantId'), is_active: true },
     include: {
@@ -47,7 +47,7 @@ app.get('/employees', requireRole('admin'), async (c) => {
   return ok(c, safe);
 });
 
-app.post('/employees', requireRole('admin'), async (c) => {
+app.post('/employees', requireRole('admin', 'store_manager'), async (c) => {
   const body = await c.req.json();
   const { email, password, first_name, last_name, role = 'employee', pos_pin, phone: _phone, ...employeeData } = body;
 

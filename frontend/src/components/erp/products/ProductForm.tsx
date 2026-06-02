@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ArrowLeft, Plus, Trash2, Globe, EyeOff, Save, AlertCircle, ImagePlus, X, Loader2, Zap } from 'lucide-react';
@@ -52,23 +52,17 @@ const emptyVariant = (): Variant => ({
   _isNew: true,
 });
 
-// Upload image to Cloudinary (unsigned upload preset required)
-const CLOUDINARY_CLOUD = 'drglv6rx2';
-const CLOUDINARY_PRESET = 'quberty_products'; // unsigned upload preset name
-
-async function uploadToCloudinary(file: File): Promise<string> {
+// Upload image via backend → Supabase Storage
+async function uploadToBackend(productId: string, file: File): Promise<string> {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('upload_preset', CLOUDINARY_PRESET);
-  formData.append('folder', 'products');
-
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
-    method: 'POST',
-    body: formData,
+  const res = await api.post(`/products/${productId}/image`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
-  if (!res.ok) throw new Error('Image upload failed');
-  const data = await res.json();
-  return data.secure_url as string;
+  // The updated product is returned; grab the last image URL (the one just added)
+  const updatedImages: string[] = res.data?.data?.images ?? [];
+  if (!updatedImages.length) throw new Error('Image upload failed — no URL returned');
+  return updatedImages[updatedImages.length - 1];
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -88,17 +82,25 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
     queryFn: () => api.get('/products/categories').then(r => r.data.data),
   });
 
+  const [uoms, setUoms] = useState<Array<{ id: string; code: string; name: string; symbol: string }>>([]);
+
+  useEffect(() => {
+    api.get('/uom').then(r => setUoms(r.data.data ?? [])).catch(() => {});
+  }, []);
+
   const [form, setForm] = useState({
     name: product?.name ?? '',
     sku: product?.sku ?? '',
     brand: product?.brand ?? '',
     description: product?.description ?? '',
     category_id: product?.category_id ?? '',
-    unit_of_measure: product?.unit_of_measure ?? 'pair',
+    uom_id: product?.uom_id ?? '',
+    product_type: product?.product_type ?? 'physical',
     cost_price: product?.cost_price ?? '',
     selling_price: product?.selling_price ?? '',
     sale_price: product?.sale_price ?? '',
     weight_kg: product?.weight_kg ?? '',
+    reorder_point: product?.reorder_point ?? '',
     is_published: product?.is_published ?? false,
   });
 
@@ -122,6 +124,68 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  // ── AI Video state ───────────────────────────────────────────────────────────
+  const [videoImages,    setVideoImages]    = useState<string[]>(product?.video_urls ?? []);
+  const [selectedVidImg, setSelectedVidImg] = useState<string>('');
+  const [vidPrompt,      setVidPrompt]      = useState('');
+  const [vidGenerating,  setVidGenerating]  = useState(false);
+  const [vidStatus,      setVidStatus]      = useState('');
+  const [vidError,       setVidError]       = useState('');
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+  const pollVideoJob = useCallback((reqId: string) => {
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await api.get(`/products/${product?.id}/video-jobs/${reqId}`);
+        const d = r.data.data;
+        setVidStatus(d.status);
+        if (d.status === 'COMPLETED') {
+          stopPoll(); setVidGenerating(false);
+          qc.invalidateQueries({ queryKey: ['product-erp', product?.id] });
+          const fresh = await api.get(`/products/${product?.id}`);
+          setVideoImages(fresh.data.data.video_urls ?? []);
+        } else if (d.status === 'FAILED') {
+          stopPoll(); setVidGenerating(false);
+          setVidError('Video generation failed. Please try again.');
+        }
+      } catch { stopPoll(); setVidGenerating(false); setVidError('Lost connection while checking job status.'); }
+    }, 5000);
+  }, [product?.id, qc]);
+
+  const generateVideo = async () => {
+    const imgSrc = selectedVidImg || images[0];
+    if (!imgSrc) { setVidError('Select a product image first.'); return; }
+    setVidError(''); setVidGenerating(true); setVidStatus('Submitting...');
+    try {
+      const r = await api.post(`/products/${product?.id}/generate-video`, {
+        image_url: imgSrc, prompt: vidPrompt.trim() || undefined,
+      });
+      const reqId = r.data.data.request_id;
+      setVidStatus('IN_QUEUE');
+      pollVideoJob(reqId);
+    } catch (err: any) {
+      setVidGenerating(false); setVidStatus('');
+      if (err?.response?.status === 501) {
+        setVidError('FAL_API_KEY is not set in backend .env');
+      } else {
+        setVidError(err?.response?.data?.error?.message ?? 'Failed to start video generation');
+      }
+    }
+  };
+
+  const deleteVideo = async (url: string) => {
+    try {
+      await api.delete(`/products/${product?.id}/video`, { data: { url } });
+      setVideoImages(v => v.filter(u => u !== url));
+    } catch { /* silent */ }
+  };
+
+  const vidStatusLabel: Record<string, string> = {
+    IN_QUEUE: 'Waiting in queue...', IN_PROGRESS: 'Generating video...', 'Submitting...': 'Submitting...',
+  };
 
   // ── Cartesian product helper ─────────────────────────────────────────────────
 
@@ -160,6 +224,10 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
 
   const handleImageFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    if (!product?.id) {
+      setImageError('Save the product first, then you can add images.');
+      return;
+    }
     setImageError('');
     setUploadingImage(true);
     try {
@@ -167,18 +235,29 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
       for (const file of Array.from(files)) {
         if (!file.type.startsWith('image/')) { setImageError('Only image files are allowed'); continue; }
         if (file.size > 5 * 1024 * 1024) { setImageError('Max file size is 5MB'); continue; }
-        const url = await uploadToCloudinary(file);
+        const url = await uploadToBackend(product.id, file);
         urls.push(url);
       }
       setImages(prev => [...prev, ...urls]);
     } catch {
-      setImageError('Upload failed. Check your Cloudinary preset or try again.');
+      setImageError('Upload failed. Check storage configuration or try again.');
     } finally {
       setUploadingImage(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const removeImage = (idx: number) => setImages(prev => prev.filter((_, i) => i !== idx));
+  const removeImage = async (idx: number) => {
+    const url = images[idx];
+    if (product?.id && url) {
+      try {
+        await api.delete(`/products/${product.id}/image`, { data: { url } });
+      } catch {
+        // best-effort: remove from local state regardless
+      }
+    }
+    setImages(prev => prev.filter((_, i) => i !== idx));
+  };
 
   // ── Variant helpers ──────────────────────────────────────────────────────────
 
@@ -228,11 +307,13 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
         brand: form.brand || null,
         description: form.description || null,
         category_id: form.category_id || null,
-        unit_of_measure: form.unit_of_measure,
+        uom_id: form.uom_id || null,
+        product_type: form.product_type,
         cost_price: form.cost_price ? Number(form.cost_price) : null,
         selling_price: Number(form.selling_price),
         sale_price: form.sale_price ? Number(form.sale_price) : null,
         weight_kg: form.weight_kg ? Number(form.weight_kg) : null,
+        reorder_point: form.reorder_point ? Number(form.reorder_point) : 0,
         is_published: form.is_published,
         images,
       };
@@ -362,12 +443,33 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Unit of Measure</label>
-                    <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      value={form.unit_of_measure} onChange={e => setForm(f => ({ ...f, unit_of_measure: e.target.value }))}>
-                      {['pair', 'piece', 'set', 'box', 'unit'].map(u => <option key={u} value={u}>{u}</option>)}
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Product Type</label>
+                    <select
+                      value={form.product_type}
+                      onChange={e => setForm(f => ({ ...f, product_type: e.target.value }))}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="physical">Physical — tracked in inventory</option>
+                      <option value="service">Service — no inventory tracking</option>
+                      <option value="digital">Digital — no inventory tracking</option>
                     </select>
                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Unit of Measure</label>
+                  <select
+                    value={form.uom_id}
+                    onChange={e => setForm(f => ({ ...f, uom_id: e.target.value }))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">— select unit —</option>
+                    {uoms.map(u => (
+                      <option key={u.id} value={u.id}>{u.name} ({u.symbol})</option>
+                    ))}
+                  </select>
+                  {uoms.length === 0 && (
+                    <p className="text-xs text-amber-600 mt-1">No units found — go to <strong>Products → Units of Measure</strong> and click "Seed Defaults".</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -420,8 +522,10 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <ImagePlus className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-                  <p className="text-sm text-gray-400">Click to upload product images</p>
-                  <p className="text-xs text-gray-300 mt-1">PNG, JPG up to 5MB each</p>
+                  <p className="text-sm text-gray-400">
+                    {isEdit ? 'Click to upload product images' : 'Save the product first to upload images'}
+                  </p>
+                  <p className="text-xs text-gray-300 mt-1">PNG, JPG, WebP up to 5MB each</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-4 gap-3">
@@ -647,11 +751,20 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
             {/* Logistics */}
             <div className="bg-white rounded-xl border border-gray-200 p-5">
               <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Logistics</h2>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Weight (kg)</label>
-                <input type="number" step="0.001" min="0" placeholder="0.000"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={form.weight_kg} onChange={e => setForm(f => ({ ...f, weight_kg: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Weight (kg)</label>
+                  <input type="number" step="0.001" min="0" placeholder="0.000"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={form.weight_kg} onChange={e => setForm(f => ({ ...f, weight_kg: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reorder Point</label>
+                  <input type="number" step="1" min="0" placeholder="0"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={form.reorder_point} onChange={e => setForm(f => ({ ...f, reorder_point: e.target.value }))} />
+                  <p className="text-xs text-gray-400 mt-0.5">Alert when stock drops to this level. 0 = off.</p>
+                </div>
               </div>
             </div>
 
@@ -666,6 +779,61 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* AI Video Generation */}
+            {isEdit && images.length > 0 && (
+              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest">AI Product Video</h2>
+                  <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full">FAL.ai</span>
+                </div>
+
+                {/* Existing videos */}
+                {videoImages.length > 0 && (
+                  <div className="space-y-2">
+                    {videoImages.map(url => (
+                      <div key={url} className="relative group rounded-lg overflow-hidden border bg-black">
+                        <video src={url} controls className="w-full aspect-video object-cover" />
+                        <button type="button" onClick={() => deleteVideo(url)}
+                          className="absolute top-1 right-1 bg-red-600 text-white rounded-full w-5 h-5 text-xs hidden group-hover:flex items-center justify-center">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Image picker */}
+                <div className="flex gap-1.5 flex-wrap">
+                  {images.map(img => (
+                    <button key={img} type="button" onClick={() => setSelectedVidImg(img)}
+                      className={`w-12 h-12 rounded-lg overflow-hidden border-2 transition ${(selectedVidImg || images[0]) === img ? 'border-purple-500' : 'border-transparent'}`}>
+                      <img src={img} alt="" className="w-full h-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+
+                {/* Prompt */}
+                <input value={vidPrompt} onChange={e => setVidPrompt(e.target.value)}
+                  placeholder="Optional prompt: rotate 360°, studio lighting…"
+                  disabled={vidGenerating}
+                  className="w-full border rounded-lg px-3 py-1.5 text-xs disabled:opacity-50" />
+
+                {/* Status */}
+                {vidGenerating && (
+                  <div className="flex items-center gap-2 text-xs text-purple-700">
+                    <span className="animate-spin">⟳</span>
+                    {vidStatusLabel[vidStatus] ?? vidStatus}
+                    <span className="text-gray-400 ml-auto">~30-60s</span>
+                  </div>
+                )}
+                {vidError && <p className="text-xs text-red-600">{vidError}</p>}
+
+                <button type="button" onClick={generateVideo} disabled={vidGenerating || images.length === 0}
+                  className="w-full py-2 bg-purple-600 text-white text-xs font-semibold rounded-lg hover:bg-purple-700 disabled:opacity-40 transition">
+                  {vidGenerating ? 'Generating...' : '✦ Generate AI Video'}
+                </button>
+                <p className="text-[10px] text-gray-400 text-center">~$0.05 per video · 5s · 16:9 · Kling v2.1</p>
               </div>
             )}
 

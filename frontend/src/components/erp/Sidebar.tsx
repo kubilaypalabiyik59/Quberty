@@ -5,15 +5,16 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, ShoppingCart, Package, Warehouse, Users,
   Truck, BarChart3, Upload, UserCog, Settings, ChevronDown, Box, DollarSign,
-  MessageCircle, Moon, SunMedium,
+  MessageCircle, Moon, SunMedium, Wand2, Monitor, ShieldCheck, AlertTriangle,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const NAV = [
   {
     label: 'Overview',
     items: [
       { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+      { href: '/pos',       icon: Monitor,         label: 'POS Terminal' },
     ],
   },
   {
@@ -46,6 +47,7 @@ const NAV = [
       {
         href: '/inventory', icon: Package, label: 'Inventory', children: [
           { href: '/inventory/stock', label: 'Stock Overview' },
+          { href: '/inventory/low-stock', label: 'Low Stock' },
           { href: '/inventory/transactions', label: 'Transactions' },
           { href: '/inventory/counting', label: 'Counting' },
           { href: '/inventory/transfers', label: 'Transfers' },
@@ -90,13 +92,74 @@ const NAV = [
           { href: '/hr/payroll', label: 'Payroll' },
         ],
       },
+      { href: '/audit', icon: ShieldCheck, label: 'Audit Log' },
       { href: '/settings', icon: Settings, label: 'Settings' },
+      { href: '/setup', icon: Wand2, label: 'Setup Wizard' },
     ],
   },
 ];
 
+const SHORTCUTS = [
+  { key: 'G then D', action: 'Go to Dashboard' },
+  { key: 'G then P', action: 'Go to Products' },
+  { key: 'G then S', action: 'Go to Sales' },
+  { key: 'G then F', action: 'Go to Finance' },
+  { key: 'Ctrl + K', action: 'Global Search' },
+  { key: 'Ctrl + N', action: 'Create New' },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const [isDark,      setIsDark]      = useState(false);
+  const [helpOpen,    setHelpOpen]    = useState(false);
+  const helpRef = useRef<HTMLDivElement>(null);
+
+  // Load dark mode preference on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('quberty-theme') === 'dark';
+    setIsDark(saved);
+    document.documentElement.classList.toggle('dark', saved);
+  }, []);
+
+  // Keyboard shortcuts: G then D/P/S/F
+  useEffect(() => {
+    let gPressed = false;
+    let gTimer: NodeJS.Timeout;
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'g' || e.key === 'G') {
+        gPressed = true;
+        gTimer = setTimeout(() => { gPressed = false; }, 1000);
+        return;
+      }
+      if (gPressed) {
+        clearTimeout(gTimer);
+        gPressed = false;
+        const map: Record<string, string> = { d: '/dashboard', p: '/products', s: '/sales/orders', f: '/finance/accounts' };
+        const dest = map[e.key.toLowerCase()];
+        if (dest) { e.preventDefault(); window.location.href = dest; }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  // Close help panel on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (helpRef.current && !helpRef.current.contains(e.target as Node)) setHelpOpen(false);
+    };
+    if (helpOpen) document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [helpOpen]);
+
+  const toggleDark = (dark: boolean) => {
+    setIsDark(dark);
+    document.documentElement.classList.toggle('dark', dark);
+    localStorage.setItem('quberty-theme', dark ? 'dark' : 'light');
+  };
+
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     '/products': true,
     '/sales': true,
@@ -197,14 +260,47 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom icons */}
-      <div className="border-t border-indigo-100/60 p-3 flex items-center gap-1">
-        <button className="p-2 rounded-lg text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60 transition-colors">
+      <div className="border-t border-indigo-100/60 p-3 flex items-center gap-1 relative">
+
+        {/* Help / shortcuts panel */}
+        {helpOpen && (
+          <div ref={helpRef} className="absolute bottom-14 left-3 w-56 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 space-y-3">
+            <p className="text-xs font-bold text-gray-700 uppercase tracking-widest">Keyboard Shortcuts</p>
+            <div className="space-y-1.5">
+              {SHORTCUTS.map(s => (
+                <div key={s.key} className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-gray-500">{s.action}</span>
+                  <kbd className="text-[10px] bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5 font-mono text-gray-600 whitespace-nowrap">{s.key}</kbd>
+                </div>
+              ))}
+            </div>
+            <div className="border-t pt-2">
+              <p className="text-[10px] text-gray-400 text-center">Quberty ERP v2.0</p>
+            </div>
+          </div>
+        )}
+
+        <button
+          onClick={() => setHelpOpen(v => !v)}
+          title="Keyboard shortcuts"
+          className={`p-2 rounded-lg transition-colors ${helpOpen ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
+        >
           <MessageCircle className="h-4 w-4" />
         </button>
-        <button className="p-2 rounded-lg text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60 transition-colors">
+
+        <button
+          onClick={() => toggleDark(true)}
+          title="Dark mode"
+          className={`p-2 rounded-lg transition-colors ${isDark ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
+        >
           <Moon className="h-4 w-4" />
         </button>
-        <button className="p-2 rounded-lg text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60 transition-colors">
+
+        <button
+          onClick={() => toggleDark(false)}
+          title="Light mode"
+          className={`p-2 rounded-lg transition-colors ${!isDark ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
+        >
           <SunMedium className="h-4 w-4" />
         </button>
       </div>

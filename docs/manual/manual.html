@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Quberty ERP — Manual de Usuario Final</title>
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 16mm 20mm 16mm;
+    @bottom-center { content: counter(page); }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: #1e293b;
+    font-size: 11.5px;
+    line-height: 1.55;
+    margin: 0;
+  }
+  h1, h2, h3, h4 { color: #1e1b4b; font-weight: 700; line-height: 1.25; }
+  h2 { font-size: 22px; margin: 0 0 4px; border-bottom: 3px solid #4f46e5; padding-bottom: 8px; }
+  h3 { font-size: 16px; margin: 22px 0 6px; color: #3730a3; }
+  h4 { font-size: 13px; margin: 16px 0 4px; color: #4338ca; }
+  p { margin: 6px 0; }
+  a { color: #4f46e5; text-decoration: none; }
+  code, .kbd {
+    font-family: "Consolas", monospace; background: #eef2ff; color: #3730a3;
+    padding: 1px 5px; border-radius: 4px; font-size: 0.9em;
+  }
+  .ui { font-weight: 600; color: #4338ca; }
+
+  /* ---- Cover ---- */
+  .cover {
+    height: 247mm; display: flex; flex-direction: column; justify-content: center;
+    text-align: center; page-break-after: always;
+    background: linear-gradient(160deg, #312e81 0%, #4f46e5 55%, #6366f1 100%);
+    color: #fff; margin: -18mm -16mm 0 -16mm; padding: 0 24mm;
+  }
+  .cover .logo {
+    width: 78px; height: 78px; border-radius: 20px; background: rgba(255,255,255,.15);
+    display: flex; align-items: center; justify-content: center; margin: 0 auto 28px;
+    border: 1px solid rgba(255,255,255,.3);
+  }
+  .cover .logo svg { width: 42px; height: 42px; }
+  .cover h1 { color: #fff; font-size: 46px; margin: 0 0 6px; letter-spacing: -1px; }
+  .cover .sub { font-size: 21px; font-weight: 300; opacity: .92; }
+  .cover .tagline { margin-top: 10px; font-size: 13px; opacity: .75; }
+  .cover .meta { margin-top: 56px; font-size: 12px; opacity: .85; line-height: 1.8; }
+  .cover .pill {
+    display: inline-block; margin-top: 40px; padding: 8px 20px; border-radius: 999px;
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.3);
+    font-size: 12px; letter-spacing: .5px;
+  }
+
+  /* ---- TOC ---- */
+  .toc { page-break-after: always; }
+  .toc ol { list-style: none; padding: 0; margin: 14px 0; counter-reset: sec; }
+  .toc > ol > li {
+    counter-increment: sec; padding: 7px 0; border-bottom: 1px solid #e2e8f0;
+    font-weight: 600; font-size: 13px; color: #1e1b4b;
+  }
+  .toc > ol > li::before { content: counter(sec) ".  "; color: #4f46e5; }
+  .toc ul { list-style: none; padding: 3px 0 3px 22px; margin: 0; }
+  .toc ul li { font-weight: 400; font-size: 11.5px; color: #475569; padding: 2px 0; }
+  .toc ul li::before { content: "– "; color: #94a3b8; }
+
+  /* ---- Sections ---- */
+  section { page-break-before: always; }
+  .lead { color: #475569; font-size: 12.5px; margin-bottom: 14px; }
+
+  figure { margin: 12px 0 16px; page-break-inside: avoid; }
+  figure img {
+    width: 100%; border: 1px solid #cbd5e1; border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.08);
+  }
+  figcaption { font-size: 10.5px; color: #64748b; margin-top: 5px; text-align: center; font-style: italic; }
+
+  ol.steps { padding-left: 0; counter-reset: step; list-style: none; margin: 8px 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative; padding: 4px 0 8px 30px; margin: 0;
+    page-break-inside: avoid;
+  }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 2px;
+    width: 20px; height: 20px; background: #4f46e5; color: #fff; border-radius: 50%;
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  }
+  ul.bul { margin: 6px 0; padding-left: 18px; }
+  ul.bul li { margin: 3px 0; }
+
+  table.fields { width: 100%; border-collapse: collapse; margin: 10px 0 14px; font-size: 11px; }
+  table.fields th, table.fields td { border: 1px solid #e2e8f0; padding: 6px 9px; text-align: left; vertical-align: top; }
+  table.fields th { background: #eef2ff; color: #3730a3; font-weight: 600; }
+  table.fields td:first-child { white-space: nowrap; font-weight: 600; color: #4338ca; width: 30%; }
+
+  .note, .tip, .warn {
+    border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 11px;
+    page-break-inside: avoid;
+  }
+  .note { background: #eff6ff; border-left: 4px solid #3b82f6; }
+  .tip  { background: #ecfdf5; border-left: 4px solid #10b981; }
+  .warn { background: #fff7ed; border-left: 4px solid #f97316; }
+  .note b, .tip b, .warn b { display: block; margin-bottom: 2px; }
+
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px;
+    font-weight: 600; margin: 0 1px;
+  }
+  .b-draft { background:#e2e8f0; color:#475569; }
+  .b-conf  { background:#dbeafe; color:#1d4ed8; }
+  .b-ship  { background:#ffedd5; color:#c2410c; }
+  .b-done  { background:#dcfce7; color:#15803d; }
+  .b-canc  { background:#fee2e2; color:#b91c1c; }
+
+  .flow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:10px 0; font-size:11px; }
+  .flow .step-box { background:#eef2ff; border:1px solid #c7d2fe; border-radius:6px; padding:5px 10px; font-weight:600; color:#3730a3; }
+  .flow .arrow { color:#6366f1; font-weight:700; }
+
+  .module-head {
+    background:#f8faff; border:1px solid #e0e7ff; border-radius:10px; padding:12px 16px; margin-bottom:8px;
+  }
+  .module-head .path { font-size:10.5px; color:#6366f1; font-weight:600; }
+  .glos dt { font-weight:700; color:#3730a3; margin-top:8px; }
+  .glos dd { margin:0 0 4px 0; color:#475569; }
+</style>
+</head>
+<body>
+
+<!-- ============== PORTADA ============== -->
+<div class="cover">
+  <div class="logo">
+    <svg viewBox="0 0 16 16" fill="none">
+      <rect x="2" y="2" width="5" height="5" rx="1" fill="white"/>
+      <rect x="9" y="2" width="5" height="5" rx="1" fill="white" opacity="0.6"/>
+      <rect x="2" y="9" width="5" height="5" rx="1" fill="white" opacity="0.6"/>
+      <rect x="9" y="9" width="5" height="5" rx="1" fill="white"/>
+    </svg>
+  </div>
+  <h1>Quberty ERP</h1>
+  <div class="sub">Manual de Usuario Final</div>
+  <div class="tagline">Sistema de Gestión Empresarial y Comercio Electrónico</div>
+  <div class="meta">
+    Guía paso a paso de todos los módulos y formularios<br>
+    Ventas · Compras · Inventario · Almacén · Finanzas · POS · Tienda en línea
+  </div>
+  <div><span class="pill">Versión 2.0 &nbsp;·&nbsp; Junio 2026</span></div>
+</div>
+
+<!-- ============== TABLA DE CONTENIDO ============== -->
+<div class="toc">
+  <h2>Tabla de contenido</h2>
+  <ol>
+    <li>Introducción y conceptos básicos</li>
+    <li>Inicio de sesión
+      <ul><li>Acceso al sistema</li><li>Cerrar sesión</li></ul>
+    </li>
+    <li>Navegación general de la pantalla
+      <ul><li>Menú lateral, barra superior, botón Crear, búsqueda y atajos</li></ul>
+    </li>
+    <li>Panel principal (Dashboard)</li>
+    <li>Módulo Productos
+      <ul><li>Lista de productos</li><li>Crear un producto nuevo</li><li>Variantes, categorías y unidades de medida</li></ul>
+    </li>
+    <li>Módulo Ventas
+      <ul><li>Clientes</li><li>Crear una Orden de Venta (paso a paso)</li><li>Seleccionar el cliente y registrar precios</li><li>Ciclo de vida de la orden</li><li>Emitir factura y registrar cobro</li></ul>
+    </li>
+    <li>Módulo Compras
+      <ul><li>Proveedores</li><li>Crear una Orden de Compra</li></ul>
+    </li>
+    <li>Módulo Inventario
+      <ul><li>Stock, bajo stock, transacciones, conteo y transferencias</li></ul>
+    </li>
+    <li>Módulo Almacén (WMS)
+      <ul><li>Trabajo, olas, llegadas y ubicaciones</li></ul>
+    </li>
+    <li>Módulo Finanzas
+      <ul><li>Plan de cuentas, asientos, facturas, IVA, estados financieros</li></ul>
+    </li>
+    <li>Reportes y analítica</li>
+    <li>Importación de datos</li>
+    <li>Recursos Humanos</li>
+    <li>Registro de auditoría</li>
+    <li>Configuración y asistente de instalación</li>
+    <li>Punto de Venta (POS)</li>
+    <li>Tienda en línea</li>
+    <li>Glosario</li>
+  </ol>
+</div>
+
+<!-- ============== 1. INTRODUCCIÓN ============== -->
+<section>
+  <h2>1. Introducción y conceptos básicos</h2>
+  <p class="lead">Bienvenido a <span class="ui">Quberty ERP</span>, su sistema integral para administrar todo el negocio desde un solo lugar: productos, ventas, compras, inventario, almacén, finanzas, punto de venta y tienda en línea.</p>
+
+  <h3>¿Qué puede hacer con Quberty?</h3>
+  <ul class="bul">
+    <li><b>Vender</b> a clientes (en oficina, en caja o por internet) y emitir <span class="ui">facturas</span>.</li>
+    <li><b>Comprar</b> mercadería a proveedores y registrar su recepción.</li>
+    <li><b>Controlar el inventario</b> en tiempo real, por producto, variante (talla/color) y ubicación.</li>
+    <li><b>Llevar la contabilidad</b>: plan de cuentas, asientos, IVA, IT, estados financieros.</li>
+    <li><b>Cobrar en caja</b> con el módulo POS y vender por la tienda en línea.</li>
+  </ul>
+
+  <h3>Conceptos que aparecen en todo el sistema</h3>
+  <table class="fields">
+    <tr><th>Término</th><th>Significado</th></tr>
+    <tr><td>Bs.</td><td>Bolivianos. Es la moneda con la que el sistema muestra todos los importes.</td></tr>
+    <tr><td>IVA 13%</td><td>Impuesto al Valor Agregado, incluido en el precio de venta.</td></tr>
+    <tr><td>IT 3%</td><td>Impuesto a las Transacciones, calculado sobre el neto.</td></tr>
+    <tr><td>NIT / CI</td><td>Número de identificación tributaria o cédula del cliente para la factura.</td></tr>
+    <tr><td>SKU</td><td>Código único de un producto (por ejemplo <code>NIKE-AM270</code>).</td></tr>
+    <tr><td>Variante</td><td>Versión específica de un producto, por ejemplo una talla o color.</td></tr>
+    <tr><td>Almacén</td><td>Depósito físico desde donde sale o entra el stock.</td></tr>
+  </table>
+
+  <div class="note"><b>Sobre este manual</b>
+  La interfaz del sistema combina términos en español e inglés. En esta guía, cada vez que mencionamos un botón o etiqueta de la pantalla, lo escribimos como aparece en el sistema (por ejemplo <span class="ui">New Order</span>) para que pueda ubicarlo fácilmente.</div>
+</section>
+
+<!-- ============== 2. INICIO DE SESIÓN ============== -->
+<section>
+  <h2>2. Inicio de sesión</h2>
+  <p class="lead">Para usar el sistema administrativo (ERP) necesita una cuenta de usuario con su correo y contraseña.</p>
+
+  <h3>Acceso al sistema</h3>
+  <ol class="steps">
+    <li>Abra el navegador e ingrese a la dirección del sistema (por ejemplo <code>http://localhost:3000</code> o el dominio de su empresa).</li>
+    <li>En la pantalla de acceso, escriba su <span class="ui">correo electrónico</span> en el campo <span class="ui">Email</span>.</li>
+    <li>Escriba su <span class="ui">contraseña</span> en el campo <span class="ui">Password</span>.</li>
+    <li>Presione el botón de <span class="ui">iniciar sesión</span>. El sistema lo llevará automáticamente al <span class="ui">Dashboard</span> (panel principal).</li>
+  </ol>
+
+  <div class="warn"><b>Si la contraseña es incorrecta</b>
+  El sistema muestra el mensaje <i>“Invalid email or password”</i> y permanece en la pantalla de acceso. Verifique mayúsculas y vuelva a intentar.</div>
+
+  <h3>Cerrar sesión</h3>
+  <p>Para salir de forma segura, abra el menú de su usuario (el círculo con sus iniciales en la esquina superior derecha) y elija la opción de cerrar sesión. Es recomendable hacerlo siempre al terminar, sobre todo en equipos compartidos.</p>
+</section>
+
+<!-- ============== 3. NAVEGACIÓN ============== -->
+<section>
+  <h2>3. Navegación general de la pantalla</h2>
+  <p class="lead">Toda la parte administrativa comparte la misma estructura. Conocerla le permitirá moverse con rapidez por cualquier módulo.</p>
+
+  <figure><img src="img/dashboard.png"><figcaption>Pantalla principal: menú lateral (izquierda), barra superior y área de contenido.</figcaption></figure>
+
+  <h3>Menú lateral (izquierda)</h3>
+  <p>Es el índice de todos los módulos, agrupados en secciones: <span class="ui">Overview</span> (Dashboard y POS), <span class="ui">Commerce</span> (Productos, Ventas, Compras), <span class="ui">Operations</span> (Inventario, Almacén), <span class="ui">Finance</span> y <span class="ui">Management</span> (Reportes, Importación, RR.HH., Auditoría, Configuración).</p>
+  <ul class="bul">
+    <li>Los grupos con una flechita (▾) se <b>despliegan</b> al hacer clic para mostrar sus subopciones.</li>
+    <li>La opción en la que se encuentra aparece resaltada en color índigo.</li>
+  </ul>
+
+  <h3>Barra superior</h3>
+  <table class="fields">
+    <tr><th>Elemento</th><th>Para qué sirve</th></tr>
+    <tr><td>Título</td><td>Muestra el nombre de la pantalla actual.</td></tr>
+    <tr><td>Search anything…</td><td>Búsqueda global. Permite encontrar productos, órdenes, clientes, etc.</td></tr>
+    <tr><td>Create ▾</td><td>Atajo para crear rápidamente: producto, orden de venta u orden de compra desde cualquier pantalla.</td></tr>
+    <tr><td>Iniciales (círculo)</td><td>Menú de su cuenta de usuario y cierre de sesión.</td></tr>
+  </table>
+
+  <h3>Atajos de teclado</h3>
+  <table class="fields">
+    <tr><th>Atajo</th><th>Acción</th></tr>
+    <tr><td>G luego D</td><td>Ir al Dashboard</td></tr>
+    <tr><td>G luego P</td><td>Ir a Productos</td></tr>
+    <tr><td>G luego S</td><td>Ir a Ventas</td></tr>
+    <tr><td>G luego F</td><td>Ir a Finanzas</td></tr>
+    <tr><td>Ctrl + K</td><td>Búsqueda global</td></tr>
+    <tr><td>Ctrl + N</td><td>Crear nuevo</td></tr>
+  </table>
+  <div class="tip"><b>Modo claro / oscuro</b>
+  En la parte inferior del menú lateral encontrará los íconos de luna y sol para cambiar entre tema oscuro y claro según su preferencia.</div>
+</section>
+
+<!-- ============== 4. DASHBOARD ============== -->
+<section>
+  <h2>4. Panel principal (Dashboard)</h2>
+  <div class="module-head"><span class="path">Menú: Overview › Dashboard</span></div>
+  <p class="lead">El Dashboard resume la salud del negocio de un vistazo. Es la primera pantalla que ve al ingresar.</p>
+
+  <figure><img src="img/dashboard.png"><figcaption>Dashboard con indicadores, ingresos mensuales, productos populares y últimas órdenes.</figcaption></figure>
+
+  <h3>Qué información muestra</h3>
+  <ul class="bul">
+    <li><b>Overview</b>: número de clientes, ingresos del periodo y cantidad de órdenes.</li>
+    <li><b>Monthly Revenue</b>: gráfico de ingresos del mes en bolivianos.</li>
+    <li><b>Popular products</b>: los productos más vendidos y su recaudación.</li>
+    <li><b>Recent Orders</b>: las últimas órdenes con su estado (COMPLETED, SHIPPED, CANCELLED, etc.).</li>
+  </ul>
+  <p>Con el selector de la esquina (<span class="ui">Last month</span>) puede cambiar el periodo analizado.</p>
+</section>
+
+<!-- ============== 5. PRODUCTOS ============== -->
+<section>
+  <h2>5. Módulo Productos</h2>
+  <div class="module-head"><span class="path">Menú: Commerce › Products</span></div>
+  <p class="lead">Aquí se administra el catálogo: los artículos que compra, vende y mantiene en inventario.</p>
+
+  <h3>5.1 Lista de productos</h3>
+  <figure><img src="img/products-list.png"><figcaption>Listado de productos con su información y acciones.</figcaption></figure>
+  <p>La lista (<span class="ui">All Products</span>) muestra cada producto con su nombre, SKU, precio y estado. Desde aquí puede buscar, abrir un producto para editarlo o crear uno nuevo.</p>
+
+  <h3>5.2 Crear un producto nuevo</h3>
+  <p>Haga clic en <span class="ui">Products</span> › <span class="ui">All Products</span> y luego en el botón de nuevo producto (o use <span class="ui">Create › New Product</span> de la barra superior).</p>
+  <figure><img src="img/products-new.png"><figcaption>Formulario “New Product”. Los campos con asterisco (*) son obligatorios.</figcaption></figure>
+  <ol class="steps">
+    <li>En <span class="ui">Product Name</span> escriba el nombre del producto (ej.: <i>Nike Air Max 270</i>). <b>Obligatorio.</b></li>
+    <li>En <span class="ui">SKU</span> ingrese el código único del producto (ej.: <code>NIKE-AM270</code>). <b>Obligatorio.</b></li>
+    <li>Opcionalmente complete <span class="ui">Brand</span> (marca) y <span class="ui">Description</span> (descripción que verá el cliente en la tienda).</li>
+    <li>Elija una <span class="ui">Category</span> (categoría) y el <span class="ui">Product Type</span> (normalmente <i>Physical — tracked in inventory</i> para artículos con stock).</li>
+    <li>Seleccione la <span class="ui">Unit of Measure</span> (unidad de medida, ej.: par, unidad).</li>
+    <li>En el panel derecho <span class="ui">Logistics</span> indique el <span class="ui">Weight</span> (peso) y el <span class="ui">Reorder Point</span> (punto de reorden: el sistema avisa cuando el stock baja a ese nivel; 0 = desactivado).</li>
+    <li>Más abajo, en la sección <span class="ui">Pricing</span>, ingrese el precio de costo y el precio de venta.</li>
+    <li>Si desea publicarlo en la tienda en línea, active el interruptor <span class="ui">Not Listed on E-Commerce</span> de la parte superior.</li>
+    <li>Pulse <span class="ui">Create Product</span> para guardar.</li>
+  </ol>
+  <div class="tip"><b>Consejo</b> El <span class="ui">Reorder Point</span> alimenta el reporte de <i>Low Stock</i>, ayudándole a reponer a tiempo.</div>
+
+  <h3>5.3 Tipos de variantes</h3>
+  <div class="module-head"><span class="path">Menú: Products › Variant Types</span></div>
+  <figure><img src="img/products-variants.png"><figcaption>Definición de tipos de variante (por ejemplo Talla, Color).</figcaption></figure>
+  <p>Las variantes permiten manejar un mismo producto en distintas presentaciones (tallas, colores). Aquí define los tipos de variante y sus valores, que luego se asignan a los productos y se controlan por separado en el inventario.</p>
+
+  <h3>5.4 Categorías</h3>
+  <div class="module-head"><span class="path">Menú: Products › Categories</span></div>
+  <figure><img src="img/products-categories.png"><figcaption>Categorías para organizar el catálogo.</figcaption></figure>
+  <p>Las categorías agrupan productos similares (ej.: <i>Zapatillas</i>, <i>Botas</i>). Facilitan la búsqueda y la navegación en la tienda.</p>
+
+  <h3>5.5 Unidades de medida</h3>
+  <div class="module-head"><span class="path">Menú: Products › (Unit of Measure)</span></div>
+  <figure><img src="img/products-uom.png"><figcaption>Catálogo de unidades de medida.</figcaption></figure>
+  <p>Define las unidades con las que se compran y venden los productos (par, unidad, caja, etc.).</p>
+</section>
+
+<!-- ============== 6. VENTAS ============== -->
+<section>
+  <h2>6. Módulo Ventas</h2>
+  <div class="module-head"><span class="path">Menú: Commerce › Sales</span></div>
+  <p class="lead">El corazón del proceso comercial: registrar clientes, crear órdenes de venta, facturar, cobrar y despachar.</p>
+
+  <h3>6.1 Clientes</h3>
+  <div class="module-head"><span class="path">Menú: Sales › Customers</span></div>
+  <figure><img src="img/sales-customers.png"><figcaption>Base de clientes con su código, datos de contacto, segmento, número de órdenes y valor total (LTV).</figcaption></figure>
+  <p>Esta pantalla muestra todos los clientes con su <span class="ui">Code</span> (ej.: <code>CUST-00002</code>), nombre, correo, ciudad, <span class="ui">Segment</span>, cantidad de órdenes y <span class="ui">LTV</span> (valor total comprado). El enlace <span class="ui">Transactions</span> de cada fila abre su historial.</p>
+  <div class="note"><b>¿Cómo se dan de alta los clientes?</b>
+  Los clientes se crean principalmente de dos maneras: <b>(a)</b> cuando se registran ellos mismos en la <b>tienda en línea</b> (ver capítulo 17), o <b>(b)</b> de forma masiva desde el módulo <b>Importación de datos</b> (capítulo 12, pestaña <span class="ui">Customers</span>). En la orden de venta también puede vender a un cliente ocasional sin registrarlo (opción <i>Walk-in</i>).</div>
+
+  <h3>6.2 Crear una Orden de Venta — paso a paso</h3>
+  <div class="module-head"><span class="path">Menú: Sales › Orders</span></div>
+  <p>La <b>Orden de Venta</b> es el documento donde se registra qué le vende a un cliente, en qué cantidad y a qué precio.</p>
+  <figure><img src="img/sales-orders-list.png"><figcaption>Listado de órdenes de venta. El botón “New Order” (arriba a la derecha) inicia una nueva.</figcaption></figure>
+
+  <ol class="steps">
+    <li>En el menú abra <span class="ui">Sales › Orders</span>.</li>
+    <li>Haga clic en el botón <span class="ui">New Order</span> (arriba a la derecha). Se abrirá el formulario <span class="ui">New Sales Order</span>.</li>
+  </ol>
+
+  <figure><img src="img/sales-order-form-empty.png"><figcaption>Formulario de nueva orden de venta, recién abierto.</figcaption></figure>
+
+  <h4>Seleccionar la cuenta del cliente</h4>
+  <ol class="steps">
+    <li>En el campo <span class="ui">Customer</span> abra la lista desplegable.</li>
+    <li>Elija el cliente por su nombre y código (ej.: <i>KUBILAY PALABIYIK (CUST-00002)</i>).</li>
+    <li>Si es una venta a un cliente no registrado, deje la opción <span class="ui">— Walk-in / No customer —</span>.</li>
+  </ol>
+
+  <h4>Indicar el almacén</h4>
+  <p>En <span class="ui">Warehouse (for stock picking)</span> seleccione el depósito desde el cual se descontará el stock al despachar la orden.</p>
+
+  <h4>Agregar las líneas y el precio</h4>
+  <ol class="steps">
+    <li>En la tabla <span class="ui">Order Lines</span>, en la columna <span class="ui">Product</span>, elija el producto a vender (ej.: <i>Adidas Samba (SAMBA-OG-001)</i>).</li>
+    <li>Al seleccionar el producto, el <span class="ui">Unit Price (Bs.)</span> se completa <b>automáticamente</b> con el precio de venta configurado. Puede modificarlo manualmente si lo necesita.</li>
+    <li>Si el producto tiene variantes (talla/color), elíjala en la columna <span class="ui">Variant</span>.</li>
+    <li>Indique la cantidad en <span class="ui">Qty</span>. La columna <span class="ui">Total</span> de la línea se recalcula sola.</li>
+    <li>Para vender varios productos en la misma orden, pulse <span class="ui">+ Add line</span> y repita.</li>
+  </ol>
+
+  <figure><img src="img/sales-order-form-filled.png"><figcaption>Orden con cliente seleccionado y una línea: el precio unitario (3000) se cargó solo y el total muestra Bs. 3,000.</figcaption></figure>
+
+  <h4>Descuento y notas</h4>
+  <p>Opcionalmente ingrese un <span class="ui">Discount Amount (Bs.)</span> (descuento en bolivianos sobre el total) y un texto en <span class="ui">Notes</span>. Al aplicar descuento, el pie de la tabla muestra <i>Subtotal</i>, <i>Discount</i> y <i>Total</i>.</p>
+
+  <ol class="steps">
+    <li>Revise el <span class="ui">Total</span> al pie de la tabla.</li>
+    <li>Pulse <span class="ui">Create Sales Order</span> para guardar. La orden se crea en estado <span class="badge b-draft">DRAFT</span> (borrador).</li>
+    <li>Si desea descartar, use <span class="ui">Cancel</span>.</li>
+  </ol>
+  <div class="note"><b>Importes</b> Todos los precios se manejan en bolivianos (Bs.). El IVA (13%) y el IT (3%) se calculan al momento de emitir la factura.</div>
+
+  <h3>6.3 Ciclo de vida de una orden</h3>
+  <p>Una orden avanza por varios estados. En la lista de órdenes, cada fila muestra el botón de la acción disponible según su estado:</p>
+  <div class="flow">
+    <span class="step-box">DRAFT</span><span class="arrow">→</span>
+    <span class="step-box">CONFIRMED</span><span class="arrow">→</span>
+    <span class="step-box">SHIPPED</span><span class="arrow">→</span>
+    <span class="step-box">COMPLETED</span>
+  </div>
+  <table class="fields">
+    <tr><th>Estado</th><th>Acción / significado</th></tr>
+    <tr><td><span class="badge b-draft">DRAFT</span></td><td>Borrador. Puede <span class="ui">Edit</span> (editar) o <span class="ui">Confirm</span> (confirmar). Al confirmar se reserva el stock.</td></tr>
+    <tr><td><span class="badge b-conf">CONFIRMED</span></td><td>Confirmada. Ya se puede <span class="ui">Ship</span> (despachar) y emitir factura.</td></tr>
+    <tr><td><span class="badge b-ship">SHIPPED</span></td><td>Despachada: el stock se descontó. Pendiente de <span class="ui">Complete</span> (completar).</td></tr>
+    <tr><td><span class="badge b-done">COMPLETED</span></td><td>Finalizada. Si corresponde, admite <span class="ui">Return</span> (devolución), que repone stock y genera nota de crédito.</td></tr>
+    <tr><td><span class="badge b-canc">CANCELLED</span></td><td>Anulada. Disponible mientras la orden está en DRAFT o CONFIRMED.</td></tr>
+  </table>
+  <div class="tip"><b>Editar</b> Solo se puede editar una orden mientras está en <span class="badge b-draft">DRAFT</span> o <span class="badge b-conf">CONFIRMED</span> y aún no tiene factura emitida.</div>
+
+  <h3>6.4 Emitir una factura</h3>
+  <ol class="steps">
+    <li>En la lista de órdenes, ubique una orden confirmada (o posterior) y pulse <span class="ui">Issue</span> en la columna <span class="ui">Invoice</span>.</li>
+    <li>En la ventana <span class="ui">Fatura Oluştur / Issue invoice</span>, ingrese el <span class="ui">NIT / CI</span> del cliente (opcional) y, si desea, una nota.</li>
+    <li>El sistema muestra el desglose: <i>Subtotal neto (sin IVA)</i>, <i>IVA 13% (incluido)</i>, <i>IT 3% (sobre neto)</i> y el <i>Total</i>.</li>
+    <li>Pulse <span class="ui">Issue Factura</span>. La orden quedará marcada como <span class="ui">Invoiced</span>.</li>
+  </ol>
+
+  <h3>6.5 Registrar el cobro</h3>
+  <ol class="steps">
+    <li>Una vez facturada y aún sin pagar, la orden muestra el botón <span class="ui">Collect</span>.</li>
+    <li>En <span class="ui">Collect Payment</span> indique la <span class="ui">Payment Date</span> (fecha de pago).</li>
+    <li>En <span class="ui">Received Into</span> elija la cuenta de destino: <code>1102 — Bancos</code> o <code>1101 — Caja</code>.</li>
+    <li>Pulse <span class="ui">Record Payment</span>. El sistema contabiliza el asiento automáticamente (Debe Banco/Caja, Haber Cuentas por Cobrar) y la orden queda como <span class="ui">Paid</span>.</li>
+  </ol>
+</section>
+
+<!-- ============== 7. COMPRAS ============== -->
+<section>
+  <h2>7. Módulo Compras</h2>
+  <div class="module-head"><span class="path">Menú: Commerce › Purchase</span></div>
+  <p class="lead">Gestiona las compras a proveedores: desde el registro del proveedor hasta la recepción de la mercadería.</p>
+
+  <h3>7.1 Proveedores</h3>
+  <div class="module-head"><span class="path">Menú: Purchase › Suppliers</span></div>
+  <figure><img src="img/purchase-suppliers.png"><figcaption>Listado de proveedores.</figcaption></figure>
+  <p>Aquí se registran y administran los proveedores a quienes compra mercadería: razón social, datos de contacto e información de pago.</p>
+
+  <h3>7.2 Crear una Orden de Compra — paso a paso</h3>
+  <div class="module-head"><span class="path">Menú: Purchase › Purchase Orders</span></div>
+  <figure><img src="img/purchase-order-form.png"><figcaption>Formulario “New Purchase Order”. Proveedor y almacén son obligatorios (*).</figcaption></figure>
+  <ol class="steps">
+    <li>Abra <span class="ui">Purchase › Purchase Orders</span> y pulse <span class="ui">New PO</span>.</li>
+    <li>En <span class="ui">Supplier</span> seleccione el proveedor. <b>Obligatorio.</b></li>
+    <li>En <span class="ui">Warehouse</span> indique el almacén donde se recibirá la mercadería. <b>Obligatorio.</b></li>
+    <li>Opcionalmente fije la <span class="ui">Expected Date</span> (fecha esperada de entrega) y agregue <span class="ui">Notes</span>.</li>
+    <li>En <span class="ui">Order Lines</span> elija cada <span class="ui">Product</span>, la cantidad (<span class="ui">Qty</span>) y el <span class="ui">Unit Cost (Bs.)</span> (costo unitario). El <span class="ui">Total</span> y el <span class="ui">Subtotal</span> se calculan solos.</li>
+    <li>Use <span class="ui">+ Add line</span> para agregar más productos.</li>
+    <li>Pulse <span class="ui">Create Purchase Order</span> para guardar.</li>
+  </ol>
+  <figure><img src="img/purchase-orders.png"><figcaption>Listado de órdenes de compra y su estado.</figcaption></figure>
+  <div class="note"><b>Recepción</b> Tras confirmar la orden de compra, la entrada de mercadería al inventario se gestiona desde el módulo <b>Almacén › Arrivals</b> (capítulo 9).</div>
+</section>
+
+<!-- ============== 8. INVENTARIO ============== -->
+<section>
+  <h2>8. Módulo Inventario</h2>
+  <div class="module-head"><span class="path">Menú: Operations › Inventory</span></div>
+  <p class="lead">Permite ver y controlar las existencias en tiempo real, por producto, variante y ubicación.</p>
+
+  <h3>8.1 Vista de stock</h3>
+  <div class="module-head"><span class="path">Menú: Inventory › Stock Overview</span></div>
+  <figure><img src="img/inventory-stock.png"><figcaption>Existencias por producto, variante, almacén y ubicación.</figcaption></figure>
+  <table class="fields">
+    <tr><th>Columna</th><th>Significado</th></tr>
+    <tr><td>On Hand</td><td>Cantidad física en el almacén.</td></tr>
+    <tr><td>Reserved</td><td>Cantidad comprometida por órdenes confirmadas.</td></tr>
+    <tr><td>Available</td><td>Disponible real = On Hand − Reserved.</td></tr>
+    <tr><td>Adjust / History</td><td>Ajustar manualmente la cantidad o ver el historial de movimientos.</td></tr>
+  </table>
+  <div class="warn"><b>Atención a los negativos</b> Un valor en rojo (negativo) en <span class="ui">Available</span> indica sobreventa o falta de reposición; revise ese artículo.</div>
+
+  <h3>8.2 Bajo stock</h3>
+  <div class="module-head"><span class="path">Menú: Inventory › Low Stock</span></div>
+  <figure><img src="img/inventory-low-stock.png"><figcaption>Productos que alcanzaron o bajaron de su punto de reorden.</figcaption></figure>
+  <p>Lista los productos cuyo stock llegó al <span class="ui">Reorder Point</span>. Úsela para decidir qué reponer.</p>
+
+  <h3>8.3 Transacciones de inventario</h3>
+  <div class="module-head"><span class="path">Menú: Inventory › Transactions</span></div>
+  <figure><img src="img/inventory-transactions.png"><figcaption>Libro de movimientos de inventario (entradas, salidas, ajustes).</figcaption></figure>
+  <p>Registra cada movimiento de stock con su fecha, tipo, cantidad y motivo. Es la trazabilidad completa del inventario.</p>
+
+  <h3>8.4 Conteo de inventario</h3>
+  <div class="module-head"><span class="path">Menú: Inventory › Counting</span></div>
+  <figure><img src="img/inventory-counting.png"><figcaption>Conteos físicos de inventario.</figcaption></figure>
+  <p>Permite hacer recuentos físicos y comparar lo contado con lo registrado, ajustando las diferencias.</p>
+
+  <h3>8.5 Transferencias</h3>
+  <div class="module-head"><span class="path">Menú: Inventory › Transfers</span></div>
+  <figure><img src="img/inventory-transfers.png"><figcaption>Transferencias de stock entre ubicaciones o almacenes.</figcaption></figure>
+  <p>Mueve mercadería de un almacén o ubicación a otro, manteniendo el inventario sincronizado.</p>
+</section>
+
+<!-- ============== 9. ALMACÉN ============== -->
+<section>
+  <h2>9. Módulo Almacén (WMS)</h2>
+  <div class="module-head"><span class="path">Menú: Operations › Warehouse</span></div>
+  <p class="lead">Funciones de gestión de almacén inspiradas en Microsoft Dynamics 365: recepción, almacenamiento y preparación de pedidos por ubicación.</p>
+
+  <div class="flow">
+    <span class="step-box">Llegada</span><span class="arrow">→</span>
+    <span class="step-box">Ubicación (bin)</span><span class="arrow">→</span>
+    <span class="step-box">Ola</span><span class="arrow">→</span>
+    <span class="step-box">Trabajo (picking)</span><span class="arrow">→</span>
+    <span class="step-box">Despacho</span>
+  </div>
+
+  <h3>9.1 Tareas de trabajo</h3>
+  <div class="module-head"><span class="path">Menú: Warehouse › Work Tasks</span></div>
+  <figure><img src="img/warehouse-work.png"><figcaption>Tareas de trabajo de almacén (put-away y picking).</figcaption></figure>
+  <p>Lista las tareas asignadas al personal de almacén: guardar mercadería recibida o preparar pedidos para despacho.</p>
+
+  <h3>9.2 Olas</h3>
+  <div class="module-head"><span class="path">Menú: Warehouse › Waves</span></div>
+  <figure><img src="img/warehouse-waves.png"><figcaption>Olas de preparación de pedidos.</figcaption></figure>
+  <p>Agrupan varias órdenes para prepararlas juntas. Al liberar una ola se generan las tareas de picking.</p>
+
+  <h3>9.3 Llegadas</h3>
+  <div class="module-head"><span class="path">Menú: Warehouse › Arrivals</span></div>
+  <figure><img src="img/warehouse-arrival.png"><figcaption>Recepción de mercadería de las órdenes de compra.</figcaption></figure>
+  <p>Registra la llegada física de la mercadería comprada y genera el trabajo de almacenamiento.</p>
+
+  <h3>9.4 Ubicaciones</h3>
+  <div class="module-head"><span class="path">Menú: Warehouse › Locations</span></div>
+  <figure><img src="img/warehouse-locations.png"><figcaption>Estructura de ubicaciones del almacén.</figcaption></figure>
+  <p>Define la jerarquía física del almacén (sitio → almacén → zona → ubicación/bin), base para el control de stock por ubicación.</p>
+</section>
+
+<!-- ============== 10. FINANZAS ============== -->
+<section>
+  <h2>10. Módulo Finanzas</h2>
+  <div class="module-head"><span class="path">Menú: Finance</span></div>
+  <p class="lead">Contabilidad e impuestos: plan de cuentas, asientos, facturas, IVA e informes financieros, adaptados a la normativa boliviana.</p>
+
+  <h3>10.1 Plan de cuentas</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Chart of Accounts</span></div>
+  <figure><img src="img/finance-accounts.png"><figcaption>Plan de cuentas contable.</figcaption></figure>
+  <p>Es la lista de todas las cuentas contables (activo, pasivo, patrimonio, ingresos y gastos) con su código y nombre.</p>
+
+  <h3>10.2 Asientos contables</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Journal Entries</span></div>
+  <figure><img src="img/finance-journal.png"><figcaption>Registro de asientos contables.</figcaption></figure>
+  <p>Muestra todos los asientos (manuales y automáticos). Cada asiento debe estar cuadrado: total Debe = total Haber.</p>
+
+  <h3>10.3 Facturas</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Facturas</span></div>
+  <figure><img src="img/finance-facturas.png"><figcaption>Libro de ventas con todas las facturas emitidas (IVA 13% + IT 3%).</figcaption></figure>
+  <p>El <span class="ui">Libro de Ventas</span> reúne las facturas con su número, fecha, cliente, NIT/CI, subtotal, IVA, IT, total y estado. Las facturas se generan automáticamente al facturar una orden de venta (capítulo 6.4) y también desde el POS.</p>
+
+  <h3>10.4 Reporte de IVA</h3>
+  <div class="module-head"><span class="path">Menú: Finance › IVA Report</span></div>
+  <figure><img src="img/finance-iva-report.png"><figcaption>Reporte mensual de IVA con totales de subtotal neto, débito fiscal e IT.</figcaption></figure>
+  <ol class="steps">
+    <li>Seleccione el mes y el año en la parte superior.</li>
+    <li>El sistema resume <span class="ui">Subtotal Neto</span>, <span class="ui">IVA Débito Fiscal (13%)</span>, <span class="ui">IT (3% sobre neto)</span> y <span class="ui">Total Facturado</span>.</li>
+    <li>Pulse <span class="ui">Export PDF</span> para descargar el reporte para la declaración.</li>
+  </ol>
+
+  <h3>10.5 Estado de resultados (P&amp;L)</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Profit &amp; Loss</span></div>
+  <figure><img src="img/finance-p-and-l.png"><figcaption>Estado de resultados: ingresos, costos y utilidad.</figcaption></figure>
+  <p>Muestra los ingresos, costos y gastos del periodo para conocer la utilidad o pérdida.</p>
+
+  <h3>10.6 Balance general</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Balance Sheet</span></div>
+  <figure><img src="img/finance-balance-sheet.png"><figcaption>Balance general: activos, pasivos y patrimonio.</figcaption></figure>
+  <p>Presenta la situación financiera a una fecha: lo que la empresa tiene (activos) y lo que debe (pasivos y patrimonio).</p>
+
+  <h3>10.7 Antigüedad de saldos</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Aging Report</span></div>
+  <figure><img src="img/finance-aging.png"><figcaption>Antigüedad de las cuentas por cobrar.</figcaption></figure>
+  <p>Clasifica las deudas de los clientes por tramos de días vencidos, para priorizar la cobranza.</p>
+
+  <h3>10.8 Periodos contables</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Accounting Periods</span></div>
+  <figure><img src="img/finance-periods.png"><figcaption>Apertura y cierre de periodos contables.</figcaption></figure>
+  <p>Permite abrir y cerrar los periodos (meses) para controlar en qué fechas se pueden registrar movimientos.</p>
+
+  <h3>10.9 Conciliación bancaria</h3>
+  <div class="module-head"><span class="path">Menú: Finance › Bank Reconciliation</span></div>
+  <figure><img src="img/finance-bank-reconciliation.png"><figcaption>Conciliación de los movimientos del banco con la contabilidad.</figcaption></figure>
+  <p>Compara los movimientos del extracto bancario con los registrados en el sistema para detectar diferencias.</p>
+
+  <h3>10.10 Plantillas de plan de cuentas</h3>
+  <div class="module-head"><span class="path">Menú: Finance › COA Templates</span></div>
+  <figure><img src="img/finance-coa-templates.png"><figcaption>Plantillas predefinidas de plan de cuentas.</figcaption></figure>
+  <p>Plantillas base para inicializar rápidamente el plan de cuentas de una nueva empresa.</p>
+</section>
+
+<!-- ============== 11. REPORTES ============== -->
+<section>
+  <h2>11. Reportes y analítica</h2>
+  <div class="module-head"><span class="path">Menú: Management › Reports</span></div>
+  <figure><img src="img/reports.png"><figcaption>Reportes y analítica del negocio.</figcaption></figure>
+  <p class="lead">Inteligencia de negocio de un vistazo. Seleccione el rango de fechas (<span class="ui">from … to …</span>) y obtenga:</p>
+  <ul class="bul">
+    <li><b>Monthly Revenue</b>: evolución de los ingresos por mes.</li>
+    <li><b>Month-over-Month Growth</b>: crecimiento respecto al mes anterior.</li>
+    <li><b>Revenue by City</b>: ingresos por ciudad.</li>
+    <li>Y otros indicadores de márgenes y rotación.</li>
+  </ul>
+</section>
+
+<!-- ============== 12. IMPORTACIÓN ============== -->
+<section>
+  <h2>12. Importación de datos</h2>
+  <div class="module-head"><span class="path">Menú: Management › Import</span></div>
+  <p class="lead">Permite cargar información de forma masiva desde archivos Excel o CSV. Ideal para la puesta en marcha del sistema.</p>
+  <figure><img src="img/import.png"><figcaption>Asistente de importación en 4 pasos: Upload → Map → Validate → Execute.</figcaption></figure>
+  <ol class="steps">
+    <li>Elija qué desea importar con las pestañas: <span class="ui">Products</span>, <span class="ui">Customers</span>, <span class="ui">Opening Stock</span> (stock inicial) o <span class="ui">Historical Orders</span> (órdenes históricas).</li>
+    <li><b>Upload:</b> arrastre el archivo Excel/CSV a la zona indicada o pulse <span class="ui">Browse Files</span> para seleccionarlo.</li>
+    <li><b>Map:</b> relacione cada columna de su archivo con el campo correspondiente del sistema.</li>
+    <li><b>Validate:</b> el sistema revisa los datos y muestra errores o advertencias antes de cargar.</li>
+    <li><b>Execute:</b> confirme para ejecutar la importación. El resultado queda en <span class="ui">Import History</span>.</li>
+  </ol>
+  <div class="tip"><b>Recomendación</b> Importe primero <span class="ui">Products</span> y <span class="ui">Customers</span>, y solo después <span class="ui">Opening Stock</span> e <span class="ui">Historical Orders</span>, porque dependen de los anteriores.</div>
+</section>
+
+<!-- ============== 13. RRHH ============== -->
+<section>
+  <h2>13. Recursos Humanos</h2>
+  <div class="module-head"><span class="path">Menú: Management › HR</span></div>
+  <p class="lead">Administra los empleados, sus roles de acceso y la nómina.</p>
+
+  <h3>13.1 Empleados</h3>
+  <div class="module-head"><span class="path">Menú: HR › Employees</span></div>
+  <figure><img src="img/hr-employees.png"><figcaption>Listado de empleados y sus roles.</figcaption></figure>
+  <p>Registra a los empleados y les asigna un <b>rol</b> que define qué pueden hacer en el sistema (por ejemplo administrador o cajero).</p>
+
+  <h3>13.2 Nómina</h3>
+  <div class="module-head"><span class="path">Menú: HR › Payroll</span></div>
+  <figure><img src="img/hr-payroll.png"><figcaption>Gestión de la nómina (sueldos).</figcaption></figure>
+  <p>Permite calcular y registrar los pagos de sueldos del personal.</p>
+</section>
+
+<!-- ============== 14. AUDITORÍA ============== -->
+<section>
+  <h2>14. Registro de auditoría</h2>
+  <div class="module-head"><span class="path">Menú: Management › Audit Log</span></div>
+  <figure><img src="img/audit.png"><figcaption>Bitácora de acciones realizadas en el sistema.</figcaption></figure>
+  <p class="lead">Lleva el registro de quién hizo qué y cuándo: creaciones, cambios y eliminaciones. Es clave para el control interno y la trazabilidad.</p>
+</section>
+
+<!-- ============== 15. CONFIGURACIÓN ============== -->
+<section>
+  <h2>15. Configuración y asistente</h2>
+
+  <h3>15.1 Configuración</h3>
+  <div class="module-head"><span class="path">Menú: Management › Settings</span></div>
+  <figure><img src="img/settings.png"><figcaption>Configuración general del sistema y de la empresa.</figcaption></figure>
+  <p>Datos de la empresa, parámetros generales y preferencias del sistema.</p>
+
+  <h3>15.2 Asistente de instalación</h3>
+  <div class="module-head"><span class="path">Menú: Management › Setup Wizard</span></div>
+  <figure><img src="img/setup.png"><figcaption>Asistente guiado de puesta en marcha.</figcaption></figure>
+  <p>Guía paso a paso para configurar el sistema desde cero: datos de la empresa, almacenes, plan de cuentas y catálogos iniciales. Úselo la primera vez que ponga el sistema en funcionamiento.</p>
+</section>
+
+<!-- ============== 16. POS ============== -->
+<section>
+  <h2>16. Punto de Venta (POS)</h2>
+  <div class="module-head"><span class="path">Menú: Overview › POS Terminal</span></div>
+  <p class="lead">Terminal de caja pensado para la venta rápida en el mostrador: buscar productos, cobrar y emitir el comprobante.</p>
+
+  <h3>16.1 Iniciar sesión en el POS</h3>
+  <figure><img src="img/pos-login.png"><figcaption>Pantalla de acceso del POS para el cajero.</figcaption></figure>
+  <ol class="steps">
+    <li>Abra el POS e ingrese el correo y la contraseña del cajero.</li>
+    <li>Si la caja del día aún no está abierta, el sistema pedirá <b>abrir caja</b> indicando el monto inicial (<span class="ui">Opening Float</span>) y luego <span class="ui">Open Register</span>.</li>
+  </ol>
+
+  <h3>16.2 Realizar una venta</h3>
+  <figure><img src="img/pos-main.png"><figcaption>Pantalla principal del POS: catálogo a la izquierda, carrito y totales a la derecha.</figcaption></figure>
+  <ol class="steps">
+    <li>Busque el producto en <span class="ui">Search products or scan barcode…</span> o tóquelo en la grilla. Se agrega al carrito.</li>
+    <li>(Opcional) Asigne un cliente con <span class="ui">Walk-in Customer › Tap to select customer</span>; de lo contrario la venta es a cliente ocasional.</li>
+    <li>El panel derecho calcula automáticamente <span class="ui">Subtotal (sin IVA)</span>, <span class="ui">IVA 13%</span>, <span class="ui">IT 3%</span> y el <span class="ui">TOTAL</span>.</li>
+    <li>Pulse <span class="ui">COBRAR</span> para procesar el pago y generar el comprobante.</li>
+    <li>Use <span class="ui">Clear</span> para vaciar el carrito si necesita empezar de nuevo.</li>
+  </ol>
+
+  <h3>16.3 Cierre de caja (Reporte Z)</h3>
+  <p>Al terminar la jornada, use <span class="ui">Close Register</span> para cerrar la caja. El sistema genera el <b>Reporte Z</b> con el resumen de ventas y el arqueo del día.</p>
+</section>
+
+<!-- ============== 17. TIENDA EN LÍNEA ============== -->
+<section>
+  <h2>17. Tienda en línea</h2>
+  <p class="lead">La tienda en línea (storefront) es la cara pública del negocio, donde los clientes compran por internet. Las ventas y el stock se sincronizan automáticamente con el ERP.</p>
+
+  <h3>17.1 Catálogo</h3>
+  <figure><img src="img/store-shop.png"><figcaption>Catálogo público de productos.</figcaption></figure>
+  <p>Muestra los productos publicados con su foto, precio y disponibilidad. El cliente navega y añade artículos al carrito.</p>
+
+  <h3>17.2 Registro e inicio de sesión del cliente</h3>
+  <figure><img src="img/store-register.png"><figcaption>Registro de un nuevo cliente en la tienda.</figcaption></figure>
+  <p>El cliente crea su cuenta con sus datos. Estos clientes aparecen luego en <span class="ui">Sales › Customers</span> del ERP.</p>
+  <figure><img src="img/store-login.png"><figcaption>Inicio de sesión del cliente en la tienda.</figcaption></figure>
+
+  <h3>17.3 Carrito y pago</h3>
+  <figure><img src="img/store-cart.png"><figcaption>Carrito de compra del cliente.</figcaption></figure>
+  <ol class="steps">
+    <li>El cliente revisa los productos y cantidades en el <b>carrito</b>.</li>
+    <li>Continúa al <b>checkout</b> para confirmar la dirección de envío y el pago.</li>
+    <li>Al confirmar, se crea una <b>orden de venta</b> en el ERP y se actualiza el stock automáticamente.</li>
+  </ol>
+</section>
+
+<!-- ============== 18. GLOSARIO ============== -->
+<section>
+  <h2>18. Glosario</h2>
+  <dl class="glos">
+    <dt>Bs. (Boliviano)</dt><dd>Moneda con la que el sistema expresa todos los importes.</dd>
+    <dt>IVA 13%</dt><dd>Impuesto al Valor Agregado, incluido en el precio de venta.</dd>
+    <dt>IT 3%</dt><dd>Impuesto a las Transacciones, calculado sobre el monto neto.</dd>
+    <dt>NIT / CI</dt><dd>Número de Identificación Tributaria / Cédula de Identidad del cliente para la factura.</dd>
+    <dt>SKU</dt><dd>Código único que identifica a un producto.</dd>
+    <dt>Variante</dt><dd>Versión específica de un producto (talla, color), con stock propio.</dd>
+    <dt>Orden de Venta (Sales Order)</dt><dd>Documento que registra una venta a un cliente.</dd>
+    <dt>Orden de Compra (Purchase Order / PO)</dt><dd>Documento que registra una compra a un proveedor.</dd>
+    <dt>Walk-in</dt><dd>Cliente ocasional, no registrado, atendido en el momento.</dd>
+    <dt>On Hand / Reserved / Available</dt><dd>Stock físico / comprometido / disponible real.</dd>
+    <dt>Reorder Point</dt><dd>Nivel de stock a partir del cual el sistema sugiere reponer.</dd>
+    <dt>Ola (Wave)</dt><dd>Agrupación de órdenes para prepararlas juntas en el almacén.</dd>
+    <dt>Picking / Put-away</dt><dd>Preparar pedidos / guardar mercadería recibida.</dd>
+    <dt>Reporte Z</dt><dd>Resumen y arqueo de caja al cierre de la jornada en el POS.</dd>
+    <dt>LTV</dt><dd>Valor total histórico comprado por un cliente.</dd>
+  </dl>
+
+  <div class="note" style="margin-top:30px;">
+    <b>Fin del manual</b>
+    Quberty ERP — Manual de Usuario Final · Versión 2.0 · Junio 2026.<br>
+    Las imágenes corresponden a datos de demostración; los valores reales dependerán de la información de su empresa.
+  </div>
+</section>
+
+</body>
+</html>

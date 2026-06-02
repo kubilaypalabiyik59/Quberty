@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import Link from 'next/link';
-import { Plus, Search, Globe, EyeOff, Pencil, Package, X } from 'lucide-react';
+import { Plus, Search, Globe, EyeOff, Pencil, Package, X, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { FilterPanel, FilterPanelTrigger, applyFilters } from '@/components/ui/FilterPanel';
 import type { FilterState } from '@/components/ui/FilterPanel';
@@ -37,11 +37,30 @@ export default function ProductsPage() {
       api.get(`/products?limit=100&search=${search}`).then(r => r.data.data),
   });
 
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
   const togglePublish = useMutation({
     mutationFn: ({ id, is_published }: { id: string; is_published: boolean }) =>
       api.put(`/products/${id}`, { is_published }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['erp-products'] }),
   });
+
+  const bulk = useMutation({
+    mutationFn: (action: 'publish' | 'unpublish' | 'delete') =>
+      api.post('/products/bulk', { ids: Array.from(selected), action }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['erp-products'] });
+      setSelected(new Set());
+    },
+    onError: (err: any) => alert(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Bulk action failed'),
+  });
+
+  const toggleOne = (id: string) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   // Apply panel filters (handle is_published as boolean string comparison)
   const panelFiltered = applyFilters(
@@ -107,11 +126,42 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div data-testid="bulk-bar" className="flex items-center justify-between mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg">
+          <span className="text-sm font-medium text-blue-800">{selected.size} selected</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => bulk.mutate('publish')} disabled={bulk.isPending}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-green-700 bg-green-100 hover:bg-green-200 px-3 py-1.5 rounded-lg disabled:opacity-50">
+              <Globe className="h-3.5 w-3.5" /> Publish
+            </button>
+            <button onClick={() => bulk.mutate('unpublish')} disabled={bulk.isPending}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg disabled:opacity-50">
+              <EyeOff className="h-3.5 w-3.5" /> Unpublish
+            </button>
+            <button onClick={() => { if (confirm(`Delete ${selected.size} product(s)?`)) bulk.mutate('delete'); }} disabled={bulk.isPending}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-red-600 bg-red-100 hover:bg-red-200 px-3 py-1.5 rounded-lg disabled:opacity-50">
+              <Trash2 className="h-3.5 w-3.5" /> Delete
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 px-2 py-1.5">
+              <X className="h-3.5 w-3.5" /> Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
+              <th className="w-10 px-4 py-3">
+                <input type="checkbox" aria-label="Select all"
+                  checked={panelFiltered.length > 0 && panelFiltered.every((p: any) => selected.has(p.id))}
+                  onChange={e => setSelected(e.target.checked ? new Set(panelFiltered.map((p: any) => p.id)) : new Set())}
+                  className="rounded border-gray-300" />
+              </th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Product</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">SKU</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Category</th>
@@ -124,14 +174,14 @@ export default function ProductsPage() {
           <tbody className="divide-y divide-gray-100">
             {isLoading && Array.from({ length: 5 }).map((_, i) => (
               <tr key={i}>
-                {Array.from({ length: 7 }).map((_, j) => (
+                {Array.from({ length: 8 }).map((_, j) => (
                   <td key={j} className="px-4 py-3"><div className="h-4 bg-gray-100 rounded animate-pulse" /></td>
                 ))}
               </tr>
             ))}
             {!isLoading && panelFiltered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-16 text-center text-gray-400">
+                <td colSpan={8} className="px-4 py-16 text-center text-gray-400">
                   <Package className="h-10 w-10 mx-auto mb-2 text-gray-200" />
                   {activeFilterCount > 0 || search
                     ? <><p>No products match your filters.</p><button onClick={() => { setFilters({}); setSearch(''); }} className="mt-2 text-xs text-blue-600 hover:underline">Clear all filters</button></>
@@ -141,7 +191,12 @@ export default function ProductsPage() {
               </tr>
             )}
             {panelFiltered.map((p: any) => (
-              <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+              <tr key={p.id} className={`transition-colors ${selected.has(p.id) ? 'bg-blue-50/50' : 'hover:bg-gray-50'}`}>
+                <td className="px-4 py-3">
+                  <input type="checkbox" aria-label={`Select ${p.name}`}
+                    checked={selected.has(p.id)} onChange={() => toggleOne(p.id)}
+                    className="rounded border-gray-300" />
+                </td>
                 <td className="px-4 py-3">
                   <div className="font-medium text-gray-900">{p.name}</div>
                   {p.brand && <div className="text-xs text-gray-400">{p.brand}</div>}

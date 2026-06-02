@@ -150,10 +150,6 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 7, color: '#9ca3af' },
 });
 
-function fmt(n: number) {
-  return `Bs. ${Number(n).toFixed(2)}`;
-}
-
 function fmtDate(d: string | Date) {
   return new Date(d).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
@@ -166,6 +162,13 @@ interface LineItem {
   line_total: number;
   product: { name: string; sku: string };
   variant?: { sku_variant: string; attributes?: any } | null;
+}
+
+interface InvoiceMetadata {
+  vat_label?: string;
+  secondary_tax_name?: string;
+  invoice_label?: string;
+  currency_code?: string;
 }
 
 interface Factura {
@@ -181,6 +184,7 @@ interface Factura {
   notes?: string;
   source_type?: string;
   lines?: LineItem[];
+  invoice_metadata?: InvoiceMetadata | null;
 }
 
 function variantLabel(line: LineItem): string {
@@ -199,8 +203,17 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
   const total = Number(factura.total_amount);
   const lines = factura.lines ?? [];
 
+  const invoiceLabel      = factura.invoice_metadata?.invoice_label      ?? 'Factura';
+  const vatLabel          = factura.invoice_metadata?.vat_label          ?? 'IVA';
+  const secondaryTaxName  = factura.invoice_metadata?.secondary_tax_name ?? 'IT';
+  const currencyCode      = factura.invoice_metadata?.currency_code      ?? 'BOB';
+
+  function fmtAmt(n: number) {
+    return `${currencyCode} ${Number(n).toFixed(2)}`;
+  }
+
   return (
-    <Document title={`Factura-${String(factura.factura_number).padStart(6, '0')}`}>
+    <Document title={`${invoiceLabel}-${String(factura.factura_number).padStart(6, '0')}`}>
       <Page size="A4" style={styles.page}>
 
         {/* Header */}
@@ -210,7 +223,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
             <Text style={styles.companyTag}>Sistema de Gestión Empresarial — Bolivia</Text>
           </View>
           <View style={styles.facturaBox}>
-            <Text style={styles.facturaLabel}>FACTURA</Text>
+            <Text style={styles.facturaLabel}>{invoiceLabel.toUpperCase()}</Text>
             <Text style={styles.facturaNumber}>N° {String(factura.factura_number).padStart(6, '0')}</Text>
             <Text style={styles.facturaStatus}>{factura.status}</Text>
           </View>
@@ -270,7 +283,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
               <Text style={styles.tdText}>{line.quantity}</Text>
             </View>
             <View style={styles.colPrice}>
-              <Text style={styles.tdText}>{fmt(Number(line.unit_price))}</Text>
+              <Text style={styles.tdText}>{fmtAmt(Number(line.unit_price))}</Text>
             </View>
             <View style={styles.colDisc}>
               <Text style={styles.tdMono}>
@@ -278,7 +291,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
               </Text>
             </View>
             <View style={styles.colTotal}>
-              <Text style={styles.tdBold}>{fmt(Number(line.line_total))}</Text>
+              <Text style={styles.tdBold}>{fmtAmt(Number(line.line_total))}</Text>
             </View>
           </View>
         )) : (
@@ -290,9 +303,9 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
               <Text style={styles.tdText}>Venta de Mercaderías</Text>
             </View>
             <View style={styles.colQty}><Text style={styles.tdText}>1</Text></View>
-            <View style={styles.colPrice}><Text style={styles.tdText}>{fmt(total)}</Text></View>
+            <View style={styles.colPrice}><Text style={styles.tdText}>{fmtAmt(total)}</Text></View>
             <View style={styles.colDisc}><Text style={styles.tdMono}>—</Text></View>
-            <View style={styles.colTotal}><Text style={styles.tdBold}>{fmt(total)}</Text></View>
+            <View style={styles.colTotal}><Text style={styles.tdBold}>{fmtAmt(total)}</Text></View>
           </View>
         )}
 
@@ -300,20 +313,22 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
         <View style={styles.taxBlock}>
           <View style={styles.taxInner}>
             <View style={styles.taxRow}>
-              <Text style={styles.taxLabel}>Subtotal (sin IVA)</Text>
-              <Text style={styles.taxValue}>{fmt(subtotal)}</Text>
+              <Text style={styles.taxLabel}>Subtotal (sin {vatLabel})</Text>
+              <Text style={styles.taxValue}>{fmtAmt(subtotal)}</Text>
             </View>
             <View style={styles.taxRow}>
-              <Text style={styles.taxLabel}>IVA 13% (incluido en precio)</Text>
-              <Text style={styles.taxValue}>{fmt(iva)}</Text>
+              <Text style={styles.taxLabel}>{vatLabel} 13% (incluido en precio)</Text>
+              <Text style={styles.taxValue}>{fmtAmt(iva)}</Text>
             </View>
-            <View style={styles.taxRow}>
-              <Text style={styles.taxLabel}>IT 3% (Impuesto a las Transacciones)</Text>
-              <Text style={styles.taxValue}>{fmt(it)}</Text>
-            </View>
+            {secondaryTaxName !== '' && (
+              <View style={styles.taxRow}>
+                <Text style={styles.taxLabel}>{secondaryTaxName} 3% (Impuesto a las Transacciones)</Text>
+                <Text style={styles.taxValue}>{fmtAmt(it)}</Text>
+              </View>
+            )}
             <View style={styles.taxRowTotal}>
               <Text style={styles.taxTotalLabel}>TOTAL A PAGAR</Text>
-              <Text style={styles.taxTotalValue}>{fmt(total)}</Text>
+              <Text style={styles.taxTotalValue}>{fmtAmt(total)}</Text>
             </View>
           </View>
         </View>
@@ -330,7 +345,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
         {/* Footer */}
         <View style={styles.footer} fixed>
           <Text style={styles.footerText}>Quberty ERP • Sistema de Facturación Bolivia</Text>
-          <Text style={styles.footerText}>Factura N° {String(factura.factura_number).padStart(6, '0')} • {fmtDate(factura.invoice_date)}</Text>
+          <Text style={styles.footerText}>{invoiceLabel} N° {String(factura.factura_number).padStart(6, '0')} • {fmtDate(factura.invoice_date)}</Text>
         </View>
 
       </Page>

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "prisma": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "prisma",
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -15,14 +15,16 @@ export async function tenantMiddleware(c: AppContext, next: AppNext) {
 
   const tenant = await db.tenant.findUnique({
     where:  { id: tenantId, is_active: true },
-    select: { id: true, slug: true },
+    select: { id: true, slug: true, tax_config: true, currency_code: true },
   });
 
   if (!tenant) {
     throw new AppError('Tenant not found', 404);
   }
 
-  c.set('tenantId',   tenant.id);
-  c.set('tenantSlug', tenant.slug);
+  c.set('tenantId',     tenant.id);
+  c.set('tenantSlug',   tenant.slug);
+  c.set('taxConfig',    (tenant as any).tax_config ?? null);
+  c.set('currencyCode', (tenant as any).currency_code ?? 'USD');
   await next();
 }

@@ -12,11 +12,13 @@ export type AppUser = {
 };
 
 export type AppVariables = {
-  tenantId:   string;
-  tenantSlug: string;
-  user:       AppUser;
-  requestId:  string;
-  body:       Record<string, any>;
+  tenantId:     string;
+  tenantSlug:   string;
+  taxConfig:    any;
+  currencyCode: string;
+  user:         AppUser;
+  requestId:    string;
+  body:         Record<string, any>;
 };
 
 export type AppEnv = { Variables: AppVariables };

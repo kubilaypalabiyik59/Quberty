@@ -1,0 +1,35 @@
+{
+  "id": "turkey-tdhp",
+  "name": "Turkey TDHP (Tekdüzen Hesap Planı)",
+  "country": "TR",
+  "currency": "TRY",
+  "tax_config": {
+    "vat_rate": 0.20,
+    "vat_inclusive": false,
+    "vat_label": "KDV",
+    "secondary_tax_rate": 0,
+    "secondary_tax_name": "",
+    "invoice_label": "Fatura"
+  },
+  "accounts": [
+    { "code": "100", "name": "DÖNEN VARLIKLAR",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": null },
+    { "code": "100.01", "name": "Kasa",                   "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
+    { "code": "102", "name": "Bankalar",                  "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
+    { "code": "153", "name": "Ticari Mallar",             "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
+    { "code": "191", "name": "İndirilecek KDV",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
+    { "code": "120", "name": "Alıcılar (Ticari Alacaklar)","type": "ASSET",    "normal_balance": "DEBIT",  "parent_code": "100" },
+    { "code": "300", "name": "KISA VADELİ YÜKÜMLÜLÜKLER", "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": null },
+    { "code": "320", "name": "Satıcılar (Ticari Borçlar)", "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
+    { "code": "391", "name": "Hesaplanan KDV",            "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
+    { "code": "361", "name": "Ödenecek Sosyal Güvenlik",  "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
+    { "code": "500", "name": "ÖZKAYNAKLAR",               "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": null },
+    { "code": "501", "name": "Sermaye",                   "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "500" },
+    { "code": "590", "name": "Dönem Net Kârı",            "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "500" },
+    { "code": "600", "name": "BRÜT SATIŞLAR",             "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": null },
+    { "code": "600.01", "name": "Yurt İçi Satışlar",      "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": "600" },
+    { "code": "620", "name": "SATILAN MAL MALİYETİ",      "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
+    { "code": "760", "name": "PAZARLAMA GİDERLERİ",       "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
+    { "code": "770", "name": "GENEL YÖNETİM GİDERLERİ",  "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
+    { "code": "770.01", "name": "Personel Giderleri",     "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "770" }
+  ]
+}

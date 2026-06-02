@@ -2,7 +2,7 @@ import { Hono }    from 'hono';
 import { SalesService } from './sales.service';
 import { AppError } from '../../shared/errors/AppError';
 import { db }       from '../../infrastructure/database/client';
-import { TAX }      from '../../config/tax';
+import { TAX, resolveTax } from '../../config/tax';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate }    from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
@@ -176,7 +176,8 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
 
   const total = Number(order.total_amount);
-  const { subtotal, iva: ivaAmount, it: itAmount } = TAX.breakdown(total);
+  const tax = resolveTax(c.get('taxConfig'));
+  const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(total);
 
   // Pre-fetch GL accounts (outside transaction — read-only, no lock needed)
   const [cxcAccount, itExpAccount, ventasAccount, ivaDebitoAccount, itPayAccount] = await Promise.all([
@@ -314,7 +315,7 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
       return { order_id: order.id, product_id: l.product_id, variant_id: l.variant_id || null, quantity: Number(l.quantity), unit_price: Number(l.unit_price), discount_pct: l.discount_pct ?? 0, line_total: lineTotal, sort_order: i };
     });
     await db.salesOrderLine.createMany({ data: newLines });
-    const taxAmount = TAX.iva(subtotal);
+    const taxAmount = resolveTax(c.get('taxConfig')).vat(subtotal);
     await db.salesOrder.update({ where: { id: order.id }, data: { subtotal, tax_amount: taxAmount, total_amount: subtotal, ...(customer_id !== undefined && { customer_id }), ...(notes !== undefined && { notes }) } });
   } else {
     const data: any = {};
@@ -364,7 +365,8 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
   const { notes } = await c.req.json();
 
   const total = Number(order.total_amount);
-  const { subtotal, iva: ivaAmount, it: itAmount } = TAX.breakdown(total);
+  const taxReturn = resolveTax(c.get('taxConfig'));
+  const { subtotal, iva: ivaAmount, it: itAmount } = taxReturn.breakdown(total);
 
   const shippingAddr = order.shipping_address as any;
   const customerName = order.customer

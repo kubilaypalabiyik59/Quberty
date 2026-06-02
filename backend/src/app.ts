@@ -5,6 +5,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { timing }        from 'hono/timing';
 import { swaggerUI }     from '@hono/swagger-ui';
 import { randomUUID }    from 'crypto';
+import Redis             from 'ioredis';
 
 import { config }          from './config/env';
 import { errorHandler }    from './shared/middleware/errorHandler';
@@ -29,9 +30,11 @@ import reportRoutes         from './modules/reporting/report.routes';
 import importRoutes         from './modules/import/import.routes';
 import tenantRoutes         from './modules/tenants/tenant.routes';
 import variantTypeRoutes    from './modules/inventory/variant-types.routes';
+import uomRoutes            from './modules/inventory/uom.routes';
 import inventoryCountRoutes from './modules/inventory/inventory-count.routes';
 import financeRoutes        from './modules/finance/finance.routes';
 import posRoutes            from './modules/pos/pos.routes';
+import auditRoutes          from './modules/audit/audit.routes';
 
 const app = new Hono<AppEnv>();
 
@@ -75,26 +78,35 @@ app.use('*', async (c, next) => {
   }, 'HTTP');
 });
 
-// ── In-memory rate limiter ────────────────────────────────────────────────────
-const rateStore = new Map<string, { count: number; reset: number }>();
-const WINDOW_MS = 15 * 60 * 1000; // 15 min
+// ── Redis-backed rate limiter ─────────────────────────────────────────────────
+// Survives restarts and works across multiple server instances.
+// Falls open (allows request) if Redis is unavailable.
+const redis = new Redis(config.REDIS_URL, {
+  lazyConnect:         true,
+  enableOfflineQueue:  false,
+  maxRetriesPerRequest: 1,
+});
+redis.on('error', () => { /* suppress unhandled error events during reconnect */ });
+redis.connect().catch(() => {
+  logger.warn('Redis unavailable — rate limiting disabled until reconnected');
+});
+
+const WINDOW_SECONDS = 15 * 60; // 15 min
 
 function rateLimiter(max: number) {
   return async (c: any, next: any) => {
-    const key   = c.req.header('x-forwarded-for') ?? 'local';
-    const now   = Date.now();
-    const entry = rateStore.get(key);
-
-    if (!entry || entry.reset < now) {
-      rateStore.set(key, { count: 1, reset: now + WINDOW_MS });
-    } else {
-      entry.count++;
-      if (entry.count > max) {
+    try {
+      const key   = `rl:${c.req.header('x-forwarded-for') ?? 'local'}`;
+      const count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, WINDOW_SECONDS);
+      if (count > max) {
         return c.json(
           { success: false, error: { message: 'Too many requests. Please try again later.', code: 'RATE_LIMITED' } },
           429
         );
       }
+    } catch {
+      // Redis unavailable — fail open, don't block legitimate requests
     }
     await next();
   };
@@ -158,9 +170,11 @@ v1.route('/hr',               hrRoutes);
 v1.route('/reports',          reportRoutes);
 v1.route('/import',           importRoutes);
 v1.route('/variant-types',    variantTypeRoutes);
+v1.route('/uom',              uomRoutes);
 v1.route('/inventory-counts', inventoryCountRoutes);
 v1.route('/finance',          financeRoutes);
 v1.route('/pos',              posRoutes);
+v1.route('/audit',            auditRoutes);
 
 app.route('/api/v1', v1);
 

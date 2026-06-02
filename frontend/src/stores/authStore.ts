@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '@/lib/api';
+import { api, setAccessToken, getAccessToken } from '@/lib/api';
 
 interface User {
   id: string;
@@ -23,30 +23,32 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   login: async (email, password) => {
     const { data } = await api.post('/auth/login', { email, password });
-    const { access_token, refresh_token, user, tenant_id } = data.data;
-
-    localStorage.setItem('access_token', access_token);
-    localStorage.setItem('refresh_token', refresh_token);
+    const { access_token, user, tenant_id } = data.data;
+    // refresh_token is set as httpOnly cookie by the server — not stored here
+    setAccessToken(access_token);
     localStorage.setItem('tenant_id', tenant_id);
-
     set({ user });
   },
 
   logout: () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    setAccessToken(null);
     localStorage.removeItem('tenant_id');
     set({ user: null });
   },
 
   loadUser: async () => {
     try {
-      const token = localStorage.getItem('access_token');
-      if (!token) { set({ isLoading: false }); return; }
-
+      // No token in memory (e.g. page refresh) — attempt silent refresh via httpOnly cookie
+      if (!getAccessToken()) {
+        const tenantId = localStorage.getItem('tenant_id');
+        if (!tenantId) { set({ isLoading: false }); return; }
+        const { data: rd } = await api.post('/auth/refresh', {});
+        setAccessToken(rd.data.access_token);
+      }
       const { data } = await api.get('/auth/me');
       set({ user: data.data, isLoading: false });
     } catch {
+      setAccessToken(null);
       set({ user: null, isLoading: false });
     }
   },

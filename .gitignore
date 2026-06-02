@@ -48,6 +48,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code local (machine-specific permissions/paths)
+.claude/settings.local.json
+
 # Testing
 coverage/
 .nyc_output/

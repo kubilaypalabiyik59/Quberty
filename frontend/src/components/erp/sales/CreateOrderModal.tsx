@@ -18,7 +18,10 @@ export function CreateOrderModal({ onClose, onSuccess }: Props) {
 
   const { data: products } = useQuery({
     queryKey: ['products-list'],
-    queryFn: () => api.get('/products?limit=100').then((r) => r.data.data?.products ?? []),
+    queryFn: () => api.get('/products?limit=100').then((r) => {
+      const d = r.data.data;
+      return Array.isArray(d) ? d : (d?.products ?? []);
+    }),
   });
 
   const addLine = () => setLines([...lines, { product_id: '', quantity: 1, unit_price: 0 }]);

@@ -234,6 +234,52 @@ app.post('/arrival-journals/:id/post', requireRole('admin', 'store_manager'), as
   return ok(c, null);
 });
 
+// ── Warehouse Quick-Setup ─────────────────────────────────────────────────────
+// Creates a full warehouse structure in one call:
+// Site → Warehouse → 3 Zones (Receiving / Storage / Shipping) → 5 locations each
+
+app.post('/setup', requireRole('admin', 'store_manager'), async (c) => {
+  const { name = 'Main Warehouse', city = '', country = '', type = 'standard' } = await c.req.json();
+  const tenantId = c.get('tenantId');
+
+  const site = await db.site.create({
+    data: { tenant_id: tenantId, code: 'SITE-MAIN', name: `${name} Site`, city: city || 'Main City', country: country || 'XX' },
+  });
+
+  const warehouse = await db.warehouse.create({
+    data: { tenant_id: tenantId, site_id: site.id, code: 'WH-MAIN', name, type },
+  });
+
+  const zoneDefinitions = [
+    { code: 'RCV', name: 'Receiving',  zone_type: 'receiving' },
+    { code: 'STG', name: 'Storage',    zone_type: 'storage'  },
+    { code: 'SHP', name: 'Shipping',   zone_type: 'shipping' },
+  ];
+
+  for (const zd of zoneDefinitions) {
+    const zone = await db.warehouseZone.create({
+      data: { tenant_id: tenantId, warehouse_id: warehouse.id, ...zd },
+    });
+    for (let i = 1; i <= 5; i++) {
+      await db.warehouseLocation.create({
+        data: {
+          tenant_id:           tenantId,
+          zone_id:             zone.id,
+          code:                `${zd.code}-${String(i).padStart(3, '0')}`,
+          aisle:               zd.code,
+          rack:                '01',
+          shelf:               String(i).padStart(2, '0'),
+          location_type:       'bulk',
+          is_receive_location: zd.zone_type === 'receiving',
+          is_pick_location:    zd.zone_type === 'storage',
+        },
+      });
+    }
+  }
+
+  return created(c, { warehouse, zones: zoneDefinitions.length, locations: zoneDefinitions.length * 5 });
+});
+
 // ── Location Directives ───────────────────────────────────────────────────────
 
 app.get('/location-directives', requireRole('admin'), async (c) => {

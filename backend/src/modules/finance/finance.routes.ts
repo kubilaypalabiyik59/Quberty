@@ -2,7 +2,7 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
-import { TAX }      from '../../config/tax';
+import { TAX, resolveTax } from '../../config/tax';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message, paginated } from '../../shared/response';
 import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
@@ -102,6 +102,61 @@ app.post('/accounts/seed-default', requireRole('admin'), async (c) => {
   });
 
   return message(c, `Created ${accounts.length} default accounts (Bolivian PCG)`);
+});
+
+// ── CoA Templates ────────────────────────────────────────────────────────────
+
+// List available CoA templates
+app.get('/coa-templates', async (c) => {
+  const { COA_TEMPLATES } = await import('../../data/coa-templates/index');
+  return ok(c, COA_TEMPLATES.map(t => ({ id: t.id, name: t.name, country: t.country, currency: t.currency })));
+});
+
+// Seed CoA from a template (safe: skips existing account codes)
+app.post('/seed-coa', async (c) => {
+  const { template_id } = await c.req.json();
+  if (!template_id) throw new AppError('template_id is required');
+
+  const { getTemplate } = await import('../../data/coa-templates/index');
+  const template = getTemplate(template_id);
+  if (!template) throw new AppError(`Template "${template_id}" not found`, 404);
+
+  const tenantId = c.get('tenantId');
+  let created = 0;
+  let skipped = 0;
+
+  // Build code→id map for parent resolution
+  const codeToId = new Map<string, string>();
+
+  // First pass: get existing accounts
+  const existing = await db.account.findMany({
+    where:  { tenant_id: tenantId },
+    select: { id: true, code: true },
+  });
+  existing.forEach(a => codeToId.set(a.code, a.id));
+
+  // Second pass: create missing accounts in order
+  for (const acct of template.accounts) {
+    const exists = codeToId.has(acct.code);
+    if (exists) { skipped++; continue; }
+
+    const parentId = acct.parent_code ? (codeToId.get(acct.parent_code) ?? null) : null;
+
+    const newAcct = await db.account.create({
+      data: {
+        tenant_id:      tenantId,
+        code:           acct.code,
+        name:           acct.name,
+        type:           acct.type,
+        normal_balance: acct.normal_balance,
+        parent_id:      parentId,
+      },
+    });
+    codeToId.set(acct.code, newAcct.id);
+    created++;
+  }
+
+  return ok(c, { template: template.name, created, skipped });
 });
 
 // ── Journal Entries ───────────────────────────────────────────────────────────
@@ -243,7 +298,8 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
 
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
   const total = Number(total_amount);
-  const { subtotal, iva: ivaAmount, it: itAmount } = TAX.breakdown(total);
+  const tax = resolveTax(c.get('taxConfig'));
+  const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(total);
 
   const factura = await db.factura.create({
     data: {
@@ -259,6 +315,12 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
       it_amount:      itAmount,
       total_amount:   total,
       notes:          notes || null,
+      invoice_metadata: {
+        vat_label:          (c.get('taxConfig') as any)?.vat_label          ?? 'IVA',
+        secondary_tax_name: (c.get('taxConfig') as any)?.secondary_tax_name ?? 'IT',
+        invoice_label:      (c.get('taxConfig') as any)?.invoice_label       ?? 'Factura',
+        currency_code:      c.get('currencyCode') ?? 'BOB',
+      },
       created_by:     c.get('user').id,
     },
   });
