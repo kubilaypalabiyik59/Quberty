@@ -2,7 +2,7 @@
 
 > Living context document. Read this first in a new session.
 
-**Last updated**: 2026-08-15 (configuration foundation + tax engine + posting routes wired)
+**Last updated**: 2026-08-15 (config foundation + tax engine + frontend design system)
 
 ---
 
@@ -389,11 +389,86 @@ Steps 1–3 are one sitting and deliver most of the visible change; 4–6 are in
 
 Also Linear and Vercel's own UIs as calibration for how little decoration is needed.
 
-### Next decision point (frontend)
+### BUILT 2026-08-15 — steps 1–5 done, commit `7718613`
 
-Kubi to either (a) approve starting at step 1, or (b) review the reference repos first and
-pick a direction. Proposed approach once approved: apply to a vertical slice (dashboard +
-one list page) as a before/after, confirm direction, then roll out.
+Kubi approved and supplied three references: the
+[ui-ux-pro-max skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill), the
+[motion library](https://github.com/motiondivision/motion), and a 21st.dev corridor hero for
+sign-in. All three are in.
+
+**Note on the skill's advice:** its reasoning engine recommended *glassmorphism* with
+Fira Code. Rejected. Glassmorphism is exactly the decorated look this workstream exists to
+remove, and section 4's own agreed direction is restrained enterprise with high density. The
+palette direction (slate neutral, status colours) and the pre-delivery checklist were taken.
+
+| Item | State |
+|---|---|
+| 1. Wire the tokens | **Done.** `theme.extend` is populated; `bg-surface`, `text-fg-muted`, `border-border` are real. Palette collapsed to one neutral (slate), one accent, four semantics. |
+| 2. Real dark mode | **Done.** The `filter: invert()` hack is deleted. Two authored palettes; neither is pure white or pure black. |
+| 3. Fix the scales | **Done.** Two radii, two shadows, six type steps, no arbitrary values. |
+| 4. One Button/Card | **Done.** Button moved to CVA (already a dependency, previously unused). Card tokenised and tightened. |
+| 5. Strip decoration | **Done for StatCard** — seven effects and two visual languages reduced to label, number, delta. |
+| 6. Increase density | **Partial.** Card padding and row heights tightened; the list pages are untouched. |
+
+**Design decisions taken without asking** (the open questions in this section are now answered
+— override any of them by changing one token):
+
+- **Neutral: slate.** The code used `gray` *and* `slate`; slate is cooler and reads operational.
+- **Accent: deep teal.** Not blue or indigo, which is what every admin tool defaults to, and not
+  red — an ERP is full of status and an accent colliding with "danger" is a usability problem.
+- **Type: IBM Plex Sans + Mono**, replacing Inter. Drawn for enterprise software, real tabular
+  figures, and not the safe default.
+- **Storefront**: still shares the tokens, not yet given its own density scale.
+
+### Sign-in and the entry moment
+
+The slideshow split-screen is gone. Left half is a corridor of the store's own photography on
+two rails (`image-stream-hero.tsx`), over a **brand panel that stays dark in both themes** so
+the imagery reads — a deliberate exception to theming, documented at the `--panel` token.
+
+After a successful sign-in, `WelcomeCurtain.tsx` holds ~1.9s, names the product and the three
+things it manages, then navigates. It is a fixed hold with a determinate bar — not a progress
+claim — and it shortens under `prefers-reduced-motion`. The dashboard is prefetched during it.
+
+Screenshots of both themes: [docs/design/screenshots/](docs/design/screenshots/).
+
+### Defects found and fixed while doing this
+
+- **Inverted KPI trend colours** (known, section 4) — a rise rendered red, a fall green. Now
+  driven by a `polarity` prop, because rising *returns* or *cost* is bad news while rising
+  revenue is not. The sign is spelled out so colour is never the only signal.
+- **Decorative colour on data** — avatars and product swatches were coloured by list index, so a
+  record changed colour whenever the list reordered.
+- **`Button` silently ignored props** — callers passed `variant="outline"`, `variant="success"`
+  and `as="span"`; none existed. The `as` case rendered a real `<button>` nested inside a
+  `<label>`, which does not reliably trigger the file input.
+- **Sidebar background was an inline indigo gradient**, invisible to every theme mechanism —
+  which is why it stayed light after everything else went dark.
+- **Two theme systems.** The sidebar had its own copy of the theme logic writing the same
+  `localStorage` key as the new provider. One provider owns it now, with three states.
+
+### THE IMPORTANT CAVEAT — the legacy bridge
+
+`globals.css` ends with a **temporary bridge** mapping hardcoded palette classes onto dark
+tokens. It exists because deleting the invert hack removed dark mode from the ~80 screens that
+still hardcode colours: `text-gray-500` appears 374 times, `border-gray-200` 349, `bg-white` 176.
+
+**It is scaffolding, not the design.** Its removal condition is written in place: the block goes
+when a search for `bg-white`, `text-gray-*`, `border-gray-*` and `bg-slate-*` under `src/`
+returns nothing. Never write a new component against those classes.
+
+*Gotcha worth remembering:* the bridge must use flat descendant selectors (`.dark .bg-white`).
+Written nested (`.dark { .bg-white {} }`) it compiles to nothing, because this project does not
+load `postcss-nesting` — and it fails silently, leaving white cards on a dark ground.
+
+### Next steps (frontend)
+
+1. Migrate list pages and the remaining `components/erp/*` off the bridge, deleting bridge lines
+   as they become unused.
+2. Charts still hardcode colours (the revenue bar is a fixed green) — they need token-driven
+   series colours in both themes.
+3. Density pass on list views: row height, padding, font size.
+4. Decide whether the storefront gets its own density and type scale.
 
 ---
 
