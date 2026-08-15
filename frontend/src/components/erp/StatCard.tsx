@@ -1,167 +1,132 @@
 'use client';
 
-import { motion, useMotionValue, useTransform, animate, type Variants } from 'framer-motion';
 import Link from 'next/link';
-import { TrendingUp, TrendingDown, Minus, ExternalLink } from 'lucide-react';
+import { ArrowUpRight, TrendingDown, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useEffect, useRef } from 'react';
+
+/**
+ * A KPI tile.
+ *
+ * The previous version put seven treatments on one number: gradient background,
+ * dot-grid texture, corner glow orb, bottom accent line, count-up animation,
+ * spring hover lift and a text shadow — and shipped two visual languages in the
+ * same file (`DarkCard` maroon gradient, `LightCard` white with a red rail).
+ * All of it is gone. A metric tile is a label, a number, and how it moved.
+ *
+ * Two substantive fixes, not just visual:
+ *
+ * 1. **The trend colours were inverted.** Up rendered red, down rendered green.
+ *    On a revenue tile that is backwards, and it had been on the dashboard the
+ *    whole time.
+ * 2. **Direction is not always good.** Rising returns or rising cost are bad
+ *    news. `polarity` says which way is favourable, so the colour follows
+ *    meaning rather than sign. Colour is never the only signal — the arrow and
+ *    the sign carry it too.
+ */
+
+export type StatPolarity = 'up-is-good' | 'down-is-good' | 'neutral';
 
 interface StatCardProps {
   title: string;
   value: string | number;
   subtitle?: string;
+  /** Percentage change against the comparison period. */
   change?: number;
   trendLabel?: string;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   href?: string;
-  variant?: 'light' | 'dark';
+  /** @default 'up-is-good' */
+  polarity?: StatPolarity;
 }
 
-// Animated number counter
-function CountUp({ value, prefix = '', suffix = '' }: { value: number; prefix?: string; suffix?: string }) {
-  const motionVal = useMotionValue(0);
-  const rounded = useTransform(motionVal, (v) => `${prefix}${Math.round(v).toLocaleString()}${suffix}`);
-  const ref = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    const controls = animate(motionVal, value, { duration: 1.2, ease: 'easeOut' });
-    return controls.stop;
-  }, [value, motionVal]);
-
-  return <motion.span ref={ref}>{rounded}</motion.span>;
-}
-
-function DarkCard({ title, value, subtitle, change, trendLabel = 'vs last month', icon, href }: StatCardProps) {
-  const trendType = change === undefined ? 'neutral' : change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
-  const TrendIcon = trendType === 'up' ? TrendingUp : trendType === 'down' ? TrendingDown : Minus;
-  const trendColor = trendType === 'up' ? 'text-emerald-400' : trendType === 'down' ? 'text-red-400' : 'text-white/20';
-
-  // Try to extract a numeric value for count-up
-  const numericMatch = String(value).match(/[\d,]+\.?\d*/);
-  const numericValue = numericMatch ? parseFloat(numericMatch[0].replace(/,/g, '')) : null;
-  const prefix = String(value).split(/[\d,]/)[0] ?? '';
-  const suffix = String(value).split(/[\d,.]+/).slice(-1)[0] ?? '';
-  const isLoading = value === '—';
-
-  return (
-    <div className="h-full rounded-xl relative overflow-hidden group"
-      style={{
-        background: 'linear-gradient(135deg, #1c0606 0%, #2a0808 50%, #1a0505 100%)',
-        border: '1px solid rgba(180,30,30,0.25)',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,80,80,0.05)',
-      }}>
-
-      {/* dot-grid texture */}
-      <div className="absolute inset-0 pointer-events-none" style={{
-        backgroundImage: 'radial-gradient(rgba(255,80,80,0.07) 1px, transparent 1px)',
-        backgroundSize: '20px 20px',
-      }} />
-
-      {/* top-right glow orb */}
-      <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full pointer-events-none"
-        style={{ background: 'radial-gradient(circle, rgba(180,30,30,0.25) 0%, transparent 70%)' }} />
-
-      {/* content */}
-      <div className="relative p-5 h-full flex flex-col justify-between">
-        <div className="flex items-start justify-between mb-3">
-          <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-red-300/40">{title}</span>
-          <div className="flex items-center gap-1.5">
-            <div className="p-1.5 rounded-lg text-red-400/70" style={{ background: 'rgba(180,30,30,0.2)' }}>
-              {icon}
-            </div>
-            {href && <ExternalLink className="h-3 w-3 text-red-400/30 group-hover:text-red-400/60 transition-colors" />}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-3xl font-bold tracking-tight leading-none mb-1" style={{ color: '#fef3c7', textShadow: '0 0 24px rgba(251,191,36,0.15)' }}>
-            {isLoading ? '—' : (numericValue !== null
-              ? <><span className="text-amber-200/60 text-xl font-semibold">{prefix}</span><CountUp value={numericValue} /><span className="text-amber-200/60 text-xl font-semibold">{suffix}</span></>
-              : value
-            )}
-          </div>
-          {subtitle && <p className="text-[11px] text-red-300/35 mt-1">{subtitle}</p>}
-          {change !== undefined && !isLoading && (
-            <div className={cn('flex items-center gap-1 mt-2 text-xs font-medium', trendColor)}>
-              <TrendIcon className="h-3 w-3" />
-              {Math.abs(change).toFixed(1)}% {trendLabel}
-            </div>
-          )}
-        </div>
+export function StatCard({
+  title,
+  value,
+  subtitle,
+  change,
+  trendLabel = 'vs last month',
+  icon,
+  href,
+  polarity = 'up-is-good',
+}: StatCardProps) {
+  const body = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-caption font-medium text-fg-muted">{title}</span>
+        {icon ? <span className="text-fg-subtle [&>svg]:h-4 [&>svg]:w-4">{icon}</span> : null}
       </div>
 
-      {/* bottom accent line */}
-      <div className="absolute bottom-0 left-0 right-0 h-[1px]"
-        style={{ background: 'linear-gradient(90deg, transparent 0%, rgba(180,30,30,0.6) 50%, transparent 100%)' }} />
+      <div className="mt-2 flex items-baseline gap-2">
+        <span className="font-mono text-display font-semibold tracking-tight text-fg" data-numeric>
+          {value}
+        </span>
+        {href ? (
+          <ArrowUpRight
+            className="h-3.5 w-3.5 shrink-0 text-fg-subtle opacity-0 transition-opacity duration-quick group-hover:opacity-100"
+            aria-hidden
+          />
+        ) : null}
+      </div>
+
+      {subtitle ? <p className="mt-1 text-caption text-fg-subtle">{subtitle}</p> : null}
+
+      {change !== undefined ? <Delta change={change} polarity={polarity} label={trendLabel} /> : null}
+    </>
+  );
+
+  const shell = cn(
+    'group block rounded-surface border border-border bg-surface p-4',
+    href && 'transition-colors duration-quick hover:border-border-strong',
+  );
+
+  return href ? (
+    <Link href={href} className={cn(shell, 'cursor-pointer')}>
+      {body}
+    </Link>
+  ) : (
+    <div className={shell}>{body}</div>
+  );
+}
+
+function Delta({
+  change,
+  polarity,
+  label,
+}: {
+  change: number;
+  polarity: StatPolarity;
+  label: string;
+}) {
+  const rising = change > 0;
+  const flat = change === 0;
+
+  const favourable =
+    polarity === 'neutral' || flat
+      ? null
+      : polarity === 'up-is-good'
+        ? rising
+        : !rising;
+
+  const tone =
+    favourable === null
+      ? 'text-fg-subtle'
+      : favourable
+        ? 'text-success'
+        : 'text-danger';
+
+  const Icon = rising ? TrendingUp : TrendingDown;
+
+  return (
+    <div className="mt-2.5 flex items-center gap-1.5 text-caption">
+      {!flat ? <Icon className={cn('h-3.5 w-3.5', tone)} strokeWidth={2.5} aria-hidden /> : null}
+      {/* The sign is spelled out so the direction survives without colour. */}
+      <span className={cn('font-medium tabular-nums', tone)}>
+        {rising ? '+' : ''}
+        {change.toFixed(1)}%
+      </span>
+      <span className="text-fg-subtle">{label}</span>
     </div>
   );
 }
 
-function LightCard({ title, value, subtitle, change, trendLabel = 'vs last month', icon }: StatCardProps) {
-  const trendType = change === undefined ? 'neutral' : change > 0 ? 'up' : change < 0 ? 'down' : 'neutral';
-  const TrendIcon = trendType === 'up' ? TrendingUp : trendType === 'down' ? TrendingDown : Minus;
-  const trendColor = trendType === 'up' ? 'text-green-600' : trendType === 'down' ? 'text-red-600' : 'text-gray-400';
-
-  const numericMatch = String(value).match(/[\d,]+\.?\d*/);
-  const numericValue = numericMatch ? parseFloat(numericMatch[0].replace(/,/g, '')) : null;
-  const prefix = String(value).split(/[\d,]/)[0] ?? '';
-  const suffix = String(value).split(/[\d,.]+/).slice(-1)[0] ?? '';
-  const isLoading = value === '—';
-
-  return (
-    <div className="h-full rounded-xl bg-white relative overflow-hidden"
-      style={{
-        border: '1px solid rgba(220,38,38,0.15)',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-        borderLeft: '3px solid rgba(185,28,28,0.7)',
-      }}>
-      <div className="p-5 h-full flex flex-col justify-between">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</span>
-          <div className="p-2 rounded-lg bg-red-50 text-red-700/70">{icon}</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-gray-900 tracking-tight">
-            {isLoading ? '—' : (numericValue !== null
-              ? <><span className="text-gray-500 font-medium">{prefix}</span><CountUp value={numericValue} /><span className="text-gray-500 font-medium">{suffix}</span></>
-              : value
-            )}
-          </div>
-          {subtitle && <p className="text-xs text-gray-400 mt-1">{subtitle}</p>}
-          {change !== undefined && !isLoading && (
-            <div className={cn('flex items-center gap-1 mt-2 text-xs font-medium', trendColor)}>
-              <TrendIcon className="h-3 w-3" />
-              {Math.abs(change).toFixed(1)}% {trendLabel}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const darkHover = {
-  whileHover: { y: -4, boxShadow: '0 20px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(200,50,50,0.4)' },
-  transition: { type: 'spring' as const, stiffness: 380, damping: 22 },
-};
-const lightHover = {
-  whileHover: { y: -3, boxShadow: '0 8px 24px rgba(185,28,28,0.12)' },
-  transition: { type: 'spring' as const, stiffness: 380, damping: 22 },
-};
-
-export function StatCard(props: StatCardProps) {
-  const { href, variant = 'light' } = props;
-  const hoverProps = variant === 'dark' ? darkHover : lightHover;
-  const Card = variant === 'dark' ? DarkCard : LightCard;
-
-  const inner = <Card {...props} />;
-
-  if (href) {
-    return (
-      <motion.div {...hoverProps} className="cursor-pointer rounded-xl h-full">
-        <Link href={href} className="block h-full">{inner}</Link>
-      </motion.div>
-    );
-  }
-  return <motion.div {...hoverProps} className="rounded-xl h-full">{inner}</motion.div>;
-}
+export default StatCard;

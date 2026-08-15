@@ -7,6 +7,7 @@ import {
   Truck, BarChart3, Upload, UserCog, Settings, ChevronDown, Box, DollarSign,
   MessageCircle, Moon, SunMedium, Wand2, Monitor, ShieldCheck, AlertTriangle,
 } from 'lucide-react';
+import { useTheme } from '@/components/ThemeProvider';
 import { useState, useEffect, useRef } from 'react';
 
 const NAV = [
@@ -110,16 +111,9 @@ const SHORTCUTS = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [isDark,      setIsDark]      = useState(false);
+  const { theme, resolved, setTheme } = useTheme();
   const [helpOpen,    setHelpOpen]    = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
-
-  // Load dark mode preference on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('quberty-theme') === 'dark';
-    setIsDark(saved);
-    document.documentElement.classList.toggle('dark', saved);
-  }, []);
 
   // Keyboard shortcuts: G then D/P/S/F
   useEffect(() => {
@@ -154,12 +148,6 @@ export function Sidebar() {
     return () => document.removeEventListener('mousedown', handler);
   }, [helpOpen]);
 
-  const toggleDark = (dark: boolean) => {
-    setIsDark(dark);
-    document.documentElement.classList.toggle('dark', dark);
-    localStorage.setItem('quberty-theme', dark ? 'dark' : 'light');
-  };
-
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     '/products': true,
     '/sales': true,
@@ -172,12 +160,16 @@ export function Sidebar() {
 
   return (
     <aside
-      className="w-56 border-r border-indigo-100/80 flex flex-col shrink-0"
-      style={{ background: 'linear-gradient(160deg, #eef2ff 0%, #f8faff 45%, #f0f5ff 100%)' }}
+      className="w-56 border-r border-border/80 flex flex-col shrink-0"
+      /* Was a hardcoded indigo gradient in an inline style — invisible to every
+         theme mechanism, which is why the sidebar stayed light after the rest of
+         the product went dark. A flat token surface also stops the nav competing
+         with the content it frames. */
+      style={{ background: 'hsl(var(--surface))' }}
     >
       {/* Logo */}
       <div className="px-5 py-5 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-indigo-900 flex items-center justify-center shrink-0">
+        <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center shrink-0">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <rect x="2" y="2" width="5" height="5" rx="1" fill="white" />
             <rect x="9" y="2" width="5" height="5" rx="1" fill="white" opacity="0.6" />
@@ -185,14 +177,14 @@ export function Sidebar() {
             <rect x="9" y="9" width="5" height="5" rx="1" fill="white" />
           </svg>
         </div>
-        <span className="text-sm font-bold text-indigo-950 tracking-tight">Quberty</span>
+        <span className="text-sm font-bold text-accent-onSoft tracking-tight">Quberty</span>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-2 px-3 space-y-4">
         {NAV.map((section) => (
           <div key={section.label}>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300/90 px-2 mb-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle/90 px-2 mb-1">
               {section.label}
             </p>
             <ul className="space-y-0.5">
@@ -210,21 +202,21 @@ export function Sidebar() {
                           onClick={() => setExpanded((e) => ({ ...e, [item.href]: !e[item.href] }))}
                           className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
                             isActive
-                              ? 'bg-indigo-100/80 text-indigo-900 font-medium'
-                              : 'text-slate-500 hover:bg-indigo-50/80 hover:text-indigo-800'
+                              ? 'bg-accent-soft/80 text-accent-onSoft font-medium'
+                              : 'text-fg-muted hover:bg-accent-soft/80 hover:text-accent-onSoft'
                           }`}
                         >
                           <Icon className="h-4 w-4 shrink-0" />
                           <span className="flex-1 text-left">{item.label}</span>
-                          <ChevronDown className={`h-3 w-3 transition-transform text-indigo-300 ${isExpanded ? 'rotate-180' : ''}`} />
+                          <ChevronDown className={`h-3 w-3 transition-transform text-fg-subtle ${isExpanded ? 'rotate-180' : ''}`} />
                         </button>
                       ) : (
                         <Link
                           href={item.href}
                           className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
                             pathname === item.href
-                              ? 'bg-indigo-100/80 text-indigo-900 font-medium'
-                              : 'text-slate-500 hover:bg-indigo-50/80 hover:text-indigo-800'
+                              ? 'bg-accent-soft/80 text-accent-onSoft font-medium'
+                              : 'text-fg-muted hover:bg-accent-soft/80 hover:text-accent-onSoft'
                           }`}
                         >
                           <Icon className="h-4 w-4 shrink-0" />
@@ -234,15 +226,15 @@ export function Sidebar() {
                     </div>
 
                     {hasChildren && isExpanded && (
-                      <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-indigo-100 pl-3">
+                      <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-border pl-3">
                         {(item as any).children.map((child: any) => (
                           <li key={child.href}>
                             <Link
                               href={child.href}
                               className={`block px-2 py-1.5 text-xs rounded-md transition-colors ${
                                 pathname === child.href
-                                  ? 'text-indigo-900 font-semibold bg-indigo-100/80'
-                                  : 'text-slate-400 hover:text-indigo-800 hover:bg-indigo-50/80'
+                                  ? 'text-accent-onSoft font-semibold bg-accent-soft/80'
+                                  : 'text-fg-subtle hover:text-accent-onSoft hover:bg-accent-soft/80'
                               }`}
                             >
                               {child.label}
@@ -260,22 +252,22 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom icons */}
-      <div className="border-t border-indigo-100/60 p-3 flex items-center gap-1 relative">
+      <div className="border-t border-border/60 p-3 flex items-center gap-1 relative">
 
         {/* Help / shortcuts panel */}
         {helpOpen && (
-          <div ref={helpRef} className="absolute bottom-14 left-3 w-56 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4 space-y-3">
-            <p className="text-xs font-bold text-gray-700 uppercase tracking-widest">Keyboard Shortcuts</p>
+          <div ref={helpRef} className="absolute bottom-14 left-3 w-56 bg-surface border border-border rounded-xl shadow-xl z-50 p-4 space-y-3">
+            <p className="text-xs font-bold text-fg uppercase tracking-widest">Keyboard Shortcuts</p>
             <div className="space-y-1.5">
               {SHORTCUTS.map(s => (
                 <div key={s.key} className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-gray-500">{s.action}</span>
-                  <kbd className="text-[10px] bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5 font-mono text-gray-600 whitespace-nowrap">{s.key}</kbd>
+                  <span className="text-xs text-fg-muted">{s.action}</span>
+                  <kbd className="text-[10px] bg-surface-sunken border border-border rounded px-1.5 py-0.5 font-mono text-fg-muted whitespace-nowrap">{s.key}</kbd>
                 </div>
               ))}
             </div>
             <div className="border-t pt-2">
-              <p className="text-[10px] text-gray-400 text-center">Quberty ERP v2.0</p>
+              <p className="text-[10px] text-fg-subtle text-center">Quberty ERP v2.0</p>
             </div>
           </div>
         )}
@@ -283,26 +275,34 @@ export function Sidebar() {
         <button
           onClick={() => setHelpOpen(v => !v)}
           title="Keyboard shortcuts"
-          className={`p-2 rounded-lg transition-colors ${helpOpen ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
+          className={`p-2 rounded-lg transition-colors ${helpOpen ? 'bg-accent-soft/80 text-accent-onSoft' : 'text-fg-subtle hover:text-accent-onSoft hover:bg-accent-soft/60'}`}
         >
           <MessageCircle className="h-4 w-4" />
         </button>
 
-        <button
-          onClick={() => toggleDark(true)}
-          title="Dark mode"
-          className={`p-2 rounded-lg transition-colors ${isDark ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
-        >
-          <Moon className="h-4 w-4" />
-        </button>
-
-        <button
-          onClick={() => toggleDark(false)}
-          title="Light mode"
-          className={`p-2 rounded-lg transition-colors ${!isDark ? 'bg-indigo-100/80 text-indigo-700' : 'text-indigo-300 hover:text-indigo-700 hover:bg-indigo-100/60'}`}
-        >
-          <SunMedium className="h-4 w-4" />
-        </button>
+        {/* Three states, matching the sign-in screen: system has to be
+            reachable, or a user who picks light can never go back to following
+            their OS. */}
+        {([
+          ['light', 'Light mode', SunMedium],
+          ['system', 'Follow system', Monitor],
+          ['dark', 'Dark mode', Moon],
+        ] as const).map(([value, title, Icon]) => (
+          <button
+            key={value}
+            onClick={() => setTheme(value)}
+            title={title}
+            aria-label={title}
+            aria-pressed={theme === value}
+            className={`p-2 rounded-lg transition-colors cursor-pointer ${
+              theme === value
+                ? 'bg-accent-soft/80 text-accent-onSoft'
+                : 'text-fg-subtle hover:text-accent-onSoft hover:bg-accent-soft/60'
+            }`}
+          >
+            <Icon className="h-4 w-4" />
+          </button>
+        ))}
       </div>
     </aside>
   );

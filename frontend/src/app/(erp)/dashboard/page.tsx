@@ -12,31 +12,33 @@ function getInitials(name: string) {
   return name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 }
 
-const AVATAR_COLORS = [
-  'bg-blue-100 text-blue-700',
-  'bg-purple-100 text-purple-700',
-  'bg-amber-100 text-amber-700',
-  'bg-green-100 text-green-700',
-  'bg-pink-100 text-pink-700',
-];
+/**
+ * Avatars are a neutral chip, not a colour wheel. The previous version picked a
+ * hue by list index, so a customer's colour changed whenever the list
+ * reordered — decoration masquerading as data.
+ */
+const AVATAR_CLASS = 'bg-accent-soft text-accent-onSoft';
 
 /* ── sub-components ── */
 function KpiCard({
   label, value, change, href,
 }: { label: string; value: string | number; change?: number; href?: string }) {
+  // Was inverted: `up` rendered red and `down` rendered green, which is
+  // backwards for revenue. Rising revenue is favourable; the colour follows
+  // meaning, and the sign carries it too so colour is never the only signal.
   const up = change !== undefined && change > 0;
   const down = change !== undefined && change < 0;
 
   const inner = (
     <div className="flex-1">
-      <p className="text-sm text-gray-500 mb-1">{label}</p>
-      <p className="text-3xl font-bold text-gray-900 tracking-tight">{value}</p>
+      <p className="text-caption text-fg-muted mb-1">{label}</p>
+      <p className="font-mono text-display font-semibold text-fg tracking-tight" data-numeric>{value}</p>
       {change !== undefined && (
         <div className={`flex items-center gap-1 mt-1.5 text-xs font-semibold px-2 py-0.5 rounded-full w-fit
-          ${up ? 'bg-red-50 text-red-500' : down ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
+          ${up ? 'bg-success-soft text-success' : down ? 'bg-danger-soft text-danger' : 'bg-surface-sunken text-fg-subtle'}`}>
           {up ? <TrendingUp className="h-3 w-3" /> : down ? <TrendingDown className="h-3 w-3" /> : null}
-          {Math.abs(change).toFixed(1)}%
-          <span className="font-normal text-gray-400 ml-0.5">vs last month</span>
+          {up ? '+' : down ? '−' : ''}{Math.abs(change).toFixed(1)}%
+          <span className="font-normal text-fg-subtle ml-0.5">vs last month</span>
         </div>
       )}
     </div>
@@ -47,12 +49,13 @@ function KpiCard({
 }
 
 function ProductRow({ product, index }: { product: any; index: number }) {
-  const colors = ['bg-green-200', 'bg-blue-200', 'bg-orange-200', 'bg-pink-200', 'bg-purple-200'];
+  // Product swatches were also index-coloured; a single neutral reads cleaner.
+  const swatch = 'bg-surface-sunken';
   const revenue = Number(product.revenue ?? product.total_revenue ?? 0);
   return (
     <div className="flex items-center gap-3 py-2.5">
       {/* color swatch / image */}
-      <div className={`w-10 h-10 rounded-xl ${colors[index % colors.length]} flex items-center justify-center shrink-0 overflow-hidden`}>
+      <div className={`w-10 h-10 rounded-xl ${swatch} flex items-center justify-center shrink-0 overflow-hidden`}>
         {product.image_url ? (
           <img src={product.image_url} alt={product.name} className="w-full h-full object-cover" />
         ) : (
@@ -79,7 +82,7 @@ function CommentRow({ order, index }: { order: any; index: number }) {
   const name = order.customer
     ? `${order.customer.first_name} ${order.customer.last_name}`
     : 'Walk-in';
-  const colorClass = AVATAR_COLORS[index % AVATAR_COLORS.length];
+  const colorClass = AVATAR_CLASS;
   return (
     <div className="flex gap-3 py-2.5">
       <div className={`w-8 h-8 rounded-full ${colorClass} flex items-center justify-center text-xs font-bold shrink-0`}>
@@ -166,14 +169,14 @@ export default function DashboardPage() {
               value={isLoading ? '—' : (summary?.customers?.total ?? 0).toLocaleString()}
               href="/sales/customers"
             />
-            <div className="w-px bg-gray-100" />
+            <div className="w-px bg-border" />
             <KpiCard
               label="Revenue"
               value={isLoading ? '—' : `${((summary?.revenue?.this_month ?? 0) / 1000).toFixed(0)}k`}
               change={revenueGrowth}
               href="/finance/p-and-l"
             />
-            <div className="w-px bg-gray-100" />
+            <div className="w-px bg-border" />
             <KpiCard
               label="Orders"
               value={isLoading ? '—' : (summary?.orders?.this_month ?? 0)}
@@ -192,7 +195,7 @@ export default function DashboardPage() {
               <div className="flex items-center gap-3">
                 {avatarCustomers.map((name, i) => (
                   <div key={i} className="flex flex-col items-center gap-1">
-                    <div className={`w-11 h-11 rounded-full ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-xs font-bold`}>
+                    <div className={`w-11 h-11 rounded-full ${AVATAR_CLASS} flex items-center justify-center text-xs font-bold`}>
                       {getInitials(name)}
                     </div>
                     <span className="text-[10px] text-gray-500">{name.split(' ')[0]}</span>

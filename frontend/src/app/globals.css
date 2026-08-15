@@ -2,31 +2,268 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Dark mode — CSS filter invert trick (no per-component changes needed) */
-html.dark body {
-  filter: invert(1) hue-rotate(180deg);
-  background: #111;
-}
-html.dark img,
-html.dark video,
-html.dark [data-no-invert] {
-  filter: invert(1) hue-rotate(180deg);
-}
+/* ═══════════════════════════════════════════════════════════════════════════
+   QUBERTY DESIGN TOKENS
+
+   Two complete themes, both authored. Neither is "white" or "black":
+
+     Light  a cool off-white ground with white surfaces lifted on top of it.
+            Pure white as the page ground makes every card disappear into it,
+            which is why the old UI needed borders and shadows everywhere.
+     Dark   a deep desaturated slate, never #000. Pure black kills elevation —
+            you cannot lift a surface above a ground that absorbs all light —
+            and it makes text edges vibrate on OLED.
+
+   Both are defined as HSL channel triplets so Tailwind can apply opacity
+   through `hsl(var(--token) / <alpha-value>)`.
+
+   WHAT THIS REPLACES
+   The previous dark mode was `html.dark body { filter: invert(1)
+   hue-rotate(180deg) }`. One line, no per-component work, and the single
+   biggest reason the product read as amateur: it inverts brand colour, turns
+   shadows into glows, wrecks every chart, and forces a counter-invert on every
+   image. It is gone. Dark mode is now a real second palette.
+
+   PALETTE DECISIONS — override these, not the components
+   Neutral   slate. The old code mixed `gray` AND `slate`, two different
+             neutrals in one product. Slate won: it is cooler, and warm greys
+             read as consumer rather than operational.
+   Accent    deep teal. Deliberately NOT blue or indigo — those are the
+             default for every admin tool — and deliberately not red, because
+             an ERP is full of status and an accent that collides with
+             "danger" is a genuine usability problem, not just a taste one.
+             Change --accent here and the whole product follows.
+   Semantic  success / warning / danger / info are separate from the accent and
+             never used for decoration.
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --border: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    /* ── ground and surfaces ─────────────────────────────────────────── */
+    --bg:            210 22% 97%;
+    --surface:         0  0% 100%;
+    --surface-raised:  0  0% 100%;
+    --surface-sunken: 212 20% 94%;
+
+    /* ── text ────────────────────────────────────────────────────────── */
+    --fg:        215 32% 13%;
+    --fg-muted:  215 15% 40%;
+    --fg-subtle: 215 12% 55%;
+    --fg-onDark:   0  0% 100%;
+
+    /* ── lines ───────────────────────────────────────────────────────── */
+    --border:        214 20% 89%;
+    --border-strong: 214 17% 78%;
+
+    /* ── brand ───────────────────────────────────────────────────────── */
+    --accent:        184 72% 26%;
+    --accent-hover:  184 74% 21%;
+    --accent-fg:       0  0% 100%;
+    --accent-soft:   184 44% 93%;
+    --accent-onSoft: 184 68% 22%;
+
+    /* ── semantic. Never decorative. ─────────────────────────────────── */
+    --success:      152 55% 30%;
+    --success-soft: 150 45% 93%;
+    --warning:       35 78% 34%;
+    --warning-soft:  40 80% 93%;
+    --danger:       358 62% 43%;
+    --danger-soft:  358 70% 95%;
+    --info:         212 62% 40%;
+    --info-soft:    212 65% 94%;
+
+    /* ── focus ───────────────────────────────────────────────────────── */
+    --ring: 184 72% 32%;
+
+    /* ── brand panel ─────────────────────────────────────────────────────
+       Deliberately dark in BOTH themes. The sign-in panel is the one place
+       the product shows photography, and store imagery on a pale ground
+       washes out — it needs a dark surround to read. Keeping it fixed also
+       means the brand looks the same to every user on the way in, whichever
+       theme they run. Everything past the sign-in screen follows the theme. */
+    --panel:        216 38% 9%;
+    --panel-fg:     210 22% 95%;
+    --panel-muted:  213 15% 68%;
+
+    /* ── shape. Two radii, not four. ─────────────────────────────────── */
+    --radius-control: 0.375rem; /* buttons, inputs, chips */
+    --radius-surface: 0.625rem; /* cards, panels, dialogs */
+  }
+
+  .dark {
+    --bg:            215 30% 8%;
+    --surface:       215 26% 11%;
+    --surface-raised:215 24% 14%;
+    --surface-sunken:216 32% 6%;
+
+    --fg:        210 24% 93%;
+    --fg-muted:  214 14% 66%;
+    --fg-subtle: 215 12% 50%;
+    --fg-onDark:   0  0% 100%;
+
+    --border:        215 18% 21%;
+    --border-strong: 215 15% 33%;
+
+    /* The accent lightens on a dark ground rather than staying put — the same
+       hex cannot hold contrast against both grounds. */
+    --accent:        176 52% 52%;
+    --accent-hover:  176 58% 62%;
+    --accent-fg:     200 45% 10%;
+    --accent-soft:   184 38% 16%;
+    --accent-onSoft: 176 50% 72%;
+
+    --success:      150 48% 58%;
+    --success-soft: 152 30% 15%;
+    --warning:       40 72% 62%;
+    --warning-soft:  38 40% 15%;
+    --danger:         2 70% 66%;
+    --danger-soft:   358 40% 16%;
+    --info:         210 70% 68%;
+    --info-soft:    212 40% 17%;
+
+    --ring: 176 55% 55%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    /* Stops the theme flip flashing the wrong ground for a frame. */
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: hsl(var(--bg));
+    color: hsl(var(--fg));
+    font-feature-settings: 'cv05' 1, 'ss01' 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Digits in tables, totals and metrics must line up in columns. */
+  table, .tabular, [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* One visible focus treatment everywhere, never removed. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: var(--radius-control);
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.22);
+  }
+
+  /* Scrollbars that belong to the theme instead of the OS default. */
+  * {
+    scrollbar-color: hsl(var(--border-strong)) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: hsl(var(--fg-subtle)); background-clip: content-box; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TEMPORARY: LEGACY PALETTE BRIDGE — delete this block as migration finishes
+
+   Deleting the `filter: invert()` hack is correct, but it was the only thing
+   giving the other 80-odd screens a dark mode. Those screens still hardcode
+   palette classes rather than tokens: `text-gray-500` appears 379 times,
+   `border-gray-200` 351, `bg-white` 176.
+
+   Without a bridge, removing the hack would leave white cards sitting on a dark
+   ground everywhere outside the screens migrated so far. So this maps the
+   hardcoded classes onto the real dark tokens, purely so the product stays
+   usable while components are moved over one at a time.
+
+   THIS IS SCAFFOLDING, NOT THE DESIGN.
+   - Never write a new component against these classes.
+   - Every migrated component deletes lines from here by making them unused.
+   - The block is finished when a search for `bg-white`, `text-gray-*`,
+     `border-gray-*` and `bg-slate-*` in src/ returns nothing, at which point
+     this whole section goes.
+
+   Only the classes the census actually found are listed. Adding more would be
+   inventing surface area to maintain.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@layer utilities {
+  /* Flat descendant selectors, NOT `.dark { .bg-white {} }`. Nested CSS
+     needs the postcss-nesting plugin, which this project does not load, so
+     the nested form compiled to nothing and dark mode silently kept white
+     cards on a dark ground. */
+  .dark .bg-white { background-color: hsl(var(--surface)); }
+  .dark .bg-gray-50 { background-color: hsl(var(--surface-sunken)); }
+  .dark .bg-gray-100 { background-color: hsl(var(--surface-raised)); }
+  .dark .bg-gray-200 { background-color: hsl(var(--border)); }
+  .dark .bg-gray-700 { background-color: hsl(var(--surface-raised)); }
+  .dark .bg-gray-800 { background-color: hsl(var(--surface)); }
+  .dark .bg-gray-900 { background-color: hsl(var(--surface-sunken)); }
+  .dark .text-gray-200 { color: hsl(var(--fg)); }
+  .dark .text-gray-300 { color: hsl(var(--fg-subtle)); }
+  .dark .text-gray-400 { color: hsl(var(--fg-subtle)); }
+  .dark .text-gray-500 { color: hsl(var(--fg-muted)); }
+  .dark .text-gray-600 { color: hsl(var(--fg-muted)); }
+  .dark .text-gray-700 { color: hsl(var(--fg)); }
+  .dark .text-gray-800 { color: hsl(var(--fg)); }
+  .dark .text-gray-900 { color: hsl(var(--fg)); }
+  .dark .border-gray-50 { border-color: hsl(var(--border)); }
+  .dark .border-gray-100 { border-color: hsl(var(--border)); }
+  .dark .border-gray-200 { border-color: hsl(var(--border)); }
+  .dark .border-gray-300 { border-color: hsl(var(--border-strong)); }
+  .dark .border-gray-400 { border-color: hsl(var(--border-strong)); }
+  .dark .border-gray-800 { border-color: hsl(var(--border-strong)); }
+  .dark .divide-gray-50 > * + * { border-color: hsl(var(--border)); }
+  .dark .divide-gray-100 > * + * { border-color: hsl(var(--border)); }
+  .dark .ring-gray-200 { --tw-ring-color: hsl(var(--border)); }
+  .dark .hover\:bg-gray-50:hover { background-color: hsl(var(--surface-raised)); }
+  .dark .hover\:bg-gray-100:hover { background-color: hsl(var(--surface-raised)); }
+  .dark .bg-slate-50 { background-color: hsl(var(--surface-sunken)); }
+  .dark .bg-slate-100 { background-color: hsl(var(--surface-raised)); }
+  .dark .bg-slate-200 { background-color: hsl(var(--border)); }
+  .dark .bg-slate-700 { background-color: hsl(var(--surface-raised)); }
+  .dark .bg-slate-800 { background-color: hsl(var(--surface)); }
+  .dark .bg-slate-900 { background-color: hsl(var(--surface-sunken)); }
+  .dark .text-slate-200 { color: hsl(var(--fg)); }
+  .dark .text-slate-300 { color: hsl(var(--fg-subtle)); }
+  .dark .text-slate-400 { color: hsl(var(--fg-subtle)); }
+  .dark .text-slate-500 { color: hsl(var(--fg-muted)); }
+  .dark .text-slate-600 { color: hsl(var(--fg-muted)); }
+  .dark .text-slate-700 { color: hsl(var(--fg)); }
+  .dark .text-slate-800 { color: hsl(var(--fg)); }
+  .dark .text-slate-900 { color: hsl(var(--fg)); }
+  .dark .border-slate-50 { border-color: hsl(var(--border)); }
+  .dark .border-slate-100 { border-color: hsl(var(--border)); }
+  .dark .border-slate-200 { border-color: hsl(var(--border)); }
+  .dark .border-slate-300 { border-color: hsl(var(--border-strong)); }
+  .dark .border-slate-400 { border-color: hsl(var(--border-strong)); }
+  .dark .border-slate-800 { border-color: hsl(var(--border-strong)); }
+  .dark .divide-slate-50 > * + * { border-color: hsl(var(--border)); }
+  .dark .divide-slate-100 > * + * { border-color: hsl(var(--border)); }
+  .dark .ring-slate-200 { --tw-ring-color: hsl(var(--border)); }
+  .dark .hover\:bg-slate-50:hover { background-color: hsl(var(--surface-raised)); }
+  .dark .hover\:bg-slate-100:hover { background-color: hsl(var(--surface-raised)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

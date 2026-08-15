@@ -3,7 +3,8 @@
 import { useState, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Button } from '@/components/ui/Button';
+import { Button, buttonVariants } from '@/components/ui/Button';
+import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/Badge';
 import { Upload, CheckCircle, AlertCircle, ArrowRight } from 'lucide-react';
 
@@ -133,8 +134,15 @@ export default function ImportPage() {
               id="file-input"
               onChange={(e) => e.target.files?.[0] && uploadMutation.mutate(e.target.files[0])}
             />
-            <label htmlFor="file-input">
-              <Button className="mt-4" variant="outline" as="span">Browse Files</Button>
+            {/* Was a <Button as="span">, but Button never supported `as`, so it
+                rendered a real <button> nested inside the label — clicking it
+                did nothing on some browsers. A styled label is the correct
+                control for a file input. */}
+            <label
+              htmlFor="file-input"
+              className={cn(buttonVariants({ variant: 'outline' }), 'mt-4')}
+            >
+              Browse Files
             </label>
           </div>
         </div>

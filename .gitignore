@@ -63,3 +63,6 @@ skarpine-pos/
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Next.js build info
+frontend/tsconfig.tsbuildinfo
