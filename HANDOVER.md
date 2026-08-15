@@ -2,7 +2,7 @@
 
 > Living context document. Read this first in a new session.
 
-**Last updated**: 2026-08-14
+**Last updated**: 2026-08-15
 
 ---
 
@@ -19,6 +19,10 @@ finance).
   Tailwind 3, TanStack Query + Table, Zustand, Radix primitives, Recharts, Framer Motion,
   Playwright for E2E
 - `database/` — schema and seed material
+- **Production database: Supabase** (managed PostgreSQL). The `docker-compose.yml` Postgres is
+  local development only. `schema.prisma` uses the Supabase pooler pattern — migrations must run
+  against `DIRECT_URL`, not the pooled `DATABASE_URL`. Postgres RLS is therefore available, which
+  matters for the multi-tenancy gap in `docs/process/GAP_ANALYSIS.md`.
 - `skarpine-pos/` — **git submodule**, separate repo (mobile/terminal POS)
 - `docs/`, `alm/` — documentation and lifecycle material
 
@@ -44,7 +48,59 @@ the parent repo.
 
 ---
 
-## 3. Active Workstream — Frontend Design System (opened 2026-08-14)
+## 3. Active Workstream — ERP Productisation: P2P / O2C Foundations (opened 2026-08-15)
+
+**Strategic shift.** Skarpine is being repositioned from a one-client custom build into a packaged
+product for businesses too small for a €10–15k ERP and too big for spreadsheets (≤ ~50 employees).
+Governing principle, recorded in [CLAUDE.md](CLAUDE.md): *feature scope is reduced, data model depth
+is not — every scope cut must be a behaviour cut, never a schema cut.*
+
+### Deliverables produced this session (analysis only — no code, no schema changes)
+
+| Document | Phase |
+|---|---|
+| [docs/process/P2P_REFERENCE.md](docs/process/P2P_REFERENCE.md) | 1 — Source to Pay reference model |
+| [docs/process/O2C_REFERENCE.md](docs/process/O2C_REFERENCE.md) | 1 — Order to Cash reference model |
+| [docs/process/GAP_ANALYSIS.md](docs/process/GAP_ANALYSIS.md) | 2 — gap analysis + **live defects** |
+| [docs/process/SCOPE_AND_HOOKS.md](docs/process/SCOPE_AND_HOOKS.md) | 3 — now/later + schema hooks |
+| [docs/architecture/FOUNDATIONS.md](docs/architecture/FOUNDATIONS.md) | 4 — foundation design |
+
+### Two corrections to our process understanding (from Microsoft Learn, official)
+
+1. **Lead → Opportunity → Quotation is not Order to Cash.** It is *Prospect to Quote* (catalog 85),
+   a separate upstream end-to-end process.
+2. **Shipment / load / wave / packing slip is not Order to Cash.** It is *Inventory to Deliver*
+   (catalog 60), officially *nested inside* both O2C and S2P.
+
+Consequence: the wave / work / location-directive layer already in the codebase is I2D structure —
+part of the "third process" is already built.
+
+### Scope decisions
+
+- **Order to Make / Plan to Produce (70): out of scope.** Officially supported — the catalog's own
+  guidance cites a retailer marking Plan to Produce as *Not Applicable*. Needs **no schema hook**.
+- Foundation work anchors on catalog processes **40** (Design to Retire — item master), **90**
+  (Record to Report — accounting policies), **99** (Administer to Operate — reference data). These
+  are officially upstream of both S2P and O2C, which is what keeps future processes additive.
+- **Five foundations, not four.** Product dimensions was added as foundation zero: for a shoe
+  retailer the variant is the stocking unit, and Microsoft documents that a product cannot be
+  converted between variant models after implementation.
+
+### Estimated cost
+
+**9–12 weeks** for the foundation layer, plus defect remediation first. Stated plainly in
+FOUNDATIONS.md §6 — this is a quarter of foundation work before new user-facing features.
+**Not yet approved.**
+
+### Next decision point
+
+Kubi to approve or re-scope the implementation sequence in FOUNDATIONS.md §6:
+`D-1…D-6 → numbering → product dimensions → financial dimensions → posting profiles → tax`.
+**No implementation has begun and none should begin without that approval.**
+
+---
+
+## 4. Active Workstream — Frontend Design System (opened 2026-08-14)
 
 Kubi's assessment: the ERP frontend "looks like AI slop" and needs to read as a
 professional enterprise product. Investigation confirmed the root cause is **absence of a
@@ -112,7 +168,7 @@ Steps 1–3 are one sitting and deliver most of the visible change; 4–6 are in
 
 Also Linear and Vercel's own UIs as calibration for how little decoration is needed.
 
-### Next decision point
+### Next decision point (frontend)
 
 Kubi to either (a) approve starting at step 1, or (b) review the reference repos first and
 pick a direction. Proposed approach once approved: apply to a vertical slice (dashboard +
@@ -120,9 +176,10 @@ one list page) as a before/after, confirm direction, then roll out.
 
 ---
 
-## 4. Key Decisions
+## 5. Key Decisions
 
-- **POS lives in its own repository** (`skarpine-pos` submodule), not in the monorepo.
+- **POS lives in its own repository** (`skarpine-pos`), not in the monorepo. Note: older docs call
+  it a git submodule; there is no `.gitmodules` — it is a nested independent repo.
 - **D365 F&O patterns are deliberate** in the warehouse and finance modules — waves, work
   templates, location directives, journal-based posting. Do not "simplify" these away;
   they are the product's differentiator and match Kubi's domain expertise.
@@ -132,17 +189,63 @@ one list page) as a before/after, confirm direction, then roll out.
 
 ---
 
-## 5. Known Issues / Blockers
+## 6. Known Issues / Blockers
+
+### CRITICAL — live accounting defects found 2026-08-15
+
+Detail and evidence in [GAP_ANALYSIS.md §0](docs/process/GAP_ANALYSIS.md). Summary:
+
+- **D-1** Two incompatible charts of accounts exist. `bolivia-pcg.json` and the `finance.routes.ts`
+  seed assign different codes to the same accounts — `1201` is *Cuentas por Cobrar* in one and
+  *Activo Fijo* in the other.
+- **D-2** POS and ERP Sales are hardcoded to different charts. Depending on which COA a tenant was
+  provisioned with, **either** ERP facturas post no GL entry at all, **or** every POS sale posts
+  COGS and inventory relief with no revenue entry. Both fail silently.
+- **D-3** POS never posts IT (3%). Every POS sale under-accrues the transaction tax.
+- **D-4** Posting failures are silent — truthiness guards and a swallowed `try/catch` let documents
+  be created with no journal entry and no error.
+- **D-5** Journal entry numbers are generated from a row count against a globally-unique column —
+  concurrent postings collide.
+- **D-6** Latent: POS resolves AR to `1201`, which is *Activo Fijo* in the seed COA. Fixing D-2
+  without this would activate the bug.
+
+**Not yet fixed. Not yet verified against the production database** — which COA the live tenant uses
+determines which of the two D-2 failure modes is active. **That check is the single most urgent
+next action.**
+
+### Other
 
 - Production readiness scored 4/10 and security 5/10 in the April 2026 audit; see
   `Roadmap_Improvement_Prod.md` for the gap list. Not yet closed.
-- Frontend has no design system (section 3).
-- Inverted KPI trend colours on the dashboard (section 3).
-- `skarpine-pos` submodule has uncommitted content in the working tree.
+- Frontend has no design system (section 4).
+- Inverted KPI trend colours on the dashboard (section 4).
+- `skarpine-pos` has uncommitted content in the working tree.
+- Turkish template leftovers in a Bolivian product: `PurchaseOrder.currency` defaults to `TRY`,
+  `Site.country` defaults to `TR`. Four different currency defaults across the schema, no exchange
+  rate table.
 
 ---
 
-## 6. Open Questions
+## 7. Open Questions
+
+### Blocking the foundation design — need Kubi / the Finance co-founder
+
+- **Factura sequentiality:** does Bolivian law require a strictly gapless series, or gaps with
+  documented justification? Determines whether numbering can allocate early or needs a reservation
+  table with explicit voiding. (FOUNDATIONS.md §4.3)
+- **Do Bolivian facturas legally require line detail?** `Factura` is header-only today. If yes, this
+  is a compliance gap and not only an architectural one. (O2C_REFERENCE.md §6)
+- **Is *nota de crédito-débito* a separate legal numbering series** from the factura series?
+  Determines whether numbering must support multiple independent legal series.
+- **When is IVA *crédito fiscal* claimable** — at product receipt or at the supplier's factura?
+  Skarpine recognises it at receipt today. If it is claimable only against the factura, current
+  posting has a tax-timing error. (P2P_REFERENCE.md §7)
+- **Landed cost:** does the business import shoes directly? If yes, deferring landed cost is
+  recommended *against* — current margins would already be misstated and closed periods cannot be
+  restated later. (SCOPE_AND_HOOKS.md §4)
+- **Approve or re-scope the 9–12 week foundation estimate** before any implementation starts.
+
+### Frontend (unchanged)
 
 - Which neutral family becomes canonical — `zinc` or `slate`?
 - What is the brand accent? Current code leans red/maroon (`StatCard`) but blue and indigo
