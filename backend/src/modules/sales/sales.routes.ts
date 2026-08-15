@@ -2,12 +2,15 @@ import { Hono }    from 'hono';
 import { SalesService } from './sales.service';
 import { AppError } from '../../shared/errors/AppError';
 import { db }       from '../../infrastructure/database/client';
-import { TAX, resolveTax } from '../../config/tax';
+
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate }    from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
 import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema } from '../../shared/schemas';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -176,17 +179,22 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
 
   const total = Number(order.total_amount);
-  const tax = resolveTax(c.get('taxConfig'));
-  const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(total);
+  // Tax from the configured engine — tax group (customer) ∩ item tax group.
+  // For Bolivia this yields exactly what config/tax.ts yielded; there is a test
+  // asserting that equivalence across the real amounts in the database.
+  const docTax = await computeDocumentTax(c.get('tenantId'), total, {
+    partyId: order.customer_id ?? null, legacyConfig: c.get('taxConfig'),
+  });
+  const { subtotal, vat: ivaAmount, turnover: itAmount } = docTax;
 
-  // Pre-fetch GL accounts (outside transaction — read-only, no lock needed)
-  const [cxcAccount, itExpAccount, ventasAccount, ivaDebitoAccount, itPayAccount] = await Promise.all([
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1103' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '5203' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '4101' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2103' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2104' } }),
-  ]);
+  // GL accounts come from posting profiles, never from account-code literals.
+  // See shared/services/posting.ts for why, and for what happens when they are
+  // unresolved (it is no longer a silent skip).
+  const acc = await resolvePostingAccounts_orExplain(
+    c.get('tenantId'),
+    ['AR', 'TAX_TURNOVER_EXPENSE', 'REVENUE', 'VAT_OUTPUT', 'TAX_TURNOVER_PAYABLE'] as const,
+    { document: `Sales invoice for ${order.order_number}`, partyId: order.customer_id ?? null },
+  );
 
   const factura = await db.$transaction(async (tx) => {
     const f = await tx.factura.create({
@@ -210,12 +218,15 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
     await tx.salesOrder.update({ where: { id: order.id }, data: { invoice_id: f.id } });
 
     // ── Auto GL Journal Entry ────────────────────────────────────────────────
-    if (cxcAccount && itExpAccount && ventasAccount && ivaDebitoAccount && itPayAccount) {
-      const jeCount = await tx.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
+    if (acc) {
+      // D-5: this used to be `count() + 1`, computed inside the transaction, on a
+      // column that is globally @unique — two concurrent invoices produced the
+      // same number and one rolled back. The sequence allocator is atomic.
+      const entryNumber = await nextJournalVoucher(c.get('tenantId'), tx);
       await tx.journalEntry.create({
         data: {
           tenant_id:    c.get('tenantId'),
-          entry_number: `JE-${new Date().getFullYear()}-${String(jeCount + 1).padStart(5, '0')}`,
+          entry_number: entryNumber,
           entry_date:   new Date(),
           description:  `Sales Invoice: ${order.order_number} — Factura #${String(f.factura_number).padStart(6, '0')}`,
           source_module: 'SALES_INVOICE',
@@ -225,11 +236,11 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
           created_by:   c.get('user').id,
           lines: {
             create: [
-              { account_id: cxcAccount.id,       debit_amount: total,                  credit_amount: 0,            description: `AR — ${customerName}` },
-              { account_id: itExpAccount.id,      debit_amount: Number(f.it_amount),    credit_amount: 0,            description: `IT 3% expense` },
-              { account_id: ventasAccount.id,     debit_amount: 0,                      credit_amount: Number(f.subtotal),   description: `Revenue — ${order.order_number}` },
-              { account_id: ivaDebitoAccount.id,  debit_amount: 0,                      credit_amount: Number(f.iva_amount), description: `IVA Débito Fiscal 13%` },
-              { account_id: itPayAccount.id,      debit_amount: 0,                      credit_amount: Number(f.it_amount),  description: `IT por Pagar 3%` },
+              { account_id: acc.AR,                   debit_amount: total,               credit_amount: 0,                   description: `AR — ${customerName}` },
+              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: Number(f.it_amount), credit_amount: 0,                   description: `IT 3% expense` },
+              { account_id: acc.REVENUE,              debit_amount: 0,                   credit_amount: Number(f.subtotal),  description: `Revenue — ${order.order_number}` },
+              { account_id: acc.VAT_OUTPUT,           debit_amount: 0,                   credit_amount: Number(f.iva_amount), description: `IVA Débito Fiscal 13%` },
+              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,                   credit_amount: Number(f.it_amount),  description: `IT por Pagar 3%` },
             ],
           },
         },
@@ -255,10 +266,19 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
   const { payment_date, account_code = '1102', notes } = c.get('body');
   const paymentDate = payment_date ? new Date(payment_date) : new Date();
 
-  const [bankAccount, cxcAccount] = await Promise.all([
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: account_code } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1103' } }),
-  ]);
+  // AR comes from the posting profile; the debit side stays a code lookup because
+  // which bank or cash account received the money is transaction data the user
+  // picks, not configuration.
+  const payAcc = await resolvePostingAccounts_orExplain(
+    c.get('tenantId'), ['AR'] as const,
+    { document: `AR payment for ${order.order_number}`, partyId: order.customer_id ?? null },
+  );
+  const bankAccount = await db.account.findFirst({
+    where: { tenant_id: c.get('tenantId'), code: account_code },
+  });
+  if (payAcc && !bankAccount) {
+    throw new AppError(`Payment account '${account_code}' does not exist in the chart of accounts.`, 400);
+  }
 
   await db.$transaction(async (tx) => {
     await tx.salesOrder.update({
@@ -266,13 +286,13 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
       data: { paid_at: paymentDate, paid_by: c.get('user').id },
     });
 
-    if (bankAccount && cxcAccount) {
+    if (bankAccount && payAcc) {
       const totalAmount = Number(order.total_amount);
-      const jeCount = await tx.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
+      const entryNumber = await nextJournalVoucher(c.get('tenantId'), tx);
       await tx.journalEntry.create({
         data: {
           tenant_id:    c.get('tenantId'),
-          entry_number: `JE-${new Date().getFullYear()}-${String(jeCount + 1).padStart(5, '0')}`,
+          entry_number: entryNumber,
           entry_date:   paymentDate,
           description:  `AR Payment: ${order.order_number}${notes ? ' — ' + notes : ''}`,
           source_module: 'SALES_PAYMENT',
@@ -283,7 +303,7 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
           lines: {
             create: [
               { account_id: bankAccount.id, debit_amount: totalAmount, credit_amount: 0,           description: `Cash receipt — ${order.order_number}` },
-              { account_id: cxcAccount.id,  debit_amount: 0,           credit_amount: totalAmount, description: `Clear AR — ${order.order_number}` },
+              { account_id: payAcc.AR,      debit_amount: 0,           credit_amount: totalAmount, description: `Clear AR — ${order.order_number}` },
             ],
           },
         },
@@ -315,7 +335,9 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
       return { order_id: order.id, product_id: l.product_id, variant_id: l.variant_id || null, quantity: Number(l.quantity), unit_price: Number(l.unit_price), discount_pct: l.discount_pct ?? 0, line_total: lineTotal, sort_order: i };
     });
     await db.salesOrderLine.createMany({ data: newLines });
-    const taxAmount = resolveTax(c.get('taxConfig')).vat(subtotal);
+    const taxAmount = (await computeDocumentTax(c.get('tenantId'), subtotal, {
+      legacyConfig: c.get('taxConfig'),
+    })).vat;
     await db.salesOrder.update({ where: { id: order.id }, data: { subtotal, tax_amount: taxAmount, total_amount: subtotal, ...(customer_id !== undefined && { customer_id }), ...(notes !== undefined && { notes }) } });
   } else {
     const data: any = {};
@@ -365,8 +387,10 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
   const { notes } = await c.req.json();
 
   const total = Number(order.total_amount);
-  const taxReturn = resolveTax(c.get('taxConfig'));
-  const { subtotal, iva: ivaAmount, it: itAmount } = taxReturn.breakdown(total);
+  const taxReturn = await computeDocumentTax(c.get('tenantId'), Number(order.total_amount), {
+    partyId: order.customer_id ?? null, legacyConfig: c.get('taxConfig'),
+  });
+  const { subtotal, vat: ivaAmount, turnover: itAmount } = taxReturn;
 
   const shippingAddr = order.shipping_address as any;
   const customerName = order.customer
@@ -376,16 +400,14 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
   // Pre-fetch factura number and GL accounts outside transaction (read-only)
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
 
-  const [ventasAcc, ivaDebitoAcc, itPayAcc, itExpAcc, cxcAcc, inventoryAcc, cogsAcc, bankAcc] = await Promise.all([
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '4101' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2103' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2104' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '5203' } }), // IT Expense
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1103' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1110' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '5101' } }),
-    db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1102' } }),
-  ]);
+  // A return reverses the invoice, the COGS and possibly the payment, so it needs
+  // every posting type the forward path used. Resolving them as one set means a
+  // partially-configured tenant cannot post half a reversal.
+  const retAcc = await resolvePostingAccounts_orExplain(
+    c.get('tenantId'),
+    ['REVENUE', 'VAT_OUTPUT', 'TAX_TURNOVER_PAYABLE', 'TAX_TURNOVER_EXPENSE', 'AR', 'INVENTORY', 'COGS', 'BANK'] as const,
+    { document: `Return for ${order.order_number}`, partyId: order.customer_id ?? null },
+  );
 
   // Pre-fetch stock records for each line outside transaction (findFirst per line)
   const stockByLine: Array<{ stock: any; line: any }> = [];
@@ -442,28 +464,28 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
       },
     });
 
-    const jeCount = await tx.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
-    const year = new Date().getFullYear();
-    let jeSeq = jeCount + 1;
-    const nextJE = () => `JE-${year}-${String(jeSeq++).padStart(5, '0')}`;
+    // D-5: was `count() + 1` incremented locally across up to three entries — a
+    // race against every other posting in the system. Each entry now draws its own
+    // number from the atomic sequence.
+    const nextJE = () => nextJournalVoucher(c.get('tenantId'), tx);
 
     // ── 3. JE 1 — Reverse sales invoice (only if invoiced) ─────────────────────
     // Original invoice: Dr CxC, Dr IT Exp; Cr Revenue, Cr IVA Débito, Cr IT por Pagar
     // Reversal:         Cr CxC, Cr IT Exp; Dr Revenue, Dr IVA Débito, Dr IT por Pagar
-    if (order.invoice_id && ventasAcc && ivaDebitoAcc && itPayAcc && itExpAcc && cxcAcc) {
+    if (order.invoice_id && retAcc) {
       await tx.journalEntry.create({
         data: {
-          tenant_id: c.get('tenantId'), entry_number: nextJE(), entry_date: new Date(),
+          tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
           description: `Return — Reverse Invoice: ${order.order_number}`,
           source_module: 'SALES_RETURN', source_id: order.id,
           status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
           lines: {
             create: [
-              { account_id: ventasAcc.id,    debit_amount: subtotal,  credit_amount: 0,         description: `Return revenue reversal` },
-              { account_id: ivaDebitoAcc.id, debit_amount: ivaAmount, credit_amount: 0,         description: `Return IVA Débito reversal` },
-              { account_id: itPayAcc.id,     debit_amount: itAmount,  credit_amount: 0,         description: `Return IT por Pagar reversal` },
-              { account_id: cxcAcc.id,       debit_amount: 0,         credit_amount: total,     description: `Return CxC credit` },
-              { account_id: itExpAcc.id,     debit_amount: 0,         credit_amount: itAmount,  description: `Return IT Expense reversal` },
+              { account_id: retAcc.REVENUE,    debit_amount: subtotal,  credit_amount: 0,         description: `Return revenue reversal` },
+              { account_id: retAcc.VAT_OUTPUT, debit_amount: ivaAmount, credit_amount: 0,         description: `Return IVA Débito reversal` },
+              { account_id: retAcc.TAX_TURNOVER_PAYABLE,     debit_amount: itAmount,  credit_amount: 0,         description: `Return IT por Pagar reversal` },
+              { account_id: retAcc.AR,       debit_amount: 0,         credit_amount: total,     description: `Return CxC credit` },
+              { account_id: retAcc.TAX_TURNOVER_EXPENSE,     debit_amount: 0,         credit_amount: itAmount,  description: `Return IT Expense reversal` },
             ],
           },
         },
@@ -471,7 +493,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
     }
 
     // ── 4. JE 2 — Reverse COGS ─────────────────────────────────────────────────
-    if (inventoryAcc && cogsAcc) {
+    if (retAcc) {
       const productIds = order.lines.map((l: any) => l.product_id);
       const products = await tx.product.findMany({
         where: { id: { in: productIds } },
@@ -484,14 +506,14 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
       if (cogsAmount > 0) {
         await tx.journalEntry.create({
           data: {
-            tenant_id: c.get('tenantId'), entry_number: nextJE(), entry_date: new Date(),
+            tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
             description: `Return — Reverse COGS: ${order.order_number}`,
             source_module: 'SALES_RETURN', source_id: order.id,
             status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
             lines: {
               create: [
-                { account_id: inventoryAcc.id, debit_amount: cogsAmount, credit_amount: 0,          description: `Return inventory in` },
-                { account_id: cogsAcc.id,      debit_amount: 0,          credit_amount: cogsAmount, description: `Return COGS reversal` },
+                { account_id: retAcc.INVENTORY, debit_amount: cogsAmount, credit_amount: 0,          description: `Return inventory in` },
+                { account_id: retAcc.COGS,      debit_amount: 0,          credit_amount: cogsAmount, description: `Return COGS reversal` },
               ],
             },
           },
@@ -500,17 +522,17 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
     }
 
     // ── 5. JE 3 — Reverse AR payment (only if already paid) ───────────────────
-    if (order.paid_at && cxcAcc && bankAcc) {
+    if (order.paid_at && retAcc) {
       await tx.journalEntry.create({
         data: {
-          tenant_id: c.get('tenantId'), entry_number: nextJE(), entry_date: new Date(),
+          tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
           description: `Return — Refund: ${order.order_number}`,
           source_module: 'SALES_RETURN', source_id: order.id,
           status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
           lines: {
             create: [
-              { account_id: cxcAcc.id,  debit_amount: total, credit_amount: 0,     description: `Return CxC refund` },
-              { account_id: bankAcc.id, debit_amount: 0,     credit_amount: total, description: `Return refund from Bancos` },
+              { account_id: retAcc.AR,  debit_amount: total, credit_amount: 0,     description: `Return CxC refund` },
+              { account_id: retAcc.BANK, debit_amount: 0,     credit_amount: total, description: `Return refund from Bancos` },
             ],
           },
         },

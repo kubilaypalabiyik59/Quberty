@@ -9,7 +9,12 @@ Read `HANDOVER.md` for current status before starting work.
 
 **Quberty ERP** (codebase name: Skarpine) is a working ERP + e-commerce + POS platform.
 It was built for a three-store retail shoe business in Bolivia that was running on paper.
-It is in production use. It is not a prototype.
+It is a real product build, not a prototype.
+
+**Environment, corrected 2026-08-15:** the Supabase database in `backend/.env` is Kubi's **test
+data environment**. Earlier docs called it production; that was wrong. Test data can be migrated and
+reprovisioned freely. Where — or whether — a production instance runs is not recorded in this repo;
+confirm before treating any figure as a filed accounting number.
 
 It is now being repositioned from a one-client custom build into a **packaged, AI-augmented
 ERP product**.

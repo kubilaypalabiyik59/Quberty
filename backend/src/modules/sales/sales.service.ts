@@ -1,8 +1,11 @@
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { TAX } from '../../config/tax';
+
 import { logger } from '../../shared/logger';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { WarehouseService } from '../warehouse/warehouse.service';
 
@@ -29,8 +32,13 @@ export class SalesService {
       return { ...line, line_total: lineTotal, sort_order: idx };
     });
 
-    // Prices already include IVA 13% (Bolivia law) — extract the tax from the price
-    const taxAmount = TAX.iva(subtotal);
+    // Was `TAX.iva(subtotal)` — the hardcoded Bolivian 13%, applied to every
+    // tenant regardless of their own configuration. Now resolved from the tenant's
+    // tax setup, which for Bolivia produces exactly the same number.
+    const orderTax = await computeDocumentTax(tenantId, subtotal, {
+      partyId: data.customer_id ?? null,
+    });
+    const taxAmount = orderTax.vat;
     const totalAmount = subtotal - (data.discount_amount ?? 0);
 
     const order = await db.salesOrder.create({
@@ -130,13 +138,13 @@ export class SalesService {
     // ── Auto GL Journal Entry: COGS ────────────────────────────────────────────
     // Dr 5101 Costo de Ventas  — cost of goods shipped
     // Cr 1110 Inventario       — inventory asset reduced
-    try {
-      const [cogsAccount, inventoryAccount] = await Promise.all([
-        db.account.findFirst({ where: { tenant_id: tenantId, code: '5101' } }),
-        db.account.findFirst({ where: { tenant_id: tenantId, code: '1110' } }),
-      ]);
+    {
+      const acc = await resolvePostingAccounts_orExplain(
+        tenantId, ['COGS', 'INVENTORY'] as const,
+        { document: `COGS for ${order.order_number}` },
+      );
 
-      if (cogsAccount && inventoryAccount) {
+      if (acc) {
         // Sum COGS from product cost_price × qty per line
         const productIds = order.lines.map((l: any) => l.product_id);
         const products = await db.product.findMany({
@@ -150,8 +158,7 @@ export class SalesService {
         }, 0);
 
         if (cogsAmount > 0) {
-          const jeCount = await db.journalEntry.count({ where: { tenant_id: tenantId } });
-          const entryNumber = `JE-${new Date().getFullYear()}-${String(jeCount + 1).padStart(5, '0')}`;
+          const entryNumber = await nextJournalVoucher(tenantId);
 
           await db.journalEntry.create({
             data: {
@@ -166,16 +173,18 @@ export class SalesService {
               created_by: userId,
               lines: {
                 create: [
-                  { account_id: cogsAccount.id,     debit_amount: cogsAmount, credit_amount: 0,           description: `COGS — ${order.order_number}` },
-                  { account_id: inventoryAccount.id, debit_amount: 0,          credit_amount: cogsAmount, description: `Inventory out — ${order.order_number}` },
+                  { account_id: acc.COGS,     debit_amount: cogsAmount, credit_amount: 0,           description: `COGS — ${order.order_number}` },
+                  { account_id: acc.INVENTORY, debit_amount: 0,          credit_amount: cogsAmount, description: `Inventory out — ${order.order_number}` },
                 ],
               },
             },
           });
         }
       }
-    } catch (jeErr) {
-      logger.error({ err: jeErr }, 'COGS GL journal failed for shipment');
+      // The swallowing `catch` that used to wrap this block is gone. A shipment
+      // that cannot post its COGS entry must not quietly succeed — that is D-4.
+      // `resolvePostingAccounts_orExplain` decides throw-vs-log-and-skip from the
+      // tenant's require_balanced_posting parameter.
     }
 
     // Create shipment record

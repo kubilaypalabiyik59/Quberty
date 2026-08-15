@@ -1,12 +1,14 @@
 import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { TAX, resolveTax } from '../../config/tax';
+
 import { nextSalesOrderNumber, nextJournalEntryNumber } from '../../shared/utils/orderCounter';
+import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
 import { OpenSessionSchema, CloseSessionSchema, PosSaleSchema } from '../../shared/schemas';
 import { logger }   from '../../shared/logger';
+import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -213,8 +215,10 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
 
     // 3. Totals
     const totalAmount = processedLines.reduce((s, l) => s + l.line_total, 0);
-    const tax = resolveTax(c.get('taxConfig'));
-    const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(totalAmount);
+    const docTax = await computeDocumentTax(tenantId, totalAmount, {
+      legacyConfig: c.get('taxConfig'), client: tx,
+    });
+    const { subtotal, vat: ivaAmount, turnover: itAmount } = docTax;
     const cogsTotal = processedLines.reduce((s, l) => s + l.cost_price * l.quantity, 0);
     const changeDue = cash_tendered !== undefined ? Number(cash_tendered) - totalAmount : 0;
 
@@ -270,15 +274,19 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     await tx.salesOrder.update({ where: { id: order.id }, data: { invoice_id: factura.id } });
 
     // 7. GL Journal Entries — numbers pre-allocated atomically above (no race condition)
-    const [ventasAcc, ivaDebitoAcc, cxcAcc, inventoryAcc, cogsAcc] = await Promise.all([
-      tx.account.findFirst({ where: { tenant_id: tenantId, code: '4101' } }),
-      tx.account.findFirst({ where: { tenant_id: tenantId, code: '2105' } }),
-      tx.account.findFirst({ where: { tenant_id: tenantId, code: '1201' } }),
-      tx.account.findFirst({ where: { tenant_id: tenantId, code: '1110' } }),
-      tx.account.findFirst({ where: { tenant_id: tenantId, code: '5101' } }),
-    ]);
+    //
+    // Accounts now come from posting profiles. Previously this block used the
+    // literals '2105' and '1201', while sales.routes.ts used '2103' and '1103'
+    // for the same concepts — two modules, two charts of accounts (D-2). '1201'
+    // is *Activo Fijo* under the seed chart, so POS was debiting Fixed Assets on
+    // every sale (D-6).
+    const acc = await resolvePostingAccounts_orExplain(
+      tenantId,
+      ['AR', 'REVENUE', 'VAT_OUTPUT', 'TAX_TURNOVER_EXPENSE', 'TAX_TURNOVER_PAYABLE', 'INVENTORY', 'COGS'] as const,
+      { document: `POS sale ${orderNumber}`, client: tx },
+    );
 
-    if (ventasAcc && ivaDebitoAcc && cxcAcc) {
+    if (acc) {
       await tx.journalEntry.create({
         data: {
           tenant_id:    tenantId,
@@ -292,16 +300,27 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
           created_by:   userId,
           lines: {
             create: [
-              { account_id: cxcAcc.id,      debit_amount: totalAmount, credit_amount: 0,         description: `CxC — ${orderNumber}` },
-              { account_id: ventasAcc.id,    debit_amount: 0,           credit_amount: subtotal,  description: `Ventas — ${orderNumber}` },
-              { account_id: ivaDebitoAcc.id, debit_amount: 0,           credit_amount: ivaAmount, description: `IVA Débito Fiscal — ${orderNumber}` },
+              { account_id: acc.AR,      debit_amount: totalAmount, credit_amount: 0,         description: `CxC — ${orderNumber}` },
+              { account_id: acc.REVENUE, debit_amount: 0,           credit_amount: subtotal,  description: `Ventas — ${orderNumber}` },
+              { account_id: acc.VAT_OUTPUT, debit_amount: 0,        credit_amount: ivaAmount, description: `IVA Débito Fiscal — ${orderNumber}` },
+              // D-3: POS never accrued IT. Every POS sale under-declared the 3%
+              // transaction tax, and for a retailer whose sales are overwhelmingly
+              // POS that was most of the IT liability. Sales invoices always posted
+              // these two lines; POS simply omitted them.
+              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: itAmount, credit_amount: 0,        description: `IT 3% expense — ${orderNumber}` },
+              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,        credit_amount: itAmount, description: `IT por Pagar 3% — ${orderNumber}` },
             ],
           },
         },
       });
     }
 
-    if (inventoryAcc && cogsAcc && cogsTotal > 0) {
+    // Gated on the SAME `acc` as the revenue entry above, deliberately. These used
+    // to have independent guards, so when the revenue block failed on a missing
+    // account the COGS block still posted — inventory relieved and cost recognised
+    // against no sale at all. That is the severe half of D-2. Either both post or
+    // neither does.
+    if (acc && cogsTotal > 0) {
       await tx.journalEntry.create({
         data: {
           tenant_id:    tenantId,
@@ -315,8 +334,8 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
           created_by:   userId,
           lines: {
             create: [
-              { account_id: cogsAcc.id,      debit_amount: cogsTotal, credit_amount: 0,         description: `COGS — ${orderNumber}` },
-              { account_id: inventoryAcc.id, debit_amount: 0,         credit_amount: cogsTotal, description: `Inventario — ${orderNumber}` },
+              { account_id: acc.COGS,      debit_amount: cogsTotal, credit_amount: 0,         description: `COGS — ${orderNumber}` },
+              { account_id: acc.INVENTORY, debit_amount: 0,         credit_amount: cogsTotal, description: `Inventario — ${orderNumber}` },
             ],
           },
         },
@@ -430,8 +449,10 @@ app.post('/sales/:orderId/void', async (c) => {
     // 3. Reversal GL entries
     try {
       const totalAmount = Number(order.total_amount);
-      const tax = resolveTax(c.get('taxConfig'));
-      const { subtotal, iva: ivaAmount } = tax.breakdown(totalAmount);
+      const voidTax = await computeDocumentTax(tenantId, totalAmount, {
+        legacyConfig: c.get('taxConfig'), client: tx,
+      });
+      const { subtotal, vat: ivaAmount } = voidTax;
 
       // Calculate COGS from current product cost prices
       let cogsTotal = 0;
@@ -447,15 +468,15 @@ app.post('/sales/:orderId/void', async (c) => {
       const voidJe1 = await nextJournalEntryNumber(tenantId); // Sales reversal
       const voidJe2 = cogsTotal > 0 ? await nextJournalEntryNumber(tenantId) : null; // COGS reversal
 
-      const [ventasAcc, ivaDebitoAcc, cxcAcc, inventoryAcc, cogsAcc] = await Promise.all([
-        tx.account.findFirst({ where: { tenant_id: tenantId, code: '4101' } }),
-        tx.account.findFirst({ where: { tenant_id: tenantId, code: '2105' } }),
-        tx.account.findFirst({ where: { tenant_id: tenantId, code: '1201' } }),
-        tx.account.findFirst({ where: { tenant_id: tenantId, code: '1110' } }),
-        tx.account.findFirst({ where: { tenant_id: tenantId, code: '5101' } }),
-      ]);
+      // Same posting profiles as the forward sale, so a void can never reverse
+      // into different accounts than the sale it is undoing.
+      const vAcc = await resolvePostingAccounts_orExplain(
+        tenantId,
+        ['AR', 'REVENUE', 'VAT_OUTPUT', 'INVENTORY', 'COGS'] as const,
+        { document: `POS void ${order.order_number}`, client: tx },
+      );
 
-      if (ventasAcc && ivaDebitoAcc && cxcAcc) {
+      if (vAcc) {
         await tx.journalEntry.create({
           data: {
             tenant_id:     tenantId,
@@ -469,9 +490,9 @@ app.post('/sales/:orderId/void', async (c) => {
             created_by:    userId,
             lines: {
               create: [
-                { account_id: ventasAcc.id,    debit_amount: subtotal,     credit_amount: 0,           description: `Reverse Ventas — ${order.order_number}` },
-                { account_id: ivaDebitoAcc.id, debit_amount: ivaAmount,    credit_amount: 0,           description: `Reverse IVA Débito — ${order.order_number}` },
-                { account_id: cxcAcc.id,       debit_amount: 0,            credit_amount: totalAmount, description: `Reverse CxC — ${order.order_number}` },
+                { account_id: vAcc.REVENUE,    debit_amount: subtotal,     credit_amount: 0,           description: `Reverse Ventas — ${order.order_number}` },
+                { account_id: vAcc.VAT_OUTPUT, debit_amount: ivaAmount,    credit_amount: 0,           description: `Reverse IVA Débito — ${order.order_number}` },
+                { account_id: vAcc.AR,         debit_amount: 0,            credit_amount: totalAmount, description: `Reverse CxC — ${order.order_number}` },
               ],
             },
           },
@@ -479,7 +500,7 @@ app.post('/sales/:orderId/void', async (c) => {
       }
 
       // COGS reversal — was missing before (Dr 1110 Inventario / Cr 5101 COGS)
-      if (voidJe2 && inventoryAcc && cogsAcc && cogsTotal > 0) {
+      if (voidJe2 && vAcc && cogsTotal > 0) {
         await tx.journalEntry.create({
           data: {
             tenant_id:     tenantId,
@@ -493,8 +514,8 @@ app.post('/sales/:orderId/void', async (c) => {
             created_by:    userId,
             lines: {
               create: [
-                { account_id: inventoryAcc.id, debit_amount: cogsTotal, credit_amount: 0,         description: `Restore Inventario — ${order.order_number}` },
-                { account_id: cogsAcc.id,      debit_amount: 0,         credit_amount: cogsTotal, description: `Reverse COGS — ${order.order_number}` },
+                { account_id: vAcc.INVENTORY, debit_amount: cogsTotal, credit_amount: 0,         description: `Restore Inventario — ${order.order_number}` },
+                { account_id: vAcc.COGS,      debit_amount: 0,         credit_amount: cogsTotal, description: `Reverse COGS — ${order.order_number}` },
               ],
             },
           },

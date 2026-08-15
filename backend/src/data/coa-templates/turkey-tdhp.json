@@ -3,33 +3,277 @@
   "name": "Turkey TDHP (Tekdüzen Hesap Planı)",
   "country": "TR",
   "currency": "TRY",
-  "tax_config": {
-    "vat_rate": 0.20,
-    "vat_inclusive": false,
-    "vat_label": "KDV",
-    "secondary_tax_rate": 0,
-    "secondary_tax_name": "",
-    "invoice_label": "Fatura"
+  "tax": {
+    "invoice_label": "Fatura",
+    "tax_codes": [
+      {
+        "code": "KDV20",
+        "name": "KDV %20 (genel oran)",
+        "tax_type": "VAT",
+        "rate": 0.2,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      },
+      {
+        "code": "KDV10",
+        "name": "KDV %10 (indirimli oran)",
+        "tax_type": "VAT",
+        "rate": 0.1,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      },
+      {
+        "code": "KDV1",
+        "name": "KDV %1 (temel gıda vb.)",
+        "tax_type": "VAT",
+        "rate": 0.01,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      },
+      {
+        "code": "KDV20TEV5",
+        "name": "KDV %20 — 5/10 tevkifatlı",
+        "tax_type": "VAT",
+        "rate": 0.2,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "withholding_share": 0.5,
+        "withholding_threshold": 12000,
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT",
+        "note": "Threshold = VUK md.232 fatura duzenleme siniri, 12.000 TL for 2026 (VUK Genel Teblig Sira No: 588). IT CHANGES EVERY YEAR — create a new date-effective TaxCode row each January. Per KDV GUT I/C-2.1.3.4.1 the threshold is tested on the KDV-INCLUSIVE amount and, once exceeded, withholding applies to the whole tax. The 5/10 share is service-specific: rates run 2/10..9/10 across 15 service categories (KDV GUT I/C-2.1.3.2). Confirm the correct share per service with a mali musavir."
+      },
+      {
+        "code": "KDV0IHR",
+        "name": "İhracat istisnası (%0)",
+        "tax_type": "VAT",
+        "rate": 0,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "THIRD",
+        "is_exempt": true,
+        "exempt_reason": "KDVK md.11 ihracat istisnası",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      }
+    ],
+    "tax_groups": [
+      {
+        "code": "YURTICI",
+        "name": "Yurt içi müşteriler",
+        "codes": [
+          "KDV20",
+          "KDV10",
+          "KDV1"
+        ]
+      },
+      {
+        "code": "TEVKIFAT",
+        "name": "Tevkifat sorumlusu alıcılar",
+        "codes": [
+          "KDV20TEV5"
+        ]
+      },
+      {
+        "code": "IHRACAT",
+        "name": "İhracat müşterileri",
+        "codes": [
+          "KDV0IHR"
+        ]
+      }
+    ],
+    "item_tax_groups": [
+      {
+        "code": "GENEL",
+        "name": "Genel oran ürünler",
+        "codes": [
+          "KDV20",
+          "KDV20TEV5",
+          "KDV0IHR"
+        ]
+      },
+      {
+        "code": "INDIRIMLI",
+        "name": "İndirimli oran",
+        "codes": [
+          "KDV10",
+          "KDV0IHR"
+        ]
+      },
+      {
+        "code": "TEMEL_GIDA",
+        "name": "Temel gıda (%1)",
+        "codes": [
+          "KDV1",
+          "KDV0IHR"
+        ]
+      }
+    ],
+    "default_tax_group": "YURTICI",
+    "default_item_tax_group": "GENEL"
   },
   "accounts": [
-    { "code": "100", "name": "DÖNEN VARLIKLAR",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "100.01", "name": "Kasa",                   "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
-    { "code": "102", "name": "Bankalar",                  "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
-    { "code": "153", "name": "Ticari Mallar",             "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
-    { "code": "191", "name": "İndirilecek KDV",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "100" },
-    { "code": "120", "name": "Alıcılar (Ticari Alacaklar)","type": "ASSET",    "normal_balance": "DEBIT",  "parent_code": "100" },
-    { "code": "300", "name": "KISA VADELİ YÜKÜMLÜLÜKLER", "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "320", "name": "Satıcılar (Ticari Borçlar)", "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
-    { "code": "391", "name": "Hesaplanan KDV",            "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
-    { "code": "361", "name": "Ödenecek Sosyal Güvenlik",  "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "300" },
-    { "code": "500", "name": "ÖZKAYNAKLAR",               "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "501", "name": "Sermaye",                   "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "500" },
-    { "code": "590", "name": "Dönem Net Kârı",            "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "500" },
-    { "code": "600", "name": "BRÜT SATIŞLAR",             "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "600.01", "name": "Yurt İçi Satışlar",      "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": "600" },
-    { "code": "620", "name": "SATILAN MAL MALİYETİ",      "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "760", "name": "PAZARLAMA GİDERLERİ",       "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "770", "name": "GENEL YÖNETİM GİDERLERİ",  "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "770.01", "name": "Personel Giderleri",     "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "770" }
+    {
+      "code": "100",
+      "name": "DÖNEN VARLIKLAR",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "100.01",
+      "name": "Kasa",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "100",
+      "category": "CASH"
+    },
+    {
+      "code": "102",
+      "name": "Bankalar",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "100",
+      "category": "BANK"
+    },
+    {
+      "code": "153",
+      "name": "Ticari Mallar",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "100",
+      "category": "INVENTORY"
+    },
+    {
+      "code": "191",
+      "name": "İndirilecek KDV",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "100",
+      "category": "VAT_RECEIVABLE"
+    },
+    {
+      "code": "120",
+      "name": "Alıcılar (Ticari Alacaklar)",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "100",
+      "category": "ACCOUNTS_RECEIVABLE"
+    },
+    {
+      "code": "300",
+      "name": "KISA VADELİ YÜKÜMLÜLÜKLER",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "320",
+      "name": "Satıcılar (Ticari Borçlar)",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "300",
+      "category": "ACCOUNTS_PAYABLE"
+    },
+    {
+      "code": "391",
+      "name": "Hesaplanan KDV",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "300",
+      "category": "VAT_PAYABLE"
+    },
+    {
+      "code": "361",
+      "name": "Ödenecek Sosyal Güvenlik",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "300",
+      "category": "PAYROLL_PAYABLE"
+    },
+    {
+      "code": "500",
+      "name": "ÖZKAYNAKLAR",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "501",
+      "name": "Sermaye",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "500",
+      "category": "SHARE_CAPITAL"
+    },
+    {
+      "code": "590",
+      "name": "Dönem Net Kârı",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "500",
+      "category": "CURRENT_YEAR_RESULT"
+    },
+    {
+      "code": "600",
+      "name": "BRÜT SATIŞLAR",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "600.01",
+      "name": "Yurt İçi Satışlar",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": "600",
+      "category": "REVENUE"
+    },
+    {
+      "code": "620",
+      "name": "SATILAN MAL MALİYETİ",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "COGS"
+    },
+    {
+      "code": "760",
+      "name": "PAZARLAMA GİDERLERİ",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "OPERATING_EXPENSE"
+    },
+    {
+      "code": "770",
+      "name": "GENEL YÖNETİM GİDERLERİ",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "770.01",
+      "name": "Personel Giderleri",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "770",
+      "category": "PAYROLL_EXPENSE"
+    }
   ]
 }

@@ -2,7 +2,7 @@
 
 > Living context document. Read this first in a new session.
 
-**Last updated**: 2026-08-15
+**Last updated**: 2026-08-15 (configuration foundation + tax engine + posting routes wired)
 
 ---
 
@@ -19,11 +19,14 @@ finance).
   Tailwind 3, TanStack Query + Table, Zustand, Radix primitives, Recharts, Framer Motion,
   Playwright for E2E
 - `database/` — schema and seed material
-- **Production database: Supabase** (managed PostgreSQL). The `docker-compose.yml` Postgres is
-  local development only. `schema.prisma` uses the Supabase pooler pattern — migrations must run
-  against `DIRECT_URL`, not the pooled `DATABASE_URL`. Postgres RLS is therefore available, which
-  matters for the multi-tenancy gap in `docs/process/GAP_ANALYSIS.md`.
-- `skarpine-pos/` — **git submodule**, separate repo (mobile/terminal POS)
+- **Supabase is the TEST/development database, not production** — corrected by Kubi 2026-08-15.
+  Earlier revisions of this file called it the production database; that was wrong. The data in it
+  (including the accounts and journals cited throughout `docs/process/GAP_ANALYSIS.md`) is test data.
+  The defects D-1…D-7 are real defects in running code, but the *amounts* are not filed tax figures.
+  **Where production runs, if anywhere, is not recorded anywhere in this repo — still to confirm.**
+  `schema.prisma` uses the Supabase pooler pattern; migrations must run against `DIRECT_URL`, not the
+  pooled `DATABASE_URL`. Postgres RLS is available, which matters for the multi-tenancy gap.
+- `skarpine-pos/` — separate nested repo (mobile/terminal POS). NOT a submodule — there is no `.gitmodules`; commit from inside that directory.
 - `docs/`, `alm/` — documentation and lifecycle material
 
 **Overall stage**: BETA / MVP. See `Roadmap_Improvement_Prod.md` for the production audit
@@ -92,11 +95,229 @@ part of the "third process" is already built.
 FOUNDATIONS.md §6 — this is a quarter of foundation work before new user-facing features.
 **Not yet approved.**
 
-### Next decision point
+### Implementation started 2026-08-15 — configuration foundation
 
-Kubi to approve or re-scope the implementation sequence in FOUNDATIONS.md §6:
-`D-1…D-6 → numbering → product dimensions → financial dimensions → posting profiles → tax`.
-**No implementation has begun and none should begin without that approval.**
+Kubi approved proceeding. Sequence was revised (posting profiles and numbering moved **ahead of**
+product dimensions) because they are what stops the ledger being wrong, and product dimensions do
+not depend on them. Design rationale:
+[docs/architecture/PARAMETERS_AND_CONFIG.md](docs/architecture/PARAMETERS_AND_CONFIG.md).
+
+**Built and type-checked:**
+
+| Artefact | What |
+|---|---|
+| `prisma/schema.prisma` | 6 new models: `PostingProfile`, `NumberSequence`, and `Finance/Sales/Purchase/Inventory Parameters`. All carry a nullable `legal_entity_id` forward hook. Additive only — no existing model touched. |
+| [backend/prisma/sql/001_configuration_foundation.sql](backend/prisma/sql/001_configuration_foundation.sql) | Reviewed DDL. Verified additive: 6 `CREATE TABLE`, indexes, one FK on a new table. No `DROP`/`TRUNCATE`/`DELETE`/`ALTER` on anything pre-existing. Hand-edited to add `NULLS NOT DISTINCT` on all six unique indexes — Prisma cannot express it, and without it duplicate tenant-default rows slip through (the D-1 condition). |
+| `src/shared/services/postingProfile.service.ts` | Most-specific-first resolver (ITEM → ITEM_GROUP → PARTY → PARTY_GROUP → ALL). **Unresolved throws; it never skips** — that is the D-4 fix. |
+| `src/shared/services/numberSequence.service.ts` | Atomic allocator. `continuous=true` allocates on the caller's transaction (gapless, holds the lock); `false` allocates on its own connection (may gap, no contention). The Bolivian factura legal question now selects a flag instead of blocking design. |
+| `src/infrastructure/database/provisionConfiguration.ts` | Derives posting profiles from the accounts a tenant **actually has**. Dry-run by default. Refuses to guess when several candidates exist. |
+
+### Tax engine added 2026-08-15 — and a design correction
+
+Kubi's requirement: the finance setup must be sellable in Turkey and Germany later, so everything
+built now must be parameter-driven. That requirement **invalidated the first cut**: `SalesParameters`
+originally held `vat_rate` / `turnover_tax_rate` as columns, which is Bolivia's shape parameterised,
+not a tax engine. Caught before anything was wired; the tables were empty, so migration 002 replaced
+those columns at zero cost. Full reasoning in
+[PARAMETERS_AND_CONFIG.md §8](docs/architecture/PARAMETERS_AND_CONFIG.md).
+
+Adopted D365's model: `TaxCode` (rate + rules) resolved by **`TaxGroup` (party) ∩ `ItemTaxGroup`
+(product)**. One schema carries Bolivia (IVA 13% inclusive + IT 3% non-recoverable turnover), Turkey
+(KDV 20/10/1 + tevkifat partial withholding above a threshold) and Germany (USt 19/7 + reverse
+charge §13b + exempt intra-community supply).
+
+**Bolivia does not regress, and it is tested rather than asserted:**
+`src/__tests__/tax.service.test.ts` proves `calculateTax` with IVA13 + IT3 returns exactly what
+`config/tax.ts resolveTax()` returns, using the real amounts from production. 19 tests, all passing.
+
+### Migrations applied to production 2026-08-15
+
+| File | Applied | Contents |
+|---|---|---|
+| [001_configuration_foundation.sql](backend/prisma/sql/001_configuration_foundation.sql) | yes | 6 tables, purely additive |
+| [002_tax_engine.sql](backend/prisma/sql/002_tax_engine.sql) | yes | 5 tax tables; 4 nullable columns on customers/suppliers/products; drops 5 columns from `sales_parameters`, **verified 0 rows first** |
+
+**Nothing is wired into the posting routes yet.** The tables are empty and no route reads them, so
+applying the migrations changed no runtime behaviour. The IVA report hotfix (D-7) remains the only
+behaviour change shipped.
+
+### Provisioning preview against production — *read-only, verified 2026-08-15*
+
+9 of 11 posting types resolve unambiguously. The 2 that do not are exactly the two defects:
+
+```
+AMBIG  AR          1103 "Cuentas por Cobrar" (22 lines)  ·  1201 "Activo Fijo" (4 lines)
+AMBIG  VAT_OUTPUT  2103 "IVA Débito Fiscal" (11 lines)   ·  2105 "IVA Débito Fiscal" (4 lines)
+```
+
+The script stops on both rather than guessing. AR is easy for a human (`1201` is Fixed Assets; the
+4 lines there are the D-6 damage). VAT_OUTPUT is a genuine Finance decision — which of the two IVA
+Débito accounts becomes canonical, and how the other is closed out.
+
+### Country independence — migration 003, `Account.category`
+
+Requirement from Kubi: the finance setup must not need re-customisation per country. The remaining
+hard-coding was **account numbers**, which are locally mandated and differ everywhere:
+
+```
+ACCOUNTS_RECEIVABLE = 1103 Bolivia PCG · 120 Alıcılar Turkey TDHP · 1200 German SKR04
+VAT_PAYABLE         = 2103/2105 Bolivia · 391 Hesaplanan KDV Turkey
+```
+
+Adopted D365's **main account category** — a country-independent classification whose documented
+purpose is to make the default financial reports work *"without making any modifications"*
+([Plan your chart of accounts](https://learn.microsoft.com/dynamics365/finance/general-ledger/plan-chart-of-accounts)).
+
+- `Account.category` (migration 003, one nullable column, applied).
+- `shared/services/accountCategory.ts` — the category list and the
+  `POSTING_TYPE_BY_CATEGORY` map. **Contains no account numbers.**
+- `provisionConfiguration.ts` was rewritten to resolve everything by category. It too contains no
+  account numbers, except in the one place that backfills old data from a template.
+- COA templates now declare **chart + category + tax codes + tax groups together**. Onboarding a
+  country is a JSON file, not a code change. Bolivia, Turkey (KDV 20/10/1, tevkifat, export
+  exemption) and generic IFRS (domestic / EU reverse charge / export) all ship.
+- `POST /seed-coa` now **refuses** to layer a template that would duplicate an existing account's
+  *meaning* under a different code — the exact mechanism that produced D-1. Override with
+  `?force=true`.
+
+### Two safeguards added because the first implementation was wrong
+
+1. **Backfill must agree by name, not only by code.** The bolivia-pcg template maps `1201` to
+   ACCOUNTS_RECEIVABLE, but this tenant's `1201` is *Activo Fijo*. A code-only backfill would have
+   labelled Fixed Assets as receivables and generated a posting profile from it — **recreating D-6
+   with the script written to prevent it.** Mismatches are now reported and left uncategorised.
+2. **A single candidate is not proof.** VAT_OUTPUT first resolved cleanly to `2105` only because its
+   rival `2103` (11 posted lines) was unclassified and therefore invisible. The script now warns when
+   a similarly-named uncategorised account exists. Threshold is **two** shared name stems — one
+   produced false positives across a Spanish chart ("Cuentas por Cobrar" vs "Cuentas por Pagar").
+
+### AR and VAT_OUTPUT — decided 2026-08-15, on evidence
+
+Provisioning applied with explicit pins, recorded in each profile's description:
+
+| Posting type | Chosen | Why | Rejected |
+|---|---|---|---|
+| `AR` | **1103** Cuentas por Cobrar | 22 posted lines; the ERP sales path; genuinely named AR | `1201` is *Activo Fijo* — a fixed-asset account. Its 4 lines / Bs 6 897 **are** the D-6 damage |
+| `VAT_OUTPUT` | **2103** IVA Débito Fiscal | 11 posted lines, Bs 3 098,14; the IVA report reads it | `2105`, 4 lines, Bs 793,45 — must be closed into 2103 by correction journal |
+
+Result: **11 posting profiles, 2 number sequences, tax codes IVA13 + IT3, groups DOM ∩ STD, and all
+four parameter rows created.** Only `ROUNDING` is unconfigured (no OTHER_INCOME account exists yet;
+not required to trade).
+
+### Posting routes wired 2026-08-15 — the literals are gone
+
+Every account-code literal has been removed from the posting paths. `grep -rn "code: '[0-9]"` over
+`sales/`, `pos/`, `purchase/` and `hr/` now returns nothing, and no `journalEntry.count()` numbering
+remains anywhere.
+
+| Site | Change |
+|---|---|
+| `sales.routes.ts` — invoice, AR payment, return | Profiles + atomic voucher numbers |
+| `sales.service.ts` — COGS on shipment | Profiles; the swallowing `catch` deleted |
+| `pos.routes.ts` — sale, void | Profiles; **IT expense + payable lines added (D-3)**; revenue and COGS now share ONE guard (D-2) |
+| `purchase.routes.ts` — receipt, AP payment | Profiles; the swallowing `catch` deleted |
+| `hr.routes.ts` — payroll | Profiles via new `PAYROLL_EXPENSE` / `PAYROLL_PAYABLE` types |
+| `finance.routes.ts` — manual journal | Atomic voucher number |
+
+New `shared/services/posting.service.ts` is the single entry point. On unresolved profiles it throws
+when `require_balanced_posting` is true, and logs at ERROR and skips when false — never silent
+either way. An unprovisioned tenant defaults to strict.
+
+**Verified end-to-end against the live test database**, not mocks:
+
+```
+AR         → 1103 Cuentas por Cobrar    (not Activo Fijo — D-6 clear)
+VAT_OUTPUT → 2103 IVA Débito Fiscal     (matches the IVA report — D-7 clear)
+sequence   → JE-2026-00081, JE-2026-00082, no collision (D-5 clear)
+tax engine → gross Bs 1 299,00 → subtotal 1 149,56 · IVA 149,44 · IT 34,49
+             identical to live factura #26
+```
+
+Tests: 77 passing. The 9 failures are the four pre-existing suites (Express middleware signatures,
+`orderCounter` mock) — `git status` confirms those files were never touched.
+
+### Turkish tevkifat — primary source, and it corrected two things
+
+Researched from the legislation itself, not commentary: **KDV Genel Uygulama Tebliği I/C-2.1.3.4.1**
+(Resmî Gazete 26.04.2014, no. 28983), obtained from the GİB PDF.
+
+> "Kısmi tevkifat uygulaması kapsamına giren her bir işlemin **KDV dahil bedeli** […] fatura
+> düzenleme sınırını aşmadığı takdirde, hesaplanan KDV tevkifata tabi tutulmaz. Sınırın aşılması
+> halinde ise **tutarın tamamı** üzerinden tevkifat yapılır."
+
+1. **The threshold is not a constant.** It is the VUK art. 232 invoice limit, reset annually:
+   **12.000 TL for 2026** (VUK GT No. 588), 9.900 TL for 2025. The earlier 9.900 figure taken from
+   community sources was last year's. `TaxCode` is date-effective, so a new row each January covers
+   it — no schema change.
+2. **The threshold is tested on the KDV-INCLUSIVE amount.** The first implementation compared the
+   net and would have wrongly exempted transactions near the boundary. Fixed, with a test.
+3. Once exceeded, withholding applies to the **whole** tax. Already correct.
+
+**Still unvalidated:** which of the 2/10 … 9/10 ratios applies to which of the 15 service categories,
+and who counts as a designated withholding agent. Flagged in the template `note` and surfaced by the
+provisioning script as a `VALIDATE` line.
+
+### Finance co-founder review document
+
+Published as an artifact for the Finance co-founder: the seven defects, the two account decisions
+with evidence, four correction entries awaiting approval, the five open Bolivian questions, and the
+Turkish legal position. <https://claude.ai/code/artifact/5e778381-6217-4335-92e4-20998d566b83>
+
+### Tax engine wired 2026-08-15 — `config/tax.ts` retired from the modules
+
+The engine existed but nothing used it; amounts were still computed the old way. Every document now
+resolves tax through `shared/services/documentTax.service.ts`.
+`grep -rn "resolveTax\|TAX\." src/modules` returns nothing.
+
+**A second defect surfaced while doing this.** `purchase.routes.ts` and `sales.service.ts` called
+`TAX.iva(subtotal)` — the **hardcoded Bolivian constant**, not even the tenant's own `tax_config`.
+Every tenant got 13% regardless of configuration. Invisible with one tenant; a correctness bug the
+moment there are two. Fixed.
+
+`Tenant.tax_config` survives only as a **fallback** for tenants with no tax setup, and the service
+logs a warning when it is used. Delete it, and `config/tax.ts`, once every tenant is provisioned.
+
+`POST /accounts/seed-default` no longer carries its own inline account list — it delegates to the
+`bolivia-pcg` template. That inline list was the *other* half of D-1: a second definition of the
+Bolivian chart that disagreed with the template on the meaning of `1201`. One definition now.
+
+**Migration 004** adds `item_tax_group_id`, `tax_amount`, `tax_base` to `sales_order_lines` and
+`purchase_order_lines`. Additive, nothing writes them yet — see the limitation below.
+
+### D-4 is closed for this tenant
+
+`require_balanced_posting` flipped to **true** after verifying all seven trade-critical posting types
+resolve. A document that cannot post its journal now fails the whole operation.
+
+### KNOWN LIMITATION — read before any multi-rate market
+
+**Tax is computed on the document total, not per line.** Correct for Bolivia, where one rate applies
+to everything. **Wrong for Turkey (KDV 20/10/1) and Germany (USt 19/7)** — an order holding one
+standard-rated and one reduced-rate product has no single header rate.
+
+The hook is in place (migration 004), so this is a service refactor rather than a migration against
+live orders. **It must be done before selling into either market.** Documented in
+`documentTax.service.ts`.
+
+### Next decision points
+
+1. **Correction journals** for D-2 (Bs 3 250), D-6 (Bs 6 897), D-3 (Bs 189,23), plus closing `2105`
+   into `2103`. Test data, so low risk — but review with the Finance co-founder, because the same
+   script will later run against real books.
+2. **Per-line tax refactor** — required before Turkey or Germany.
+3. **Purchase net-vs-inclusive.** Purchase treats `subtotal` as net and adds tax on top, while the
+   Bolivian IVA code is price-inclusive. The existing arithmetic was preserved rather than silently
+   changed — it would move every purchase total. Add to the co-founder question list.
+4. **Turkish tevkifat ratios need legal validation** — the threshold is now sourced from primary law,
+   but which of 2/10…9/10 applies per service category is not. Flagged in the template `note` and
+   surfaced by the provisioning script.
+5. The five Bolivian questions and the two account confirmations, in the review artifact.
+
+### Not yet decided — flagged, not actioned
+
+The repo has **no `prisma/migrations/` history**; it has been using `db push`. Adopting real
+migrations requires baselining the existing schema first. `prisma/sql/` is an interim convention,
+not an endorsement of it.
 
 ---
 
@@ -191,9 +412,25 @@ one list page) as a before/after, confirm direction, then roll out.
 
 ## 6. Known Issues / Blockers
 
-### CRITICAL — live accounting defects found 2026-08-15
+### CRITICAL — live accounting defects found 2026-08-15, **verified against production same day**
 
-Detail and evidence in [GAP_ANALYSIS.md §0](docs/process/GAP_ANALYSIS.md). Summary:
+Detail and evidence in [GAP_ANALYSIS.md §0](docs/process/GAP_ANALYSIS.md).
+**§0.0 holds the production verification** — all defects confirmed with amounts.
+
+**Headline:** the live tenant has **both** charts of accounts (seed applied 2026-03-31, JSON template
+applied on top 2026-06-01, 29 accounts, two different `IVA Débito Fiscal` accounts). Both D-2 failure
+modes therefore occurred in sequence, and a seventh defect was found:
+
+- **D-7 (new, most urgent)** — the IVA report reads only `2103`; POS credits `2105`. **Every IVA
+  declaration since 2026-06-01 understates débito fiscal by Bs 793,45** — all POS output tax is
+  missing from the filing.
+- **D-6 is ACTIVE, not latent** — Bs 6 897,00 of POS receivables sit in `1201 Activo Fijo`.
+- **D-2** cost Bs 3 250,00 of COGS with no revenue (5 orphan journals, 2026-04-05).
+- **D-3** Bs 189,23 of POS IT never posted.
+- Trial balance is clean — no unbalanced entries. Damage is in account selection and missing
+  entries, not corrupt double-entry.
+
+Summary of the original findings:
 
 - **D-1** Two incompatible charts of accounts exist. `bolivia-pcg.json` and the `finance.routes.ts`
   seed assign different codes to the same accounts — `1201` is *Cuentas por Cobrar* in one and

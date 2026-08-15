@@ -16,19 +16,19 @@ datasource db {
 // =====================
 
 model Tenant {
-  id         String   @id @default(uuid()) @db.Uuid
-  slug       String   @unique
-  name       String
-  plan       String   @default("starter")
-  modules    Json
-  branding   Json?
+  id            String   @id @default(uuid()) @db.Uuid
+  slug          String   @unique
+  name          String
+  plan          String   @default("starter")
+  modules       Json
+  branding      Json?
   language      String   @default("en")
   timezone      String   @default("UTC")
   currency_code String   @default("USD")
   tax_config    Json?
   is_active     Boolean  @default(true)
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 
   @@map("tenants")
 }
@@ -75,18 +75,18 @@ model RefreshToken {
 // =====================
 
 model Site {
-  id         String      @id @default(uuid()) @db.Uuid
-  tenant_id  String      @db.Uuid
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
   code       String
   name       String
   city       String
-  country    String      @default("TR")
+  country    String   @default("TR")
   address    String?
-  is_active  Boolean     @default(true)
-  created_at DateTime    @default(now())
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
 
-  warehouses  Warehouse[]
-  employees   Employee[]
+  warehouses   Warehouse[]
+  employees    Employee[]
   sales_orders SalesOrder[]
 
   @@unique([tenant_id, code])
@@ -94,42 +94,42 @@ model Site {
 }
 
 model Warehouse {
-  id         String           @id @default(uuid()) @db.Uuid
-  tenant_id  String           @db.Uuid
-  site_id    String           @db.Uuid
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  site_id    String   @db.Uuid
   code       String
   name       String
-  type       String           @default("standard")
-  is_active  Boolean          @default(true)
-  created_at DateTime         @default(now())
+  type       String   @default("standard")
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
 
-  site             Site               @relation(fields: [site_id], references: [id])
-  zones            WarehouseZone[]
-  purchase_orders  PurchaseOrder[]
-  sales_orders     SalesOrder[]
-  warehouse_work   WarehouseWork[]
-  waves            Wave[]
-  arrival_journals ArrivalJournal[]
+  site                Site                @relation(fields: [site_id], references: [id])
+  zones               WarehouseZone[]
+  purchase_orders     PurchaseOrder[]
+  sales_orders        SalesOrder[]
+  warehouse_work      WarehouseWork[]
+  waves               Wave[]
+  arrival_journals    ArrivalJournal[]
   location_directives LocationDirective[]
-  work_templates   WorkTemplate[]
-  wave_templates   WaveTemplate[]
+  work_templates      WorkTemplate[]
+  wave_templates      WaveTemplate[]
 
   @@unique([tenant_id, code])
   @@map("warehouses")
 }
 
 model WarehouseZone {
-  id           String              @id @default(uuid()) @db.Uuid
-  tenant_id    String              @db.Uuid
-  warehouse_id String              @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
+  warehouse_id String   @db.Uuid
   code         String
   name         String
-  zone_type    String              @default("storage")
-  created_at   DateTime            @default(now())
+  zone_type    String   @default("storage")
+  created_at   DateTime @default(now())
 
-  warehouse        Warehouse               @relation(fields: [warehouse_id], references: [id])
-  locations        WarehouseLocation[]
-  directive_lines  LocationDirectiveLine[]
+  warehouse       Warehouse               @relation(fields: [warehouse_id], references: [id])
+  locations       WarehouseLocation[]
+  directive_lines LocationDirectiveLine[]
 
   @@unique([warehouse_id, code])
   @@map("warehouse_zones")
@@ -152,14 +152,14 @@ model WarehouseLocation {
   is_active           Boolean  @default(true)
   created_at          DateTime @default(now())
 
-  zone            WarehouseZone        @relation(fields: [zone_id], references: [id])
-  inventory_stock InventoryStock[]
-  count_lines InventoryCountLine[]
-  pick_work_lines  WarehouseWorkLine[] @relation("from_location")
-  put_work_lines   WarehouseWorkLine[] @relation("to_location")
-  directive_lines  LocationDirectiveLine[]
-  inv_tx_from      InventoryTransaction[] @relation("inv_tx_from")
-  inv_tx_to        InventoryTransaction[] @relation("inv_tx_to")
+  zone              WarehouseZone           @relation(fields: [zone_id], references: [id])
+  inventory_stock   InventoryStock[]
+  count_lines       InventoryCountLine[]
+  pick_work_lines   WarehouseWorkLine[]     @relation("from_location")
+  put_work_lines    WarehouseWorkLine[]     @relation("to_location")
+  directive_lines   LocationDirectiveLine[]
+  inv_tx_from       InventoryTransaction[]  @relation("inv_tx_from")
+  inv_tx_to         InventoryTransaction[]  @relation("inv_tx_to")
   inventory_batches InventoryBatch[]
 
   @@unique([zone_id, code])
@@ -171,12 +171,12 @@ model WarehouseLocation {
 // =====================
 
 model ProductCategory {
-  id         String           @id @default(uuid()) @db.Uuid
-  tenant_id  String           @db.Uuid
-  parent_id  String?          @db.Uuid
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  parent_id  String?  @db.Uuid
   code       String
   name       String
-  created_at DateTime         @default(now())
+  created_at DateTime @default(now())
 
   parent   ProductCategory?  @relation("subcategories", fields: [parent_id], references: [id])
   children ProductCategory[] @relation("subcategories")
@@ -187,39 +187,44 @@ model ProductCategory {
 }
 
 model Product {
-  id              String   @id @default(uuid()) @db.Uuid
-  tenant_id       String   @db.Uuid
-  sku             String
-  barcode         String?
-  name            String
-  description     String?
-  category_id     String?  @db.Uuid
-  brand           String?
-  attributes      Json?
-  uom_id          String?  @db.Uuid
-  product_type    String   @default("physical")  // physical, service, digital
-  cost_price      Decimal? @db.Decimal(12, 2)
-  selling_price   Decimal  @db.Decimal(12, 2)
-  sale_price      Decimal? @db.Decimal(12, 2)
-  weight_kg       Decimal? @db.Decimal(8, 3)
-  reorder_point   Int      @default(0)  // low-stock alert threshold; 0 = no alerting
-  images          String[]
-  video_urls      String[]
-  is_active       Boolean  @default(true)
-  is_published    Boolean  @default(false)
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id                String   @id @default(uuid()) @db.Uuid
+  tenant_id         String   @db.Uuid
+  sku               String
+  barcode           String?
+  name              String
+  description       String?
+  category_id       String?  @db.Uuid
+  brand             String?
+  attributes        Json?
+  uom_id            String?  @db.Uuid
+  product_type      String   @default("physical") // physical, service, digital
+  cost_price        Decimal? @db.Decimal(12, 2)
+  selling_price     Decimal  @db.Decimal(12, 2)
+  sale_price        Decimal? @db.Decimal(12, 2)
+  weight_kg         Decimal? @db.Decimal(8, 3)
+  reorder_point     Int      @default(0) // low-stock alert threshold; 0 = no alerting
+  /// Product side of the tax intersection — see the TAX ENGINE section. Nullable,
+  /// so every existing product keeps the SalesParameters default until classified.
+  /// This is the column that carries reduced rates (Turkish KDV 10%/1%, German 7%).
+  item_tax_group_id String?  @db.Uuid
+  images            String[]
+  video_urls        String[]
+  is_active         Boolean  @default(true)
+  is_published      Boolean  @default(false)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
 
-  category              ProductCategory?     @relation(fields: [category_id], references: [id])
-  uom                   UnitOfMeasure?       @relation(fields: [uom_id], references: [id])
-  variants              ProductVariant[]
-  inventory_stock       InventoryStock[]
+  category               ProductCategory?       @relation(fields: [category_id], references: [id])
+  uom                    UnitOfMeasure?         @relation(fields: [uom_id], references: [id])
+  item_tax_group         ItemTaxGroup?          @relation(fields: [item_tax_group_id], references: [id])
+  variants               ProductVariant[]
+  inventory_stock        InventoryStock[]
   inventory_transactions InventoryTransaction[]
-  inventory_batches     InventoryBatch[]
-  sales_order_lines     SalesOrderLine[]
-  purchase_order_lines  PurchaseOrderLine[]
-  count_lines InventoryCountLine[]
-  work_lines            WarehouseWorkLine[]
+  inventory_batches      InventoryBatch[]
+  sales_order_lines      SalesOrderLine[]
+  purchase_order_lines   PurchaseOrderLine[]
+  count_lines            InventoryCountLine[]
+  work_lines             WarehouseWorkLine[]
 
   @@unique([tenant_id, sku])
   @@map("products")
@@ -276,7 +281,7 @@ model InventoryTransaction {
   transaction_type String
   reference_type   String?
   reference_id     String?  @db.Uuid
-  reference_number String?  // human-readable: PO-2026-00004 / SO-2026-00004
+  reference_number String? // human-readable: PO-2026-00004 / SO-2026-00004
   product_id       String   @db.Uuid
   variant_id       String?  @db.Uuid
   from_location_id String?  @db.Uuid
@@ -287,10 +292,10 @@ model InventoryTransaction {
   performed_by     String?  @db.Uuid
   created_at       DateTime @default(now())
 
-  product       Product              @relation(fields: [product_id], references: [id])
-  variant       ProductVariant?      @relation(fields: [variant_id], references: [id])
-  from_location WarehouseLocation?   @relation("inv_tx_from", fields: [from_location_id], references: [id])
-  to_location   WarehouseLocation?   @relation("inv_tx_to", fields: [to_location_id], references: [id])
+  product       Product            @relation(fields: [product_id], references: [id])
+  variant       ProductVariant?    @relation(fields: [variant_id], references: [id])
+  from_location WarehouseLocation? @relation("inv_tx_from", fields: [from_location_id], references: [id])
+  to_location   WarehouseLocation? @relation("inv_tx_to", fields: [to_location_id], references: [id])
 
   @@index([tenant_id, product_id])
   @@index([tenant_id, created_at(sort: Desc)])
@@ -302,17 +307,17 @@ model InventoryTransaction {
 // =====================
 
 model InventoryBatch {
-  id           String    @id @default(uuid()) @db.Uuid
-  tenant_id    String    @db.Uuid
-  product_id   String    @db.Uuid
-  variant_id   String?   @db.Uuid
-  location_id  String    @db.Uuid
-  source_po_id String?   @db.Uuid   // which PO created this batch
-  po_number    String?               // human-readable "PO-2026-00004"
-  quantity     Int                   // remaining quantity in this batch
-  unit_cost    Decimal   @db.Decimal(14, 4) @default(0)
-  received_at  DateTime  @default(now())
-  created_at   DateTime  @default(now())
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
+  product_id   String   @db.Uuid
+  variant_id   String?  @db.Uuid
+  location_id  String   @db.Uuid
+  source_po_id String?  @db.Uuid // which PO created this batch
+  po_number    String? // human-readable "PO-2026-00004"
+  quantity     Int // remaining quantity in this batch
+  unit_cost    Decimal  @default(0) @db.Decimal(14, 4)
+  received_at  DateTime @default(now())
+  created_at   DateTime @default(now())
 
   product  Product           @relation(fields: [product_id], references: [id])
   variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
@@ -327,14 +332,14 @@ model InventoryBatch {
 // =====================
 
 model WorkTemplate {
-  id           String             @id @default(uuid()) @db.Uuid
-  tenant_id    String             @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
   code         String
   name         String
   work_type    String
-  warehouse_id String             @db.Uuid
-  is_active    Boolean            @default(true)
-  created_at   DateTime           @default(now())
+  warehouse_id String   @db.Uuid
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
 
   warehouse Warehouse          @relation(fields: [warehouse_id], references: [id])
   lines     WorkTemplateLine[]
@@ -344,12 +349,12 @@ model WorkTemplate {
 }
 
 model WorkTemplateLine {
-  id          String @id @default(uuid()) @db.Uuid
-  template_id String @db.Uuid
-  sequence    Int
-  work_type   String
+  id            String  @id @default(uuid()) @db.Uuid
+  template_id   String  @db.Uuid
+  sequence      Int
+  work_type     String
   location_type String?
-  sort_order  Int    @default(0)
+  sort_order    Int     @default(0)
 
   template WorkTemplate @relation(fields: [template_id], references: [id], onDelete: Cascade)
 
@@ -357,16 +362,16 @@ model WorkTemplateLine {
 }
 
 model LocationDirective {
-  id             String                  @id @default(uuid()) @db.Uuid
-  tenant_id      String                  @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  tenant_id      String   @db.Uuid
   code           String
   name           String
   directive_type String
-  warehouse_id   String                  @db.Uuid
+  warehouse_id   String   @db.Uuid
   work_type      String
   sequence       Int
-  is_active      Boolean                 @default(true)
-  created_at     DateTime                @default(now())
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now())
 
   warehouse Warehouse               @relation(fields: [warehouse_id], references: [id])
   lines     LocationDirectiveLine[]
@@ -376,14 +381,14 @@ model LocationDirective {
 }
 
 model LocationDirectiveLine {
-  id           String  @id @default(uuid()) @db.Uuid
-  directive_id String  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  directive_id String   @db.Uuid
   sequence     Int
-  from_qty     Decimal @default(0) @db.Decimal(12, 2)
+  from_qty     Decimal  @default(0) @db.Decimal(12, 2)
   to_qty       Decimal? @db.Decimal(12, 2)
-  strategy     String  @default("CONSOLIDATE")
-  zone_id      String? @db.Uuid
-  location_id  String? @db.Uuid
+  strategy     String   @default("CONSOLIDATE")
+  zone_id      String?  @db.Uuid
+  location_id  String?  @db.Uuid
 
   directive LocationDirective  @relation(fields: [directive_id], references: [id], onDelete: Cascade)
   zone      WarehouseZone?     @relation(fields: [zone_id], references: [id])
@@ -393,14 +398,14 @@ model LocationDirectiveLine {
 }
 
 model WaveTemplate {
-  id           String  @id @default(uuid()) @db.Uuid
-  tenant_id    String  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
   code         String
   name         String
-  warehouse_id String  @db.Uuid
-  wave_type    String  @default("SHIPPING")
-  auto_process Boolean @default(false)
-  auto_release Boolean @default(false)
+  warehouse_id String   @db.Uuid
+  wave_type    String   @default("SHIPPING")
+  auto_process Boolean  @default(false)
+  auto_release Boolean  @default(false)
   created_at   DateTime @default(now())
 
   warehouse Warehouse @relation(fields: [warehouse_id], references: [id])
@@ -485,18 +490,18 @@ model ArrivalJournal {
   posted_at         DateTime?
   created_at        DateTime  @default(now())
 
-  warehouse       Warehouse            @relation(fields: [warehouse_id], references: [id])
-  purchase_order  PurchaseOrder?       @relation(fields: [purchase_order_id], references: [id])
-  lines           ArrivalJournalLine[]
+  warehouse      Warehouse            @relation(fields: [warehouse_id], references: [id])
+  purchase_order PurchaseOrder?       @relation(fields: [purchase_order_id], references: [id])
+  lines          ArrivalJournalLine[]
 
   @@map("arrival_journals")
 }
 
 model ArrivalJournalLine {
-  id                  String  @id @default(uuid()) @db.Uuid
-  journal_id          String  @db.Uuid
-  product_id          String  @db.Uuid
-  variant_id          String? @db.Uuid
+  id                  String   @id @default(uuid()) @db.Uuid
+  journal_id          String   @db.Uuid
+  product_id          String   @db.Uuid
+  variant_id          String?  @db.Uuid
   expected_qty        Decimal? @db.Decimal(12, 2)
   received_qty        Decimal  @default(0) @db.Decimal(12, 2)
   receive_location_id String?  @db.Uuid
@@ -523,31 +528,36 @@ model Supplier {
   country       String?
   payment_terms Int?     @default(30)
   currency      String   @default("BOB")
+  /// Party side of the tax intersection. Nullable — falls back to the default on
+  /// PurchaseParameters/SalesParameters when unset, which is how existing rows keep
+  /// working unchanged.
+  tax_group_id  String?  @db.Uuid
   is_active     Boolean  @default(true)
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
   purchase_orders PurchaseOrder[]
+  tax_group       TaxGroup?       @relation(fields: [tax_group_id], references: [id])
 
   @@unique([tenant_id, code])
   @@map("suppliers")
 }
 
 model PurchaseOrder {
-  id           String    @id @default(uuid()) @db.Uuid
-  tenant_id    String    @db.Uuid
-  po_number    String    @unique
-  supplier_id  String    @db.Uuid
-  warehouse_id String    @db.Uuid
-  status       String    @default("DRAFT")
-  order_date   DateTime  @default(now()) @db.Date
-  expected_date DateTime? @db.Date
-  currency     String    @default("TRY")
-  subtotal     Decimal   @default(0) @db.Decimal(14, 2)
-  tax_amount   Decimal   @default(0) @db.Decimal(14, 2)
-  total_amount Decimal   @default(0) @db.Decimal(14, 2)
-  notes        String?
-  created_by   String?   @db.Uuid
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenant_id           String    @db.Uuid
+  po_number           String    @unique
+  supplier_id         String    @db.Uuid
+  warehouse_id        String    @db.Uuid
+  status              String    @default("DRAFT")
+  order_date          DateTime  @default(now()) @db.Date
+  expected_date       DateTime? @db.Date
+  currency            String    @default("TRY")
+  subtotal            Decimal   @default(0) @db.Decimal(14, 2)
+  tax_amount          Decimal   @default(0) @db.Decimal(14, 2)
+  total_amount        Decimal   @default(0) @db.Decimal(14, 2)
+  notes               String?
+  created_by          String?   @db.Uuid
   confirmed_at        DateTime?
   created_at          DateTime  @default(now())
   updated_at          DateTime  @updatedAt
@@ -558,8 +568,8 @@ model PurchaseOrder {
   paid_at             DateTime?
   paid_by             String?   @db.Uuid
 
-  supplier         Supplier           @relation(fields: [supplier_id], references: [id])
-  warehouse        Warehouse          @relation(fields: [warehouse_id], references: [id])
+  supplier         Supplier            @relation(fields: [supplier_id], references: [id])
+  warehouse        Warehouse           @relation(fields: [warehouse_id], references: [id])
   lines            PurchaseOrderLine[]
   arrival_journals ArrivalJournal[]
 
@@ -577,6 +587,16 @@ model PurchaseOrderLine {
   line_total   Decimal @db.Decimal(14, 2)
   sort_order   Int     @default(0)
 
+  /// Line-level tax — the hook for multi-rate jurisdictions.
+  /// Bolivia has one rate, so tax is computed on the document total today and
+  /// these stay null. Turkey (KDV 20/10/1) and Germany (USt 19/7) cannot be
+  /// represented that way: an order holding one standard-rated and one
+  /// reduced-rate product has no single header rate. These columns exist now so
+  /// that refactor is a service change, not a migration against live orders.
+  item_tax_group_id String?  @db.Uuid
+  tax_amount        Decimal? @db.Decimal(14, 2)
+  tax_base          Decimal? @db.Decimal(14, 2)
+
   purchase_order PurchaseOrder @relation(fields: [po_id], references: [id], onDelete: Cascade)
   product        Product       @relation(fields: [product_id], references: [id])
 
@@ -588,27 +608,35 @@ model PurchaseOrderLine {
 // =====================
 
 model Customer {
-  id              String   @id @default(uuid()) @db.Uuid
-  tenant_id       String   @db.Uuid
-  user_id         String?  @db.Uuid
-  code            String
-  first_name      String
-  last_name       String
-  email           String?
-  phone           String?
-  address         String?
-  city            String?
-  country         String?
-  date_of_birth   DateTime? @db.Date
-  segment         String   @default("regular")
-  tags            String[]
-  notes           String?
-  lifetime_value  Decimal  @default(0) @db.Decimal(14, 2)
-  total_orders    Int      @default(0)
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id             String    @id @default(uuid()) @db.Uuid
+  tenant_id      String    @db.Uuid
+  user_id        String?   @db.Uuid
+  code           String
+  first_name     String
+  last_name      String
+  email          String?
+  phone          String?
+  address        String?
+  city           String?
+  country        String?
+  date_of_birth  DateTime? @db.Date
+  segment        String    @default("regular")
+  tags           String[]
+  notes          String?
+  lifetime_value Decimal   @default(0) @db.Decimal(14, 2)
+  total_orders   Int       @default(0)
+  /// Party side of the tax intersection — see the TAX ENGINE section. Nullable, so
+  /// every existing customer keeps the SalesParameters default until classified.
+  tax_group_id   String?   @db.Uuid
+  /// NIT in Bolivia, VKN/TCKN in Turkey, USt-IdNr in Germany. A validated EU VAT ID
+  /// is what makes an intra-community supply exempt, so this is a tax field, not a
+  /// contact field.
+  tax_id         String?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
 
   sales_orders SalesOrder[]
+  tax_group    TaxGroup?    @relation(fields: [tax_group_id], references: [id])
 
   @@unique([tenant_id, code])
   @@map("customers")
@@ -631,7 +659,7 @@ model SalesOrder {
   shipping_address Json?
   notes            String?
   wave_id          String?   @db.Uuid
-  invoice_id       String?   @db.Uuid  // soft ref to Factura — set when invoiced
+  invoice_id       String?   @db.Uuid // soft ref to Factura — set when invoiced
   paid_at          DateTime?
   paid_by          String?   @db.Uuid
   returned_at      DateTime?
@@ -642,13 +670,13 @@ model SalesOrder {
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
-  customer  Customer?      @relation(fields: [customer_id], references: [id])
-  site      Site?          @relation(fields: [site_id], references: [id])
-  warehouse Warehouse?     @relation(fields: [warehouse_id], references: [id])
-  wave      Wave?          @relation(fields: [wave_id], references: [id])
-  lines     SalesOrderLine[]
-  shipments Shipment[]
-  created_by_user User?    @relation("created_by", fields: [created_by], references: [id])
+  customer        Customer?        @relation(fields: [customer_id], references: [id])
+  site            Site?            @relation(fields: [site_id], references: [id])
+  warehouse       Warehouse?       @relation(fields: [warehouse_id], references: [id])
+  wave            Wave?            @relation(fields: [wave_id], references: [id])
+  lines           SalesOrderLine[]
+  shipments       Shipment[]
+  created_by_user User?            @relation("created_by", fields: [created_by], references: [id])
 
   @@index([tenant_id, status])
   @@index([tenant_id, created_at(sort: Desc)])
@@ -665,6 +693,16 @@ model SalesOrderLine {
   discount_pct Decimal @default(0) @db.Decimal(5, 2)
   line_total   Decimal @db.Decimal(14, 2)
   sort_order   Int     @default(0)
+
+  /// Line-level tax — the hook for multi-rate jurisdictions.
+  /// Bolivia has one rate, so tax is computed on the document total today and
+  /// these stay null. Turkey (KDV 20/10/1) and Germany (USt 19/7) cannot be
+  /// represented that way: an order holding one standard-rated and one
+  /// reduced-rate product has no single header rate. These columns exist now so
+  /// that refactor is a service change, not a migration against live orders.
+  item_tax_group_id String?  @db.Uuid
+  tax_amount        Decimal? @db.Decimal(14, 2)
+  tax_base          Decimal? @db.Decimal(14, 2)
 
   order   SalesOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
   product Product    @relation(fields: [product_id], references: [id])
@@ -706,8 +744,8 @@ model Employee {
   assigned_site_id String?   @db.Uuid
   is_active        Boolean   @default(true)
   // POS device credentials
-  pos_device_id    String?   // human label e.g. "CAJA-01"
-  pos_pin_hash     String?   // bcrypt hash of cashier PIN
+  pos_device_id    String? // human label e.g. "CAJA-01"
+  pos_pin_hash     String? // bcrypt hash of cashier PIN
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
@@ -802,32 +840,49 @@ model Account {
   tenant_id      String   @db.Uuid
   code           String
   name           String
-  type           String   // ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE
+  type           String // ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE
+  /// Country-INDEPENDENT semantic classification. This is the field the system
+  /// reasons about; `code` is a local label that differs per jurisdiction.
+  ///
+  ///   Accounts receivable is 1103 in the Bolivian PCG, 120 (Alıcılar) in the
+  ///   Turkish Tekdüzen Hesap Planı, and 1200 in the German SKR04. Three numbers,
+  ///   one meaning. Anything that resolves an account by CODE is a customisation
+  ///   waiting to happen; anything that resolves by CATEGORY ports for free.
+  ///
+  /// This is D365's main account category, and Microsoft states the purpose
+  /// plainly: link main accounts to categories "so you can take advantage of the
+  /// default financial reports without making any modifications".
+  /// learn.microsoft.com/dynamics365/finance/general-ledger/plan-chart-of-accounts
+  ///
+  /// Values: see ACCOUNT_CATEGORIES in shared/services/accountCategory.ts.
+  /// Nullable because existing rows predate it; the provisioning script backfills.
+  category       String?
   normal_balance String   @default("DEBIT") // DEBIT or CREDIT
   parent_id      String?  @db.Uuid
   is_active      Boolean  @default(true)
   created_at     DateTime @default(now())
 
-  parent        Account?      @relation("AccountHierarchy", fields: [parent_id], references: [id])
-  children      Account[]     @relation("AccountHierarchy")
-  journal_lines JournalLine[]
+  parent           Account?         @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children         Account[]        @relation("AccountHierarchy")
+  journal_lines    JournalLine[]
+  posting_profiles PostingProfile[]
 
   @@unique([tenant_id, code])
   @@map("accounts")
 }
 
 model JournalEntry {
-  id            String   @id @default(uuid()) @db.Uuid
-  tenant_id     String   @db.Uuid
-  entry_number  String   @unique
-  entry_date    DateTime @db.Date
+  id            String    @id @default(uuid()) @db.Uuid
+  tenant_id     String    @db.Uuid
+  entry_number  String    @unique
+  entry_date    DateTime  @db.Date
   description   String
-  source_module String?  // SALE, PURCHASE, MANUAL, ADJUSTMENT
-  source_id     String?  @db.Uuid
-  status        String   @default("DRAFT") // DRAFT, POSTED
-  created_by    String?  @db.Uuid
+  source_module String? // SALE, PURCHASE, MANUAL, ADJUSTMENT
+  source_id     String?   @db.Uuid
+  status        String    @default("DRAFT") // DRAFT, POSTED
+  created_by    String?   @db.Uuid
   posted_at     DateTime?
-  created_at    DateTime @default(now())
+  created_at    DateTime  @default(now())
 
   lines JournalLine[]
 
@@ -851,23 +906,23 @@ model JournalLine {
 }
 
 model Factura {
-  id             String    @id @default(uuid()) @db.Uuid
-  tenant_id      String    @db.Uuid
-  factura_number Int
-  source_type    String    // SALE, MANUAL
-  source_id      String?   @db.Uuid
-  customer_name  String
-  customer_nit   String?   // NIT or CI
-  invoice_date   DateTime  @db.Date
-  subtotal       Decimal   @db.Decimal(14, 2)  // net before IVA
-  iva_amount     Decimal   @db.Decimal(14, 2)  // IVA 13%
-  it_amount      Decimal   @default(0) @db.Decimal(14, 2) // IT 3%
-  total_amount   Decimal   @db.Decimal(14, 2)
-  status         String    @default("ISSUED")  // ISSUED, CANCELLED
-  notes          String?
-  invoice_metadata Json?   // snapshot: { vat_label, secondary_tax_name, invoice_label, currency_code }
-  created_by     String?   @db.Uuid
-  created_at     DateTime  @default(now())
+  id               String   @id @default(uuid()) @db.Uuid
+  tenant_id        String   @db.Uuid
+  factura_number   Int
+  source_type      String // SALE, MANUAL
+  source_id        String?  @db.Uuid
+  customer_name    String
+  customer_nit     String? // NIT or CI
+  invoice_date     DateTime @db.Date
+  subtotal         Decimal  @db.Decimal(14, 2) // net before IVA
+  iva_amount       Decimal  @db.Decimal(14, 2) // IVA 13%
+  it_amount        Decimal  @default(0) @db.Decimal(14, 2) // IT 3%
+  total_amount     Decimal  @db.Decimal(14, 2)
+  status           String   @default("ISSUED") // ISSUED, CANCELLED
+  notes            String?
+  invoice_metadata Json? // snapshot: { vat_label, secondary_tax_name, invoice_label, currency_code }
+  created_by       String?  @db.Uuid
+  created_at       DateTime @default(now())
 
   @@unique([tenant_id, factura_number])
   @@index([tenant_id, invoice_date(sort: Desc)])
@@ -879,9 +934,9 @@ model Factura {
 // =====================
 
 model FacturaCounter {
-  tenant_id      String   @id @db.Uuid
-  last_number    Int      @default(0)
-  updated_at     DateTime @updatedAt
+  tenant_id   String   @id @db.Uuid
+  last_number Int      @default(0)
+  updated_at  DateTime @updatedAt
 
   @@map("factura_counters")
 }
@@ -920,7 +975,7 @@ model AccountingPeriod {
   tenant_id  String    @db.Uuid
   year       Int
   month      Int
-  status     String    @default("OPEN")  // OPEN | CLOSED
+  status     String    @default("OPEN") // OPEN | CLOSED
   closed_at  DateTime?
   closed_by  String?   @db.Uuid
   created_at DateTime  @default(now())
@@ -939,10 +994,10 @@ model AuditLog {
   user_id     String?  @db.Uuid
   user_email  String?
   user_role   String?
-  method      String   // POST | PUT | PATCH | DELETE
+  method      String // POST | PUT | PATCH | DELETE
   path        String
   status_code Int
-  body        Json?    // sanitised request body (passwords stripped)
+  body        Json? // sanitised request body (passwords stripped)
   ip          String?
   user_agent  String?
   duration_ms Int?
@@ -972,16 +1027,392 @@ model OrderCounter {
 // =====================
 
 model UnitOfMeasure {
-  id          String   @id @default(uuid()) @db.Uuid
-  tenant_id   String   @db.Uuid
-  code        String   // e.g. "PCS", "KG", "LTR", "MTR", "BOX", "PAIR"
-  name        String   // e.g. "Pieces", "Kilograms", "Liters"
-  symbol      String   // e.g. "pcs", "kg", "L", "m", "box", "pair"
-  is_active   Boolean  @default(true)
-  created_at  DateTime @default(now())
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  code       String // e.g. "PCS", "KG", "LTR", "MTR", "BOX", "PAIR"
+  name       String // e.g. "Pieces", "Kilograms", "Liters"
+  symbol     String // e.g. "pcs", "kg", "L", "m", "box", "pair"
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
 
   products Product[]
 
   @@unique([tenant_id, code])
   @@map("units_of_measure")
+}
+
+// =====================
+// CONFIGURATION FOUNDATION
+// Design: docs/architecture/PARAMETERS_AND_CONFIG.md
+//
+// Three distinct configuration classes, deliberately NOT merged into one table:
+//   posting_profiles  — resolution matrix : which GL account
+//   number_sequences  — document numbering : which series, gapless or not
+//   *_parameters      — singleton per scope : defaults and functional switches
+//
+// `legal_entity_id` is nullable on every table here and is the forward hook for a
+// tenant that later operates more than one legal company (two SRLs under one owner
+// is ordinary in Bolivia, and each has its own NIT and factura authorisation).
+// NULL means "tenant-wide default". No LegalEntity table exists yet — the column is
+// the part that is expensive to add later, the table is not.
+// =====================
+
+/// Resolves a posting type to a GL account, most-specific-first, the way D365
+/// posting profiles and price tolerances do (Table → Group → All).
+/// Replaces hardcoded account-code literals in the posting routes, which are the
+/// root cause of defects D-1…D-7 (docs/process/GAP_ANALYSIS.md).
+model PostingProfile {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// AR, AP, REVENUE, VAT_OUTPUT, VAT_INPUT, COGS, INVENTORY,
+  /// TAX_TURNOVER_EXPENSE, TAX_TURNOVER_PAYABLE, CASH, BANK, ROUNDING
+  posting_type String
+  /// ALL | ITEM_GROUP | ITEM | PARTY_GROUP | PARTY — the specificity axis.
+  /// ALL is mandatory per posting_type and acts as the fallback; D365 likewise
+  /// forbids deleting the All/All default.
+  scope_kind   String  @default("ALL")
+  /// Null when scope_kind = ALL. Not an FK: the target table depends on scope_kind.
+  scope_id     String? @db.Uuid
+
+  account_id String @db.Uuid
+
+  /// Date-effective so a chart-of-accounts change is a new row, never an update
+  /// that silently repoints history.
+  valid_from DateTime  @db.Date
+  valid_to   DateTime? @db.Date
+
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  account Account @relation(fields: [account_id], references: [id])
+
+  /// Postgres treats NULLs as distinct in unique constraints, which would let
+  /// duplicate ALL-scope rows through. The migration replaces this with the same
+  /// index declared NULLS NOT DISTINCT (Postgres 15+; Supabase runs 17.6).
+  @@unique([tenant_id, legal_entity_id, posting_type, scope_kind, scope_id, valid_from])
+  @@index([tenant_id, posting_type, scope_kind])
+  @@map("posting_profiles")
+}
+
+/// Document numbering framework. D365 splits the sequence definition (Organization
+/// administration) from the module binding (parameters page); this is the definition
+/// half — `reference` is the binding.
+/// Fixes D-5: two ad-hoc series currently share one globally-unique column.
+model NumberSequence {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// FACTURA, CREDIT_NOTE, JOURNAL_VOUCHER, SALES_ORDER, PURCHASE_ORDER,
+  /// INVENTORY_ADJUSTMENT, TRANSFER, PRODUCT_RECEIPT, VENDOR_INVOICE, PAYMENT
+  reference String
+  name      String
+
+  /// Segment format. {YYYY} = year, {LE} = legal entity code, {#####} = padded counter.
+  /// e.g. "JE-{YYYY}-{#####}" or "F-{######}"
+  format String
+
+  /// Gapless. Legally required for some documents in some jurisdictions — the
+  /// Bolivian factura series is the open question (HANDOVER.md §7). Continuous
+  /// allocation must hold a row lock until the caller's transaction commits, which
+  /// is why this is a per-sequence choice and not a global policy.
+  continuous Boolean @default(false)
+
+  /// SHARED | LEGAL_ENTITY | FISCAL_YEAR — controls when the counter restarts.
+  scope String @default("LEGAL_ENTITY")
+
+  next_number  Int  @default(1)
+  /// Set when scope = FISCAL_YEAR; the counter resets when the year rolls over.
+  current_year Int?
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  /// Deferred, and it needs no hook here: gap justification for a continuous
+  /// sequence is a separate table keyed on (number_sequence_id, number) and can be
+  /// added without touching this one.
+  @@unique([tenant_id, legal_entity_id, reference])
+  @@map("number_sequences")
+}
+
+/// Module parameters — one wide, typed, singleton row per scope per module.
+/// Deliberately four typed tables rather than one generic settings(key, value):
+/// an EAV blob is how two rival tax configurations came to coexist unnoticed
+/// (Tenant.tax_config vs config/tax.ts vs the COA template).
+
+model FinanceParameters {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// Hard-fail a document whose journal cannot post, instead of creating it with
+  /// no GL entry. Fixes D-4. Defaults true; exists as a switch only so an existing
+  /// tenant can be migrated deliberately rather than abruptly.
+  require_balanced_posting       Boolean @default(true)
+  allow_posting_to_closed_period Boolean @default(false)
+
+  functional_currency String  @default("BOB")
+  /// Rounding tolerance below which a posting imbalance is written to ROUNDING
+  /// rather than rejected.
+  rounding_tolerance  Decimal @default(0.02) @db.Decimal(14, 2)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([tenant_id, legal_entity_id])
+  @@map("finance_parameters")
+}
+
+model SalesParameters {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// Tax rates are deliberately NOT columns here. They live on TaxCode and are
+  /// resolved through the group ∩ item-group intersection — see the TAX ENGINE
+  /// section for why a rate column on this table cannot represent Turkey or
+  /// Germany. What belongs here is the DEFAULT used when a party or a product
+  /// carries no group of its own.
+  default_tax_group_id      String? @db.Uuid
+  default_item_tax_group_id String? @db.Uuid
+
+  /// Presentation only. The legal document name differs per jurisdiction
+  /// (Factura / Fatura / Rechnung); it is not a tax rule.
+  invoice_label String @default("Factura")
+
+  allow_negative_inventory_sale Boolean @default(false)
+  require_customer_tax_id       Boolean @default(false)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  default_tax_group      TaxGroup?     @relation(fields: [default_tax_group_id], references: [id])
+  default_item_tax_group ItemTaxGroup? @relation(fields: [default_item_tax_group_id], references: [id])
+
+  @@unique([tenant_id, legal_entity_id])
+  @@map("sales_parameters")
+}
+
+model PurchaseParameters {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// NONE | TWO_WAY | THREE_WAY — mirrors the D365 line matching policy. NONE
+  /// today because the vendor invoice document does not exist yet; the column is
+  /// the hook so enabling matching later is configuration, not a migration.
+  line_matching_policy String  @default("NONE")
+  price_tolerance_pct  Decimal @default(0) @db.Decimal(6, 4)
+
+  /// Whether input IVA is recognised at product receipt or at the vendor factura.
+  /// Skarpine recognises at receipt today; whether Bolivian law permits that is an
+  /// open question (P2P_REFERENCE.md §7). A switch, not a rewrite, once answered.
+  vat_input_recognition String @default("RECEIPT") // RECEIPT | INVOICE
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([tenant_id, legal_entity_id])
+  @@map("purchase_parameters")
+}
+
+model InventoryParameters {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// FIFO | WEIGHTED_AVG | STANDARD. FIFO matches the batch-level unit_cost the
+  /// code already keeps. Changing this on a live tenant is not a supported
+  /// operation and the service layer must refuse it once transactions exist.
+  costing_method           String  @default("FIFO")
+  allow_negative_inventory Boolean @default(false)
+  /// Landed cost is deferred. The hook is on the batch, not here — this flag only
+  /// controls whether the allocation step runs.
+  capitalise_landed_cost   Boolean @default(false)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([tenant_id, legal_entity_id])
+  @@map("inventory_parameters")
+}
+
+// =====================
+// TAX ENGINE
+//
+// WHY THIS EXISTS, AND WHY A RATE COLUMN WAS NOT ENOUGH
+//
+// The first cut of SalesParameters held `vat_rate` and `turnover_tax_rate` as
+// columns. That is Bolivia's shape parameterised, not a tax engine, and it breaks
+// the moment the product is sold anywhere else:
+//
+//   Bolivia  IVA 13% price-INCLUSIVE, plus IT 3% — a turnover tax that is NOT
+//            recoverable and exists on the sales side only.
+//   Turkey   KDV at 20% / 10% / 1% CONCURRENTLY, plus *tevkifat*: partial
+//            withholding where the BUYER remits a share of the VAT, above a
+//            statutory invoice threshold, and only for designated withholding
+//            agents. One rate column cannot say "20%, of which the buyer remits
+//            half".
+//   Germany  USt 19% / 7%, plus reverse charge (§13b) where the customer accounts
+//            for the tax entirely, plus intra-community supply which is exempt but
+//            still must be reported and carries a legal reference on the invoice.
+//
+// The model below is D365's: a tax code carries the rate and the rules; a tax
+// group hangs off the PARTY and an item tax group off the PRODUCT; the codes that
+// appear in BOTH are the codes that apply.
+//
+//   "Both groups contain a list of sales tax codes, and the intersection of the
+//    two lists of sales tax codes determines the list of applicable sales tax
+//    codes for the transaction."
+//   — learn.microsoft.com/dynamics365/finance/general-ledger/indirect-taxes-overview
+//
+// That intersection is what lets one schema carry all three jurisdictions:
+// zero-rated exports, exempt intra-EU supply, reverse charge and multi-rate VAT
+// are all "which codes intersect", not "which if-branch runs".
+//
+// Bolivia stays the default. It becomes a configured jurisdiction, not one of
+// several equals with regressions.
+// =====================
+
+/// A single tax with its rate and calculation rules. The unit of configuration.
+model TaxCode {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code String /// IVA13, IT3, KDV20, KDV20TEV5, UST19, UST0EU
+  name String
+
+  /// VAT | TURNOVER | WITHHOLDING | EXCISE | EXEMPT
+  /// TURNOVER is what makes Bolivia's IT representable: a sales-side,
+  /// non-recoverable tax that must never appear in a VAT netting report.
+  tax_type String @default("VAT")
+
+  rate Decimal @db.Decimal(9, 6)
+
+  /// Bolivia's IVA is quoted inside the price; Turkish and German VAT are added on
+  /// top. This is per code, not per tenant — a jurisdiction can have both.
+  is_inclusive Boolean @default(false)
+
+  /// Input tax that can be reclaimed (IVA crédito fiscal, Vorsteuer, indirilecek
+  /// KDV). False for Bolivia's IT, which is a cost, not a receivable.
+  is_recoverable Boolean @default(true)
+
+  /// DOMESTIC | EU | THIRD — mirrors the D365 country/region type, which is how
+  /// intra-community versus export treatment is distinguished for EU reporting.
+  region_type String @default("DOMESTIC")
+
+  /// Germany §13b and the EU B2B mechanism: the customer accounts for the tax, so
+  /// the supplier calculates it but posts no liability.
+  reverse_charge Boolean @default(false)
+
+  is_exempt     Boolean @default(false)
+  /// Legal reference printed on the invoice when exempt or reverse charged
+  /// (e.g. "§6a UStG", "§13b UStG"). Required for a valid German invoice.
+  exempt_reason String?
+
+  /// Turkish tevkifat: the share of the calculated tax the BUYER remits directly,
+  /// applied only when the document total reaches `withholding_threshold`.
+  /// Null everywhere else. Modelled as a share rather than a separate code so the
+  /// invoice can print the split the way a tevkifatlı fatura must.
+  withholding_share     Decimal? @db.Decimal(9, 6)
+  withholding_threshold Decimal? @db.Decimal(14, 2)
+
+  /// GL routing — reuses the posting profile mechanism rather than duplicating
+  /// account configuration. These are PostingProfile.posting_type values, so a tax
+  /// code never names a GL account directly.
+  posting_type_payable    String  @default("VAT_OUTPUT")
+  posting_type_receivable String? @default("VAT_INPUT")
+
+  /// Hook only. Settlement periods (monthly Turkish return due the 26th, German
+  /// Voranmeldung, Bolivian monthly IVA) are deferred; the table attaches here
+  /// without touching this one.
+  settlement_period_id String? @db.Uuid
+
+  valid_from DateTime  @db.Date
+  valid_to   DateTime? @db.Date
+  is_active  Boolean   @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  tax_group_codes      TaxGroupCode[]
+  item_tax_group_codes ItemTaxGroupCode[]
+
+  @@unique([tenant_id, legal_entity_id, code, valid_from])
+  @@index([tenant_id, is_active])
+  @@map("tax_codes")
+}
+
+/// Attached to the PARTY — customer or supplier. Answers "who are we trading with"
+/// (domestic, EU business with a validated VAT ID, export, withholding agent).
+model TaxGroup {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code        String
+  name        String
+  description String?
+  is_active   Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  codes               TaxGroupCode[]
+  customers           Customer[]
+  suppliers           Supplier[]
+  sales_param_default SalesParameters[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("tax_groups")
+}
+
+/// Attached to the PRODUCT. Answers "what are we selling" (standard rated, reduced
+/// rate, exempt, subject to withholding).
+model ItemTaxGroup {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code        String
+  name        String
+  description String?
+  is_active   Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  codes               ItemTaxGroupCode[]
+  products            Product[]
+  sales_param_default SalesParameters[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("item_tax_groups")
+}
+
+model TaxGroupCode {
+  tax_group_id String @db.Uuid
+  tax_code_id  String @db.Uuid
+
+  tax_group TaxGroup @relation(fields: [tax_group_id], references: [id], onDelete: Cascade)
+  tax_code  TaxCode  @relation(fields: [tax_code_id], references: [id], onDelete: Cascade)
+
+  @@id([tax_group_id, tax_code_id])
+  @@map("tax_group_codes")
+}
+
+model ItemTaxGroupCode {
+  item_tax_group_id String @db.Uuid
+  tax_code_id       String @db.Uuid
+
+  item_tax_group ItemTaxGroup @relation(fields: [item_tax_group_id], references: [id], onDelete: Cascade)
+  tax_code       TaxCode      @relation(fields: [tax_code_id], references: [id], onDelete: Cascade)
+
+  @@id([item_tax_group_id, tax_code_id])
+  @@map("item_tax_group_codes")
 }

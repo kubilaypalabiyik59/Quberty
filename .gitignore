@@ -60,3 +60,6 @@ coverage/
 *.key
 *.cert
 skarpine-pos/
+
+# Playwright MCP session artifacts
+.playwright-mcp/

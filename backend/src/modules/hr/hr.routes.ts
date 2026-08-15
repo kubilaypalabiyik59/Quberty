@@ -2,6 +2,8 @@ import { Hono }    from 'hono';
 import * as bcrypt  from 'bcryptjs';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
+import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
@@ -128,22 +130,24 @@ app.post('/payroll', requireRole('admin'), async (c) => {
   });
   if (existing) throw new AppError(`Payroll for ${periodKey} already processed (JE ${existing.entry_number}).`, 409);
 
-  const [salaryExpense, salariesPayable] = await Promise.all([
-    db.account.findFirst({ where: { tenant_id: tenantId, code: '5201' } }),
-    db.account.findFirst({ where: { tenant_id: tenantId, code: '2201' } }),
-  ]);
-  if (!salaryExpense)  throw new AppError('Account 5201 (Gastos de Personal) not found.');
-  if (!salariesPayable) throw new AppError('Account 2201 (Sueldos por Pagar) not found.');
+  // Payroll already failed loudly on a missing account rather than skipping, which
+  // was correct — it just named Bolivian codes. The posting types carry the same
+  // strictness without hardcoding a chart.
+  const acc = await resolvePostingAccounts_orExplain(
+    tenantId, ['PAYROLL_EXPENSE', 'PAYROLL_PAYABLE'] as const,
+    { document: `Payroll ${periodKey}` },
+  );
+  if (!acc) throw new AppError(`Payroll for ${periodKey} cannot be posted: payroll posting profiles are not configured.`, 500);
 
   const totalGross      = lines.reduce((s: number, l: any) => s + Number(l.gross_salary), 0);
   const totalDeductions = lines.reduce((s: number, l: any) => s + Number(l.deductions ?? 0), 0);
   const totalNet        = totalGross - totalDeductions;
-  const count           = await db.journalEntry.count({ where: { tenant_id: tenantId } });
+  const entryNumber     = await nextJournalVoucher(tenantId);
 
   const je = await db.journalEntry.create({
     data: {
       tenant_id:    tenantId,
-      entry_number: `JE-${String(count + 1).padStart(6, '0')}`,
+      entry_number: entryNumber,
       entry_date:   new Date(Number(year), Number(month) - 1, 28),
       description:  `Planilla de Sueldos ${periodKey}`,
       source_module: 'PAYROLL',
@@ -152,8 +156,8 @@ app.post('/payroll', requireRole('admin'), async (c) => {
       created_by:   c.get('user').id,
       lines: {
         create: [
-          { account_id: salaryExpense.id,   debit_amount: totalGross, credit_amount: 0,        description: `Sueldos brutos ${periodKey}` },
-          { account_id: salariesPayable.id, debit_amount: 0,          credit_amount: totalNet, description: `Sueldos netos por pagar ${periodKey}` },
+          { account_id: acc.PAYROLL_EXPENSE, debit_amount: totalGross, credit_amount: 0,        description: `Sueldos brutos ${periodKey}` },
+          { account_id: acc.PAYROLL_PAYABLE, debit_amount: 0,          credit_amount: totalNet, description: `Sueldos netos por pagar ${periodKey}` },
         ],
       },
     },

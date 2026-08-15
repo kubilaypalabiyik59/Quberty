@@ -3,35 +3,239 @@
   "name": "Bolivia PCG (Plan de Cuentas General)",
   "country": "BO",
   "currency": "BOB",
-  "tax_config": {
-    "vat_rate": 0.13,
-    "vat_inclusive": true,
-    "vat_label": "IVA",
-    "secondary_tax_rate": 0.03,
-    "secondary_tax_name": "IT",
-    "invoice_label": "Factura"
+  "tax": {
+    "invoice_label": "Factura",
+    "tax_codes": [
+      {
+        "code": "IVA13",
+        "name": "IVA 13% (débito/crédito fiscal)",
+        "tax_type": "VAT",
+        "rate": 0.13,
+        "is_inclusive": true,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      },
+      {
+        "code": "IT3",
+        "name": "Impuesto a las Transacciones 3%",
+        "tax_type": "TURNOVER",
+        "rate": 0.03,
+        "is_inclusive": false,
+        "is_recoverable": false,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "TAX_TURNOVER_PAYABLE",
+        "posting_type_receivable": "TAX_TURNOVER_EXPENSE"
+      }
+    ],
+    "tax_groups": [
+      {
+        "code": "DOM",
+        "name": "Domestic (Bolivia)",
+        "codes": [
+          "IVA13",
+          "IT3"
+        ]
+      }
+    ],
+    "item_tax_groups": [
+      {
+        "code": "STD",
+        "name": "Standard rated",
+        "codes": [
+          "IVA13",
+          "IT3"
+        ]
+      }
+    ],
+    "default_tax_group": "DOM",
+    "default_item_tax_group": "STD"
   },
   "accounts": [
-    { "code": "1000", "name": "ACTIVO",                    "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "1100", "name": "Activo Corriente",          "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "1101", "name": "Caja",                      "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1100" },
-    { "code": "1102", "name": "Banco Cuenta Corriente",    "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1100" },
-    { "code": "1105", "name": "IVA Crédito Fiscal",        "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1100" },
-    { "code": "1110", "name": "Inventario de Mercaderías", "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1100" },
-    { "code": "1201", "name": "Cuentas por Cobrar",        "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1100" },
-    { "code": "2000", "name": "PASIVO",                    "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "2100", "name": "Pasivo Corriente",          "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2000" },
-    { "code": "2101", "name": "Cuentas por Pagar",         "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2100" },
-    { "code": "2105", "name": "IVA Débito Fiscal",         "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2100" },
-    { "code": "2201", "name": "Sueldos por Pagar",         "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2100" },
-    { "code": "3000", "name": "PATRIMONIO",                "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "3101", "name": "Capital Social",            "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "3000" },
-    { "code": "3201", "name": "Utilidades Retenidas",      "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "3000" },
-    { "code": "4000", "name": "INGRESOS",                  "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "4101", "name": "Ventas",                    "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": "4000" },
-    { "code": "5000", "name": "GASTOS",                    "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "5101", "name": "Costo de Ventas",           "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" },
-    { "code": "5201", "name": "Gastos de Personal",        "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" },
-    { "code": "5301", "name": "Gastos Generales",          "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" }
+    {
+      "code": "1000",
+      "name": "ACTIVO",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "1100",
+      "name": "Activo Corriente",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "HEADING"
+    },
+    {
+      "code": "1101",
+      "name": "Caja",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1100",
+      "category": "CASH"
+    },
+    {
+      "code": "1102",
+      "name": "Banco Cuenta Corriente",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1100",
+      "category": "BANK"
+    },
+    {
+      "code": "1105",
+      "name": "IVA Crédito Fiscal",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1100",
+      "category": "VAT_RECEIVABLE"
+    },
+    {
+      "code": "1110",
+      "name": "Inventario de Mercaderías",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1100",
+      "category": "INVENTORY"
+    },
+    {
+      "code": "1201",
+      "name": "Cuentas por Cobrar",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1100",
+      "category": "ACCOUNTS_RECEIVABLE"
+    },
+    {
+      "code": "2000",
+      "name": "PASIVO",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "2100",
+      "name": "Pasivo Corriente",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2000",
+      "category": "HEADING"
+    },
+    {
+      "code": "2101",
+      "name": "Cuentas por Pagar",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2100",
+      "category": "ACCOUNTS_PAYABLE"
+    },
+    {
+      "code": "2104",
+      "name": "IT por Pagar",
+      "type": "LIABILITY",
+      "category": "TURNOVER_TAX_PAYABLE",
+      "normal_balance": "CREDIT",
+      "parent_code": "2100"
+    },
+    {
+      "code": "2105",
+      "name": "IVA Débito Fiscal",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2100",
+      "category": "VAT_PAYABLE"
+    },
+    {
+      "code": "2201",
+      "name": "Sueldos por Pagar",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2100",
+      "category": "PAYROLL_PAYABLE"
+    },
+    {
+      "code": "3000",
+      "name": "PATRIMONIO",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "3101",
+      "name": "Capital Social",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "SHARE_CAPITAL"
+    },
+    {
+      "code": "3201",
+      "name": "Utilidades Retenidas",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "RETAINED_EARNINGS"
+    },
+    {
+      "code": "4000",
+      "name": "INGRESOS",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "4101",
+      "name": "Ventas",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": "4000",
+      "category": "REVENUE"
+    },
+    {
+      "code": "5000",
+      "name": "GASTOS",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "5101",
+      "name": "Costo de Ventas",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "COGS"
+    },
+    {
+      "code": "5201",
+      "name": "Gastos de Personal",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PAYROLL_EXPENSE"
+    },
+    {
+      "code": "5203",
+      "name": "Impuesto a las Transacciones (IT)",
+      "type": "EXPENSE",
+      "category": "TURNOVER_TAX_EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000"
+    },
+    {
+      "code": "5301",
+      "name": "Gastos Generales",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "OPERATING_EXPENSE"
+    }
   ]
 }

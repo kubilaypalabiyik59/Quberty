@@ -3,33 +3,236 @@
   "name": "Generic IFRS (International)",
   "country": "INT",
   "currency": "USD",
-  "tax_config": {
-    "vat_rate": 0.0,
-    "vat_inclusive": false,
-    "vat_label": "VAT",
-    "secondary_tax_rate": 0,
-    "secondary_tax_name": "",
-    "invoice_label": "Invoice"
+  "tax": {
+    "invoice_label": "Invoice",
+    "tax_codes": [
+      {
+        "code": "STD",
+        "name": "Standard rated VAT",
+        "tax_type": "VAT",
+        "rate": 0,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "DOMESTIC",
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT",
+        "note": "Rate 0 by design — set the local standard rate on onboarding."
+      },
+      {
+        "code": "ZERO",
+        "name": "Zero rated / exempt",
+        "tax_type": "VAT",
+        "rate": 0,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "THIRD",
+        "is_exempt": true,
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT"
+      },
+      {
+        "code": "RC",
+        "name": "Reverse charge (customer accounts for the tax)",
+        "tax_type": "VAT",
+        "rate": 0,
+        "is_inclusive": false,
+        "is_recoverable": true,
+        "region_type": "EU",
+        "reverse_charge": true,
+        "posting_type_payable": "VAT_OUTPUT",
+        "posting_type_receivable": "VAT_INPUT",
+        "note": "Germany §13b / EU B2B. Set the rate and exempt_reason per jurisdiction."
+      }
+    ],
+    "tax_groups": [
+      {
+        "code": "DOM",
+        "name": "Domestic",
+        "codes": [
+          "STD"
+        ]
+      },
+      {
+        "code": "EU",
+        "name": "EU business (reverse charge)",
+        "codes": [
+          "RC"
+        ]
+      },
+      {
+        "code": "EXP",
+        "name": "Export / third country",
+        "codes": [
+          "ZERO"
+        ]
+      }
+    ],
+    "item_tax_groups": [
+      {
+        "code": "STD",
+        "name": "Standard rated",
+        "codes": [
+          "STD",
+          "ZERO",
+          "RC"
+        ]
+      }
+    ],
+    "default_tax_group": "DOM",
+    "default_item_tax_group": "STD"
   },
   "accounts": [
-    { "code": "1000", "name": "Current Assets",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "1001", "name": "Cash and Cash Equivalents","type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "1002", "name": "Bank Account",             "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "1100", "name": "Accounts Receivable",      "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "1200", "name": "Inventory",                "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "1300", "name": "VAT Receivable",           "type": "ASSET",     "normal_balance": "DEBIT",  "parent_code": "1000" },
-    { "code": "2000", "name": "Current Liabilities",      "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "2001", "name": "Accounts Payable",         "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2000" },
-    { "code": "2002", "name": "VAT Payable",              "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2000" },
-    { "code": "2003", "name": "Accrued Salaries",         "type": "LIABILITY", "normal_balance": "CREDIT", "parent_code": "2000" },
-    { "code": "3000", "name": "Equity",                   "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "3001", "name": "Share Capital",            "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "3000" },
-    { "code": "3002", "name": "Retained Earnings",        "type": "EQUITY",    "normal_balance": "CREDIT", "parent_code": "3000" },
-    { "code": "4000", "name": "Revenue",                  "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": null },
-    { "code": "4001", "name": "Sales Revenue",            "type": "REVENUE",   "normal_balance": "CREDIT", "parent_code": "4000" },
-    { "code": "5000", "name": "Expenses",                 "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": null },
-    { "code": "5001", "name": "Cost of Goods Sold",       "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" },
-    { "code": "5002", "name": "Salaries Expense",         "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" },
-    { "code": "5003", "name": "General & Admin Expense",  "type": "EXPENSE",   "normal_balance": "DEBIT",  "parent_code": "5000" }
+    {
+      "code": "1000",
+      "name": "Current Assets",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "1001",
+      "name": "Cash and Cash Equivalents",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "CASH"
+    },
+    {
+      "code": "1002",
+      "name": "Bank Account",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "BANK"
+    },
+    {
+      "code": "1100",
+      "name": "Accounts Receivable",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "ACCOUNTS_RECEIVABLE"
+    },
+    {
+      "code": "1200",
+      "name": "Inventory",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "INVENTORY"
+    },
+    {
+      "code": "1300",
+      "name": "VAT Receivable",
+      "type": "ASSET",
+      "normal_balance": "DEBIT",
+      "parent_code": "1000",
+      "category": "VAT_RECEIVABLE"
+    },
+    {
+      "code": "2000",
+      "name": "Current Liabilities",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "2001",
+      "name": "Accounts Payable",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2000",
+      "category": "ACCOUNTS_PAYABLE"
+    },
+    {
+      "code": "2002",
+      "name": "VAT Payable",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2000",
+      "category": "VAT_PAYABLE"
+    },
+    {
+      "code": "2003",
+      "name": "Accrued Salaries",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2000",
+      "category": "PAYROLL_PAYABLE"
+    },
+    {
+      "code": "3000",
+      "name": "Equity",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "3001",
+      "name": "Share Capital",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "SHARE_CAPITAL"
+    },
+    {
+      "code": "3002",
+      "name": "Retained Earnings",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "RETAINED_EARNINGS"
+    },
+    {
+      "code": "4000",
+      "name": "Revenue",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "4001",
+      "name": "Sales Revenue",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": "4000",
+      "category": "REVENUE"
+    },
+    {
+      "code": "5000",
+      "name": "Expenses",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "HEADING"
+    },
+    {
+      "code": "5001",
+      "name": "Cost of Goods Sold",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "COGS"
+    },
+    {
+      "code": "5002",
+      "name": "Salaries Expense",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PAYROLL_EXPENSE"
+    },
+    {
+      "code": "5003",
+      "name": "General & Admin Expense",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "OPERATING_EXPENSE"
+    }
   ]
 }

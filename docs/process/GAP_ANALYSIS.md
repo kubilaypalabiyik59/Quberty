@@ -13,6 +13,72 @@ Gap types: `MISSING-ENTITY` · `MISSING-STATE` · `MISSING-POSTING` · `MISSING-
 These are not architecture gaps. They are **defects in code that is running now**. They were found
 while tracing posting logic and are reported here because the gap analysis is what surfaced them.
 
+---
+
+### 0.0 · Production verification — 2026-08-15 · **all defects CONFIRMED in live data**
+
+Verified read-only against the live Supabase database (tenant `Skarpine Shoes`, the only tenant).
+Every figure below is **prod-verified**, not inferred.
+
+**Root finding: the tenant has BOTH charts of accounts.** The `finance.routes.ts` seed was applied
+`2026-03-31` (18 accounts); the `bolivia-pcg.json` template was applied on top `2026-06-01`
+(11 more). 29 accounts total, including **two accounts both named `IVA Débito Fiscal`** — `2103`
+(seed) and `2105` (template).
+
+This is worse than either branch of the D-2 table below, because **both failure modes occurred in
+sequence** — the April mode until the template was applied, a different one after.
+
+| # | Status in prod | Evidence |
+|---|---|---|
+| **D-6** | **ACTIVE, not latent** — the doc below is now wrong | POS revenue postings debit `1201` = *Activo Fijo*. **4 lines, Bs 6 897,00 debited to Fixed Assets** that is actually receivable. All dated `2026-06-02`, i.e. every POS sale since the template was applied. |
+| **D-2** | **Occurred** | 5 POS sales on `2026-04-05` posted COGS with no revenue (`2105` did not exist yet). Orphan journals `JE-000024`…`JE-000028`, **Bs 3 250,00 of cost with no matching sale.** P&L understated by that amount. |
+| **D-3** | **Confirmed and quantified** | Facturas accrue Bs 919,45 of IT; GL holds Bs 714,94. **Gap Bs 204,51**, of which **Bs 189,23 is POS IT that was never posted at all.** |
+| **D-5** | **Visible in the data** | Two numbering series share the globally-unique `entry_number` column: `JE-2026-00077` (sales/purchase) and `JE-000007`, `JE-000008` (POS). Not year-scoped on the POS side. |
+| **D-4** | **Confirmed by consequence** | None of the above raised an error. Every affected document exists and looks correct in the UI. |
+
+**New defect found during verification — D-7.**
+
+### D-7 · The IVA declaration omits all POS output tax — CRITICAL (tax filing)
+
+Both IVA Débito accounts carry balances:
+
+| Account | Source | Credited |
+|---|---|---|
+| `2103` | ERP sales ([sales.routes.ts:187](../../backend/src/modules/sales/sales.routes.ts#L187)) | Bs 3 098,14 |
+| `2105` | POS ([pos.routes.ts:275](../../backend/src/modules/pos/pos.routes.ts#L275)) | Bs 793,45 |
+
+The IVA report resolves **only `2103`**
+([finance.routes.ts:397](../../backend/src/modules/finance/finance.routes.ts#L397)).
+
+**Every bolivian IVA declaration produced since 2026-06-01 understates débito fiscal by Bs 793,45 —
+the entire POS output tax is invisible to the report.** This is a filing exposure, not only a
+bookkeeping error. It ranks above D-1…D-6 for urgency.
+
+Impact by period, *prod-verified*:
+
+| Period | Report showed | Correct | Understated by |
+|---|---|---|---|
+| 2026-04 | Bs 3 003,80 | Bs 3 003,80 | — (but see below) |
+| **2026-06** | **Bs 79,38** | **Bs 872,83** | **Bs 793,45 — an 11× understatement** |
+| 2026-08 | Bs 14,96 | Bs 14,96 | — |
+
+April is *also* wrong, for a different reason the report cannot fix: the five D-2 POS sales posted no
+revenue and therefore no IVA débito at all. **Only correction journals can repair April.**
+
+**Status: FIXED in the report** — [finance.routes.ts:397](../../backend/src/modules/finance/finance.routes.ts#L397)
+now sums every account carrying output IVA. Explicitly a bridge until posting profiles land; the
+comment in the code says so. The underlying duplicate-account condition (D-1) is untouched.
+
+**Clean result:** the trial balance has **no unbalanced journal entries**. Every entry that posted,
+posted balanced. The damage is in *which* accounts and in entries that never posted — not in
+corrupt double-entry.
+
+**Correction to an earlier reading:** ERP sales facturas *do* post. `SALES_INVOICE` journals carry
+the **factura id** in `source_id`, not the sales-order id — a join on the order id falsely suggests
+they are missing. 11 `SALES_INVOICE` journals exist and are balanced.
+
+---
+
 ### D-1 · Two incompatible charts of accounts exist — CRITICAL
 
 There are two COA definitions that assign **different codes to the same account**:

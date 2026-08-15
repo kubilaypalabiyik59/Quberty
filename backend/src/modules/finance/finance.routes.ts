@@ -2,10 +2,12 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
-import { TAX, resolveTax } from '../../config/tax';
+
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message, paginated } from '../../shared/response';
 import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
+import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -67,41 +69,43 @@ app.put('/accounts/:id', requireRole('admin'), async (c) => {
 
 // ── Seed default Bolivian Chart of Accounts ───────────────────────────────────
 
+/**
+ * THIS ENDPOINT WAS THE OTHER HALF OF D-1.
+ *
+ * It used to hold its own inline list of Bolivian accounts — a second, rival
+ * definition of the chart that disagreed with `bolivia-pcg.json` on the meaning of
+ * `1201` and the code for IVA débito fiscal. Two definitions, no shared source, and
+ * a tenant could end up provisioned from either.
+ *
+ * The list is gone. This now delegates to the same country template everything
+ * else uses, so there is exactly one definition of a Bolivian chart in the
+ * codebase. Kept as a route only because existing clients call it.
+ */
 app.post('/accounts/seed-default', requireRole('admin'), async (c) => {
   const existing = await db.account.count({ where: { tenant_id: c.get('tenantId') } });
   if (existing > 0) throw new AppError('Chart of accounts already exists for this tenant. Delete accounts first or add manually.', 409);
 
-  const accounts = [
-    // ASSETS
-    { code: '1101', name: 'Caja (Cash)',                      type: 'ASSET',     normal_balance: 'DEBIT' },
-    { code: '1102', name: 'Bancos',                           type: 'ASSET',     normal_balance: 'DEBIT' },
-    { code: '1103', name: 'Cuentas por Cobrar',               type: 'ASSET',     normal_balance: 'DEBIT' },
-    { code: '1105', name: 'IVA Crédito Fiscal',               type: 'ASSET',     normal_balance: 'DEBIT' },
-    { code: '1110', name: 'Inventario / Mercaderías',         type: 'ASSET',     normal_balance: 'DEBIT' },
-    { code: '1201', name: 'Activo Fijo',                      type: 'ASSET',     normal_balance: 'DEBIT' },
-    // LIABILITIES
-    { code: '2101', name: 'Cuentas por Pagar (AP)',           type: 'LIABILITY', normal_balance: 'CREDIT' },
-    { code: '2103', name: 'IVA Débito Fiscal',                type: 'LIABILITY', normal_balance: 'CREDIT' },
-    { code: '2104', name: 'IT por Pagar',                     type: 'LIABILITY', normal_balance: 'CREDIT' },
-    // EQUITY
-    { code: '3101', name: 'Capital Social',                   type: 'EQUITY',    normal_balance: 'CREDIT' },
-    { code: '3301', name: 'Resultados Acumulados',            type: 'EQUITY',    normal_balance: 'CREDIT' },
-    { code: '3401', name: 'Resultado de la Gestión',          type: 'EQUITY',    normal_balance: 'CREDIT' },
-    // REVENUE
-    { code: '4101', name: 'Ventas de Mercaderías',            type: 'REVENUE',   normal_balance: 'CREDIT' },
-    // EXPENSES
-    { code: '5101', name: 'Costo de Ventas (COGS)',           type: 'EXPENSE',   normal_balance: 'DEBIT' },
-    { code: '5201', name: 'Gastos de Administración',         type: 'EXPENSE',   normal_balance: 'DEBIT' },
-    { code: '5202', name: 'Gastos de Venta',                  type: 'EXPENSE',   normal_balance: 'DEBIT' },
-    { code: '5203', name: 'Impuesto a las Transacciones (IT 3%)', type: 'EXPENSE', normal_balance: 'DEBIT' },
-    { code: '5204', name: 'Gastos Financieros',               type: 'EXPENSE',   normal_balance: 'DEBIT' },
-  ];
+  const { getTemplate } = await import('../../data/coa-templates/index');
+  const template = getTemplate('bolivia-pcg');
+  if (!template) throw new AppError('Bolivian chart-of-accounts template is missing.', 500);
 
-  await db.account.createMany({
-    data: accounts.map(a => ({ ...a, tenant_id: c.get('tenantId') })),
-  });
+  const codeToId = new Map<string, string>();
+  for (const acct of template.accounts) {
+    const created = await db.account.create({
+      data: {
+        tenant_id:      c.get('tenantId'),
+        code:           acct.code,
+        name:           acct.name,
+        type:           acct.type,
+        category:       acct.category,
+        normal_balance: acct.normal_balance,
+        parent_id:      acct.parent_code ? (codeToId.get(acct.parent_code) ?? null) : null,
+      },
+    });
+    codeToId.set(acct.code, created.id);
+  }
 
-  return message(c, `Created ${accounts.length} default accounts (Bolivian PCG)`);
+  return message(c, `Created ${template.accounts.length} accounts from template "${template.id}"`);
 });
 
 // ── CoA Templates ────────────────────────────────────────────────────────────
@@ -122,6 +126,7 @@ app.post('/seed-coa', async (c) => {
   if (!template) throw new AppError(`Template "${template_id}" not found`, 404);
 
   const tenantId = c.get('tenantId');
+  const force = c.req.query('force') === 'true';
   let created = 0;
   let skipped = 0;
 
@@ -131,9 +136,36 @@ app.post('/seed-coa', async (c) => {
   // First pass: get existing accounts
   const existing = await db.account.findMany({
     where:  { tenant_id: tenantId },
-    select: { id: true, code: true },
+    select: { id: true, code: true, name: true, category: true },
   });
   existing.forEach(a => codeToId.set(a.code, a.id));
+
+  // ── Guard against layering a second chart on top of a first ────────────────
+  // This endpoint's "skip existing codes, create the rest" behaviour is exactly
+  // how the live tenant ended up with TWO charts of accounts and two rival
+  // `IVA Débito Fiscal` accounts under codes 2103 and 2105 — defect D-1, and the
+  // root of D-2, D-6 and D-7 (docs/process/GAP_ANALYSIS.md §0.0).
+  //
+  // Skipping by CODE cannot detect that, because the codes differ. Skipping by
+  // CATEGORY can: two accounts meaning ACCOUNTS_RECEIVABLE is a conflict no
+  // matter what they are numbered.
+  const collisions = template.accounts
+    .filter(a => a.category && a.category !== 'HEADING' && !codeToId.has(a.code))
+    .map(a => ({ incoming: a, clash: existing.find(e => e.category === a.category) }))
+    .filter((x): x is { incoming: typeof template.accounts[0]; clash: typeof existing[0] } => !!x.clash);
+
+  if (collisions.length > 0 && !force) {
+    throw new AppError(
+      `This template would create accounts that duplicate the meaning of accounts this tenant ` +
+        `already has, under different codes. That is how a chart of accounts silently forks:\n` +
+        collisions
+          .map(x => `  ${x.incoming.category}: existing ${x.clash.code} "${x.clash.name}" vs incoming ${x.incoming.code} "${x.incoming.name}"`)
+          .join('\n') +
+        `\nResolve the chart first, or re-send with ?force=true if the duplication is intended.`,
+      409,
+      'COA_CATEGORY_COLLISION',
+    );
+  }
 
   // Second pass: create missing accounts in order
   for (const acct of template.accounts) {
@@ -148,6 +180,7 @@ app.post('/seed-coa', async (c) => {
         code:           acct.code,
         name:           acct.name,
         type:           acct.type,
+        category:       acct.category ?? null,
         normal_balance: acct.normal_balance,
         parent_id:      parentId,
       },
@@ -201,8 +234,8 @@ app.post('/journal-entries', requireRole('admin', 'store_manager'), validate(Cre
     throw new AppError(`Journal entry must balance. Debits: ${totalDebit.toFixed(2)}, Credits: ${totalCredit.toFixed(2)}`);
   }
 
-  const count = await db.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
-  const entryNumber = `JE-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
+  // Last of the `count() + 1` generators — same D-5 race as sales and purchase.
+  const entryNumber = await nextJournalVoucher(c.get('tenantId'));
 
   const entry = await db.journalEntry.create({
     data: {
@@ -298,8 +331,10 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
 
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
   const total = Number(total_amount);
-  const tax = resolveTax(c.get('taxConfig'));
-  const { subtotal, iva: ivaAmount, it: itAmount } = tax.breakdown(total);
+  const docTax = await computeDocumentTax(c.get('tenantId'), total, {
+    legacyConfig: c.get('taxConfig'),
+  });
+  const { subtotal, vat: ivaAmount, turnover: itAmount } = docTax;
 
   const factura = await db.factura.create({
     data: {
@@ -315,11 +350,17 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
       it_amount:      itAmount,
       total_amount:   total,
       notes:          notes || null,
+      // Snapshot of how the tax was labelled and computed at issue time. The
+      // labels now come from the tax codes that actually applied, so a factura
+      // reprinted years later shows the codes it was issued under rather than
+      // whatever the tenant is configured with today.
       invoice_metadata: {
-        vat_label:          (c.get('taxConfig') as any)?.vat_label          ?? 'IVA',
-        secondary_tax_name: (c.get('taxConfig') as any)?.secondary_tax_name ?? 'IT',
-        invoice_label:      (c.get('taxConfig') as any)?.invoice_label       ?? 'Factura',
+        vat_label:          docTax.lines.find(l => l.tax_type === 'VAT')?.code      ?? 'IVA',
+        secondary_tax_name: docTax.lines.find(l => l.tax_type === 'TURNOVER')?.code ?? 'IT',
+        invoice_label:      (c.get('taxConfig') as any)?.invoice_label ?? 'Factura',
         currency_code:      c.get('currencyCode') ?? 'BOB',
+        tax_source:         docTax.source,
+        tax_lines:          docTax.lines.map(l => ({ code: l.code, base: l.base, rate: l.rate, amount: l.amount })),
       },
       created_by:     c.get('user').id,
     },
@@ -394,18 +435,29 @@ app.get('/iva-net-report', async (c) => {
   const from = new Date(Number(year), Number(month) - 1, 1);
   const to   = new Date(Number(year), Number(month), 0, 23, 59, 59);
 
-  const debitoAccount  = await db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2103' } });
-  const creditoAccount = await db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1105' } });
+  // IVA Débito Fiscal exists under two codes because two charts of accounts were applied to the
+  // same tenant: '2103' from the finance.routes seed, '2105' from the bolivia-pcg template.
+  // ERP sales post to '2103'; POS posts to '2105'. Reading only '2103' omitted all POS output tax
+  // from the declaration — see GAP_ANALYSIS.md D-7.
+  // This sums every account that carries output IVA. It is a bridge until posting profiles resolve
+  // the account by configuration rather than by literal; do not extend this pattern.
+  const DEBITO_CODES  = ['2103', '2105'];
+  const CREDITO_CODES = ['1105'];
+
+  const [debitoAccounts, creditoAccounts] = await Promise.all([
+    db.account.findMany({ where: { tenant_id: c.get('tenantId'), code: { in: DEBITO_CODES } }, select: { id: true } }),
+    db.account.findMany({ where: { tenant_id: c.get('tenantId'), code: { in: CREDITO_CODES } }, select: { id: true } }),
+  ]);
+
+  const linesFor = (accountIds: string[]) =>
+    accountIds.length === 0 ? Promise.resolve([]) : db.journalLine.findMany({
+      where: { account_id: { in: accountIds }, journal_entry: { tenant_id: c.get('tenantId'), status: 'POSTED', entry_date: { gte: from, lte: to } } },
+      include: { journal_entry: { select: { entry_date: true, description: true, entry_number: true } } },
+    });
 
   const [debitoLines, creditoLines] = await Promise.all([
-    debitoAccount ? db.journalLine.findMany({
-      where: { account_id: debitoAccount.id, journal_entry: { tenant_id: c.get('tenantId'), status: 'POSTED', entry_date: { gte: from, lte: to } } },
-      include: { journal_entry: { select: { entry_date: true, description: true, entry_number: true } } },
-    }) : [],
-    creditoAccount ? db.journalLine.findMany({
-      where: { account_id: creditoAccount.id, journal_entry: { tenant_id: c.get('tenantId'), status: 'POSTED', entry_date: { gte: from, lte: to } } },
-      include: { journal_entry: { select: { entry_date: true, description: true, entry_number: true } } },
-    }) : [],
+    linesFor(debitoAccounts.map(a => a.id)),
+    linesFor(creditoAccounts.map(a => a.id)),
   ]);
 
   const totalDebito  = (debitoLines as any[]).reduce((s: number, l: any) => s + Number(l.credit_amount), 0);

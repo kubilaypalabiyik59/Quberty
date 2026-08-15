@@ -2,12 +2,15 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
-import { TAX }      from '../../config/tax';
+
 import { logger }   from '../../shared/logger';
 import { ok, created, message, paginated } from '../../shared/response';
 import { validate } from '../../shared/middleware/validate';
 import { CreatePurchaseOrderSchema } from '../../shared/schemas';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
+import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -116,6 +119,17 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
       };
     });
 
+    // Tax now comes from the tenant's configured engine instead of the hardcoded
+    // Bolivian constant. The TOTAL formula is left exactly as it was on purpose:
+    // purchase treats `subtotal` as net and adds tax on top (the receipt posting
+    // debits Inventory + IVA and credits AP for the total, so it only balances
+    // that way), whereas the Bolivian IVA code is price-INCLUSIVE. Reconciling
+    // those two is a finance question — parked with the co-founder list, not
+    // silently changed here, because it would move every purchase total.
+    const poTax = await computeDocumentTax(c.get('tenantId'), subtotal, {
+      partyId: supplier_id ?? po.supplier_id, side: 'PURCHASE', legacyConfig: c.get('taxConfig'),
+    });
+
     await db.purchaseOrderLine.createMany({ data: newLines });
     await db.purchaseOrder.updateMany({
       where: { id: po.id },
@@ -126,8 +140,8 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
         expected_date:       expected_date ? new Date(expected_date) : po.expected_date,
         notes:               notes ?? po.notes,
         subtotal,
-        tax_amount:   TAX.iva(subtotal),
-        total_amount: subtotal + TAX.iva(subtotal),
+        tax_amount:   poTax.vat,
+        total_amount: subtotal + poTax.vat,
         updated_at:   new Date(),
       },
     });
@@ -166,6 +180,17 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
     };
   });
 
+  // Tax now comes from the tenant's configured engine instead of the hardcoded
+  // Bolivian constant. The TOTAL formula is left exactly as it was on purpose:
+  // purchase treats `subtotal` as net and adds tax on top (the receipt posting
+  // debits Inventory + IVA and credits AP for the total, so it only balances
+  // that way), whereas the Bolivian IVA code is price-INCLUSIVE. Reconciling
+  // those two is a finance question — parked with the co-founder list, not
+  // silently changed here, because it would move every purchase total.
+  const poTax = await computeDocumentTax(c.get('tenantId'), subtotal, {
+    partyId: body.supplier_id, side: 'PURCHASE', legacyConfig: c.get('taxConfig'),
+  });
+
   const po = await db.purchaseOrder.create({
     data: {
       tenant_id:           c.get('tenantId'),
@@ -177,8 +202,8 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
       currency:            body.currency ?? 'BOB',
       notes:               body.notes,
       subtotal,
-      tax_amount:   TAX.iva(subtotal),
-      total_amount: subtotal + TAX.iva(subtotal),
+      tax_amount:   poTax.vat,
+      total_amount: subtotal + poTax.vat,
       created_by:   c.get('user').id,
       lines: { create: lines },
     },
@@ -268,42 +293,46 @@ app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c)
   await db.purchaseOrder.updateMany({ where: { id: po.id }, data: updateData });
 
   // ── Automatic Journal Entry ────────────────────────────────────────────────
-  try {
-    const [invAccount, ivaAccount, apAccount] = await Promise.all([
-      db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1110' } }),
-      db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '1105' } }),
-      db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2101' } }),
-    ]);
+  //
+  // This block used to be wrapped in `try { … } catch { logger.error(…) }`, which
+  // meant a receipt could succeed with no GL entry and no error reaching the user
+  // — the worst instance of D-4, because the swallow was unconditional. The catch
+  // is gone: `resolvePostingAccounts_orExplain` decides, per tenant configuration,
+  // whether an unresolvable posting throws or is logged loudly and skipped.
+  const acc = await resolvePostingAccounts_orExplain(
+    c.get('tenantId'),
+    ['INVENTORY', 'VAT_INPUT', 'AP'] as const,
+    { document: `PO receipt ${po.po_number}`, partyId: po.supplier_id ?? null },
+  );
 
-    if (invAccount && ivaAccount && apAccount) {
-      const subtotal    = Number(po.subtotal);
-      const ivaAmount   = Number(po.tax_amount);
-      const totalAmount = Number(po.total_amount);
-      const jeCount     = await db.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
+  if (acc) {
+    const subtotal    = Number(po.subtotal);
+    const ivaAmount   = Number(po.tax_amount);
+    const totalAmount = Number(po.total_amount);
+    // D-5: was `count() + 1` computed OUTSIDE any transaction, on a globally
+    // @unique column — the loosest of the three racing implementations.
+    const entryNumber = await nextJournalVoucher(c.get('tenantId'));
 
-      await db.journalEntry.create({
-        data: {
-          tenant_id:    c.get('tenantId'),
-          entry_number: `JE-${new Date().getFullYear()}-${String(jeCount + 1).padStart(5, '0')}`,
-          entry_date:   new Date(),
-          description:  `PO Receipt: ${po.po_number}`,
-          source_module: 'PURCHASE',
-          source_id:    po.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   c.get('user').id,
-          lines: {
-            create: [
-              { account_id: invAccount.id,  debit_amount: subtotal,     credit_amount: 0,           description: `Inventory — ${po.po_number}` },
-              { account_id: ivaAccount.id,  debit_amount: ivaAmount,    credit_amount: 0,           description: `IVA Crédito Fiscal 13%` },
-              { account_id: apAccount.id,   debit_amount: 0,            credit_amount: totalAmount, description: `AP — ${po.supplier_id}` },
-            ],
-          },
+    await db.journalEntry.create({
+      data: {
+        tenant_id:    c.get('tenantId'),
+        entry_number: entryNumber,
+        entry_date:   new Date(),
+        description:  `PO Receipt: ${po.po_number}`,
+        source_module: 'PURCHASE',
+        source_id:    po.id,
+        status:       'POSTED',
+        posted_at:    new Date(),
+        created_by:   c.get('user').id,
+        lines: {
+          create: [
+            { account_id: acc.INVENTORY, debit_amount: subtotal,  credit_amount: 0,           description: `Inventory — ${po.po_number}` },
+            { account_id: acc.VAT_INPUT, debit_amount: ivaAmount, credit_amount: 0,           description: `IVA Crédito Fiscal 13%` },
+            { account_id: acc.AP,        debit_amount: 0,         credit_amount: totalAmount, description: `AP — ${po.supplier_id}` },
+          ],
         },
-      });
-    }
-  } catch (jeErr) {
-    logger.error({ err: jeErr }, 'GL journal failed for PO receive');
+      },
+    });
   }
 
   return message(c, `PO ${po.po_number} received successfully. Stock updated.${packingSlipUrl ? ' Packing slip attached.' : ''}`);
@@ -333,20 +362,31 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
     data: { paid_at: paymentDate, paid_by: c.get('user').id },
   });
 
-  try {
-    const [apAccount, bankAccount] = await Promise.all([
-      db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: '2101' } }),
-      db.account.findFirst({ where: { tenant_id: c.get('tenantId'), code: account_code } }),
-    ]);
+  {
+    // AP resolves through the posting profile. The CREDIT side stays a code
+    // lookup on purpose: `account_code` is chosen by the user at payment time
+    // (which bank or cash account the money left), so it is transaction data, not
+    // configuration. It is still validated below rather than silently skipped.
+    const acc = await resolvePostingAccounts_orExplain(
+      c.get('tenantId'),
+      ['AP'] as const,
+      { document: `AP payment for ${po.po_number}`, partyId: po.supplier_id ?? null },
+    );
+    const bankAccount = await db.account.findFirst({
+      where: { tenant_id: c.get('tenantId'), code: account_code },
+    });
+    if (acc && !bankAccount) {
+      throw new AppError(`Payment account '${account_code}' does not exist in the chart of accounts.`, 400);
+    }
 
-    if (apAccount && bankAccount) {
+    if (acc && bankAccount) {
       const totalAmount = Number(po.total_amount);
-      const jeCount     = await db.journalEntry.count({ where: { tenant_id: c.get('tenantId') } });
+      const entryNumber = await nextJournalVoucher(c.get('tenantId'));
 
       await db.journalEntry.create({
         data: {
           tenant_id:    c.get('tenantId'),
-          entry_number: `JE-${new Date().getFullYear()}-${String(jeCount + 1).padStart(5, '0')}`,
+          entry_number: entryNumber,
           entry_date:   paymentDate,
           description:  `AP Payment: ${po.po_number}${notes ? ' — ' + notes : ''}`,
           source_module: 'PURCHASE_PAYMENT',
@@ -356,15 +396,13 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
           created_by:   c.get('user').id,
           lines: {
             create: [
-              { account_id: apAccount.id,   debit_amount: totalAmount, credit_amount: 0,           description: `Clear CxP — ${po.po_number}` },
+              { account_id: acc.AP,         debit_amount: totalAmount, credit_amount: 0,           description: `Clear CxP — ${po.po_number}` },
               { account_id: bankAccount.id, debit_amount: 0,           credit_amount: totalAmount, description: `Payment to supplier (${account_code})` },
             ],
           },
         },
       });
     }
-  } catch (jeErr) {
-    logger.error({ err: jeErr }, 'GL journal failed for AP payment');
   }
 
   return message(c, `PO ${po.po_number} marked as paid. Journal entry created.`);
