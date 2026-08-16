@@ -48,7 +48,17 @@ export type SequenceReference =
   | 'TRANSFER'
   | 'PRODUCT_RECEIPT'
   | 'VENDOR_INVOICE'
-  | 'PAYMENT';
+  | 'PAYMENT'
+  // ── Process front ends (migration 005) ──────────────────────────────────
+  // None of these is legally numbered anywhere we sell, so all five are
+  // non-continuous: a gap in a quotation series costs nothing, whereas making
+  // them continuous would hold a row lock for the length of the caller's
+  // transaction. Compare FACTURA, where the question is still open.
+  | 'LEAD'
+  | 'OPPORTUNITY'
+  | 'SALES_QUOTATION'
+  | 'PURCHASE_REQUISITION'
+  | 'RFQ';
 
 interface AllocateOptions {
   tenantId: string;

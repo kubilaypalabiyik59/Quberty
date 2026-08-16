@@ -359,6 +359,57 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
       next_number: 1,
       current_year: null,
     },
+
+    // ── Process front ends (migration 005) ────────────────────────────────
+    // Every one of these is an internal or commercial document with no legal
+    // numbering requirement in any jurisdiction we have researched, so all are
+    // non-continuous. A gap in a quotation series is invisible to everyone; the
+    // row lock a continuous series holds is not.
+    {
+      reference: 'LEAD',
+      name: 'Lead',
+      format: 'LD-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'OPPORTUNITY',
+      name: 'Opportunity',
+      format: 'OPP-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'SALES_QUOTATION',
+      name: 'Sales quotation',
+      format: 'QT-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'PURCHASE_REQUISITION',
+      name: 'Purchase requisition',
+      format: 'PR-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'RFQ',
+      name: 'Request for quotation',
+      format: 'RFQ-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
   ];
 
   for (const s of seqs) {
@@ -526,6 +577,49 @@ async function provisionParameters(
   console.log(`  OK       parameters created (require_balanced_posting = false — flip per tenant once profiles are complete)`);
 }
 
+/* ────────────────────────── sales pipeline stages ─────────────────────── */
+
+/**
+ * A starting pipeline, not THE pipeline.
+ *
+ * These five stages exist so a tenant has something usable on day one. They are
+ * ordinary data rows: renaming them, reordering them, adding "Demo booked" or
+ * deleting "Proposal" is a user action, not a code change. That is the whole
+ * reason `Opportunity.stage_id` points at a table instead of holding an enum —
+ * pipeline vocabulary is the single most customer-specific thing in CRM, and
+ * the next customer will not use these words.
+ *
+ * The probabilities are conventional (20/40/60/80) and carry no claim to
+ * accuracy; they seed a weighted pipeline figure until the tenant has enough
+ * closed opportunities to set its own.
+ */
+const DEFAULT_PIPELINE_STAGES = [
+  { code: 'QUALIFY', name: 'Qualification', sort_order: 10, default_probability: 20 },
+  { code: 'NEEDS', name: 'Needs analysis', sort_order: 20, default_probability: 40 },
+  { code: 'PROPOSAL', name: 'Proposal', sort_order: 30, default_probability: 60 },
+  { code: 'NEGOTIATION', name: 'Negotiation', sort_order: 40, default_probability: 80 },
+  { code: 'CLOSING', name: 'Closing', sort_order: 50, default_probability: 90 },
+];
+
+async function provisionPipelineStages(tenant: Tenant): Promise<void> {
+  const existing = await db.salesPipelineStage.count({ where: { tenant_id: tenant.id } });
+  if (existing > 0) {
+    console.log(`  SKIP     pipeline stages — ${existing} already configured`);
+    return;
+  }
+  if (!APPLY) {
+    console.log(
+      `  DRY RUN  pipeline stages: ${DEFAULT_PIPELINE_STAGES.map((s) => s.code).join(' → ')}`,
+    );
+    return;
+  }
+  await db.salesPipelineStage.createMany({
+    data: DEFAULT_PIPELINE_STAGES.map((s) => ({ ...s, tenant_id: tenant.id, legal_entity_id: null })),
+    skipDuplicates: true,
+  });
+  console.log(`  OK       ${DEFAULT_PIPELINE_STAGES.length} pipeline stages created (rename freely — they are data)`);
+}
+
 /* ──────────────────────────────── driver ──────────────────────────────── */
 
 async function provisionTenant(tenant: Tenant) {
@@ -543,6 +637,7 @@ async function provisionTenant(tenant: Tenant) {
   await provisionSequences(tenant);
   const taxDefaults = await provisionTax(tenant, template);
   await provisionParameters(tenant, template, taxDefaults);
+  await provisionPipelineStages(tenant);
 }
 
 async function main() {

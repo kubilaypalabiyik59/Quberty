@@ -2,7 +2,7 @@
 
 > Living context document. Read this first in a new session.
 
-**Last updated**: 2026-08-16 (config foundation + tax engine + frontend design system + sign-in rebuild)
+**Last updated**: 2026-08-16 (process chain: Lead→Opportunity→Quotation→Order, Requisition→RFQ→PO)
 
 ---
 
@@ -304,10 +304,13 @@ live orders. **It must be done before selling into either market.** Documented i
 1. **Correction journals** for D-2 (Bs 3 250), D-6 (Bs 6 897), D-3 (Bs 189,23), plus closing `2105`
    into `2103`. Test data, so low risk — but review with the Finance co-founder, because the same
    script will later run against real books.
-2. **Per-line tax refactor** — required before Turkey or Germany.
+2. **Per-line tax refactor** — required before Turkey or Germany. **Now covers three more document
+   types**: quotation, requisition and RFQ lines all carry the same `item_tax_group_id` hook, so one
+   refactor handles them together (§3b).
 3. **Purchase net-vs-inclusive.** Purchase treats `subtotal` as net and adds tax on top, while the
    Bolivian IVA code is price-inclusive. The existing arithmetic was preserved rather than silently
-   changed — it would move every purchase total. Add to the co-founder question list.
+   changed — it would move every purchase total. **Quantified 2026-08-16: the effective rate is
+   11,5%, not 13%** (§3b). Add to the co-founder question list.
 4. **Turkish tevkifat ratios need legal validation** — the threshold is now sourced from primary law,
    but which of 2/10…9/10 applies per service category is not. Flagged in the template `note` and
    surfaced by the provisioning script.
@@ -318,6 +321,103 @@ live orders. **It must be done before selling into either market.** Documented i
 The repo has **no `prisma/migrations/` history**; it has been using `db push`. Adopting real
 migrations requires baselining the existing schema first. `prisma/sql/` is an interim convention,
 not an endorsement of it.
+
+---
+
+## 3b. Process Chain — BUILT overnight 2026-08-15→16
+
+Kubi handed over the machine and asked for the processes to start where they actually start, and for
+whatever got built to stay flexible for a future customer arriving with their own variations.
+
+**Design doc: [docs/process/PROCESS_CHAIN.md](docs/process/PROCESS_CHAIN.md).** Read it before
+touching any of this — it records what is official Microsoft behaviour, what is my recommendation,
+and every deliberate deviation with its reason.
+
+```
+Prospect to Quote (85)   Lead ─▶ Opportunity ─▶ Quotation ─▶ Sales Order ─▶ (unchanged)
+Source to Pay (75)       Requisition ─▶ RFQ ─▶ Purchase Order ─▶ (unchanged)
+```
+
+**This reverses a deferral.** SCOPE_AND_HOOKS.md §2 deferred requisition, RFQ, quotation and
+lead/opportunity, keeping only the schema hooks. Kubi overrode that as owner, on productisation
+grounds, and CLAUDE.md §4 already described these chains as the intended shape. The hooks that were
+reserved (`source_document_type` + `source_document_id`) are exactly what got used.
+
+### What was built
+
+| Layer | Artefact |
+|---|---|
+| Schema | 11 tables + `Opportunity.originating_lead_id`; migrations [005](backend/prisma/sql/005_process_chain.sql) and [006](backend/prisma/sql/006_opportunity_originating_lead.sql), **both applied** |
+| Vocabulary | `shared/services/documentChain.ts` — provenance enums, statuses, and the two official aggregation rules |
+| Services | `modules/crm/crm.service.ts`, `modules/sales/quotation.service.ts`, `modules/purchase/requisition.service.ts`, `modules/purchase/rfq.service.ts` |
+| Routes | `/api/v1/crm`, `/api/v1/sales/quotations`, `/api/v1/procurement` |
+| Config | 5 number sequences + 5 default pipeline stages, added to `provisionConfiguration.ts` and provisioned |
+| Frontend | 8 pages under `/crm`, `/sales/quotations`, `/procurement` + `StatusPill`, `DocumentChain`, `PageHeader` — **all written against design tokens, none against the legacy bridge** |
+
+### Three things worth knowing
+
+1. **Nothing here posts to the general ledger.** All five documents are pre-financial. The
+   verification script records journal-entry and factura counts before and after and asserts they
+   have not moved.
+2. **Every step is optional and switchable in data.** Seven new parameters on Sales/Purchase
+   Parameters decide which steps a tenant uses. A counter sale still goes straight to an order with
+   `source_document_type = DIRECT`; all 47 historical sales orders and 14 purchase orders read
+   `DIRECT` and were not touched.
+3. **Pipeline stages are rows, not an enum.** `status` is semantic (code reasons about it),
+   `stage_id` is a tenant-editable `SalesPipelineStage`. Same split as `Account.category` vs `code`.
+
+### Three defects found by running it, not by reading it
+
+- **Qualification destroyed the lead's origin.** Moving the opportunity's party to the new customer
+  forced `lead_id` null, erasing where the deal came from — the one thing lead tracking exists to
+  measure. Fixed by migration 006 (`originating_lead_id`), mirroring D365's `originatingleadid`.
+- **The bid comparison rewrote its own history.** "Cheapest per line" counted only `RECEIVED` bids,
+  so awarding — which rejects the losers — moved the marker onto the winner and erased the record of
+  why a dearer vendor was chosen. Now counts every submitted bid, with a regression check.
+- **A tendered requisition looked like it produced nothing**, because the awarded order points at the
+  RFQ case rather than the requisition. The detail route now follows both routes.
+
+### Verification — run this first in the morning
+
+```bash
+cd backend && npx tsx scripts/verifyProcessChain.ts          # 66 assertions, self-cleaning
+cd backend && npx jest src/__tests__/documentChain.test.ts    # 19 unit tests
+```
+
+`verifyProcessChain.ts` drives both chains against the **real** test database with the real services,
+tax engine and number sequences, then deletes what it made and asserts the counts return to the
+baseline it started from. `--keep` leaves the documents for inspection in the UI — a kept run is
+in the database now (LD/OPP/QT/PR/RFQ numbered ...00009 and up).
+
+Screenshots: [docs/design/screenshots/](docs/design/screenshots/) — `chain-*.png`.
+
+Test suite: **96 passing**, 9 failing — the same 4 pre-existing suites as before (Express middleware
+signatures, `orderCounter` mock). No new failures.
+
+### Not fixed on purpose — needs Kubi + the Finance co-founder
+
+**The purchase tax arithmetic is incoherent.** `POST /purchase/orders` decomposes IVA out of the
+subtotal (IVA13 is price-inclusive) and then adds it back on top:
+
+```
+Bs 2 500 → tax 287,61 → total 2 787,61       an effective 11,5%, not 13%
+```
+
+Either the subtotal is gross (add nothing) or net (tax is 325,00). It cannot be both. The new
+requisition and RFQ paths **reproduce the existing behaviour exactly**, with a test asserting they
+agree with the existing purchase path, so one fix will cover all three. Changing it moves every
+purchase total in the system — that is a decision, not a bug fix.
+
+### Left undone
+
+- No quotation PDF or email; `sent_at` is recorded but nothing is actually sent.
+- Purchase agreements, replenishment requisitions, vendor collaboration portal, RFQ questionnaires —
+  hooks only. See PROCESS_CHAIN.md §6.
+- Bare `@unique` on `sales_orders.order_number` / `purchase_orders.po_number` is still not
+  tenant-scoped (NOW-list item 11). All **new** tables are scoped correctly; the old two need their
+  own migration and were left alone deliberately.
+- `skarpine-pos` still has uncommitted content. It is a separate repo and unrelated to this work —
+  left untouched.
 
 ---
 
@@ -557,7 +657,12 @@ next action.**
   `Roadmap_Improvement_Prod.md` for the gap list. Not yet closed.
 - Frontend has no design system (section 4).
 - Inverted KPI trend colours on the dashboard (section 4).
-- `skarpine-pos` has uncommitted content in the working tree.
+- `skarpine-pos` has uncommitted content in the working tree. Separate repo, unrelated to the
+  process-chain work; deliberately left untouched.
+- **Purchase tax arithmetic is incoherent** — decompose-then-add gives an effective 11,5% instead of
+  13%. Quantified 2026-08-16, deliberately not fixed, see §3b.
+- `sales_orders.order_number` and `purchase_orders.po_number` still carry a bare `@unique` rather
+  than a tenant-scoped one. All tables added in migrations 005/006 are scoped correctly.
 - Turkish template leftovers in a Bolivian product: `PurchaseOrder.currency` defaults to `TRY`,
   `Site.country` defaults to `TR`. Four different currency defaults across the schema, no exchange
   rate table.

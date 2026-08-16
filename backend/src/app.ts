@@ -35,6 +35,10 @@ import inventoryCountRoutes from './modules/inventory/inventory-count.routes';
 import financeRoutes        from './modules/finance/finance.routes';
 import posRoutes            from './modules/pos/pos.routes';
 import auditRoutes          from './modules/audit/audit.routes';
+// Process front ends — the documents before the order (migration 005).
+import crmRoutes            from './modules/crm/crm.routes';
+import quotationRoutes      from './modules/sales/quotation.routes';
+import procurementRoutes    from './modules/purchase/procurement.routes';
 
 const app = new Hono<AppEnv>();
 
@@ -163,7 +167,14 @@ v1.use('*', authMiddleware, auditLog);
 v1.route('/products',         productRoutes);
 v1.route('/inventory',        inventoryRoutes);
 v1.route('/warehouse',        warehouseRoutes);
+// Prospect to Quote (85): quotations sit beside the orders they become.
+// Registered BEFORE /sales/orders so the more specific prefix wins regardless
+// of how the router resolves overlapping mounts.
+v1.route('/sales/quotations', quotationRoutes);
 v1.route('/sales/orders',     salesRoutes);
+v1.route('/crm',              crmRoutes);
+// Source to Pay upstream: requisitions and RFQs, before the purchase order.
+v1.route('/procurement',      procurementRoutes);
 v1.route('/purchase',         purchaseRoutes);
 v1.route('/customers',        customerRoutes);
 v1.route('/hr',               hrRoutes);

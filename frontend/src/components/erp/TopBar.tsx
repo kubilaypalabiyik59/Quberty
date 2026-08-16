@@ -8,8 +8,13 @@ import { useState, useRef, useEffect } from 'react';
 const PATH_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/products': 'Products',
+  '/crm/leads': 'Leads',
+  '/crm/opportunities': 'Opportunities',
+  '/sales/quotations': 'Quotations',
   '/sales/orders': 'Sales Orders',
   '/sales/customers': 'Customers',
+  '/procurement/requisitions': 'Purchase Requisitions',
+  '/procurement/rfq': 'Requests for Quotation',
   '/purchase/orders': 'Purchase Orders',
   '/purchase/suppliers': 'Suppliers',
   '/inventory/stock': 'Inventory',

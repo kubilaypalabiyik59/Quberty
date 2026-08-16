@@ -6,6 +6,7 @@ import {
   LayoutDashboard, ShoppingCart, Package, Warehouse, Users,
   Truck, BarChart3, Upload, UserCog, Settings, ChevronDown, Box, DollarSign,
   MessageCircle, Moon, SunMedium, Wand2, Monitor, ShieldCheck, AlertTriangle,
+  Target, ClipboardList,
 } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useState, useEffect, useRef } from 'react';
@@ -28,10 +29,26 @@ const NAV = [
           { href: '/products/categories', label: 'Categories' },
         ],
       },
+      // Prospect to Quote (85) — the documents in front of the sales order.
+      // Listed before Sales because that is the order they happen in.
+      {
+        href: '/crm', icon: Target, label: 'Pipeline', children: [
+          { href: '/crm/leads', label: 'Leads' },
+          { href: '/crm/opportunities', label: 'Opportunities' },
+        ],
+      },
       {
         href: '/sales', icon: ShoppingCart, label: 'Sales', children: [
+          { href: '/sales/quotations', label: 'Quotations' },
           { href: '/sales/orders', label: 'Orders' },
           { href: '/sales/customers', label: 'Customers' },
+        ],
+      },
+      // Source to Pay (75) upstream — requisition and tender, before the order.
+      {
+        href: '/procurement', icon: ClipboardList, label: 'Procurement', children: [
+          { href: '/procurement/requisitions', label: 'Requisitions' },
+          { href: '/procurement/rfq', label: 'Requests for Quotation' },
         ],
       },
       {

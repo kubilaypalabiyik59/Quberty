@@ -88,6 +88,8 @@ model Site {
   warehouses   Warehouse[]
   employees    Employee[]
   sales_orders SalesOrder[]
+  quotations   SalesQuotation[]
+  requisitions PurchaseRequisition[]
 
   @@unique([tenant_id, code])
   @@map("sites")
@@ -113,6 +115,9 @@ model Warehouse {
   location_directives LocationDirective[]
   work_templates      WorkTemplate[]
   wave_templates      WaveTemplate[]
+  quotations          SalesQuotation[]
+  requisitions        PurchaseRequisition[]
+  rfq_cases           RfqCase[]
 
   @@unique([tenant_id, code])
   @@map("warehouses")
@@ -225,6 +230,10 @@ model Product {
   purchase_order_lines   PurchaseOrderLine[]
   count_lines            InventoryCountLine[]
   work_lines             WarehouseWorkLine[]
+  quotation_lines        SalesQuotationLine[]
+  requisition_lines      PurchaseRequisitionLine[]
+  rfq_case_lines         RfqCaseLine[]
+  rfq_request_lines      RfqRequestLine[]
 
   @@unique([tenant_id, sku])
   @@map("products")
@@ -248,6 +257,16 @@ model ProductVariant {
   count_lines            InventoryCountLine[]
   inventory_transactions InventoryTransaction[]
   inventory_batches      InventoryBatch[]
+
+  /// The upstream document lines DO carry a real FK to the variant, unlike
+  /// `SalesOrderLine.variant_id` / `PurchaseOrderLine.variant_id`, which are bare
+  /// UUID columns. That gap is a known referential-integrity defect
+  /// (SCOPE_AND_HOOKS.md §1 item 3) and repeating it on new tables would only
+  /// make the eventual cleanup larger.
+  quotation_lines   SalesQuotationLine[]
+  requisition_lines PurchaseRequisitionLine[]
+  rfq_case_lines    RfqCaseLine[]
+  rfq_request_lines RfqRequestLine[]
 
   @@unique([tenant_id, sku_variant])
   @@map("product_variants")
@@ -536,8 +555,10 @@ model Supplier {
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
-  purchase_orders PurchaseOrder[]
-  tax_group       TaxGroup?       @relation(fields: [tax_group_id], references: [id])
+  purchase_orders   PurchaseOrder[]
+  tax_group         TaxGroup?                 @relation(fields: [tax_group_id], references: [id])
+  rfq_requests      RfqRequest[]
+  preferred_on_req  PurchaseRequisitionLine[] @relation("preferred_supplier")
 
   @@unique([tenant_id, code])
   @@map("suppliers")
@@ -568,11 +589,26 @@ model PurchaseOrder {
   paid_at             DateTime?
   paid_by             String?   @db.Uuid
 
+  /// ── Document provenance (Source to Pay upstream) ────────────────────────
+  /// Where this order came from. `DIRECT` means somebody raised the PO itself,
+  /// which is how every historical row and every counter purchase behaves.
+  ///
+  /// This is deliberately a polymorphic (type, id) pair rather than a set of
+  /// nullable FKs, because the set of upstream documents is genuinely open:
+  /// REQUISITION and RFQ exist today, PURCHASE_AGREEMENT and PLANNED_ORDER are
+  /// documented deferrals (SCOPE_AND_HOOKS.md §2). A new origin is a new enum
+  /// value, not a migration.
+  ///
+  /// DIRECT | REQUISITION | RFQ | PURCHASE_AGREEMENT | PLANNED_ORDER
+  source_document_type String  @default("DIRECT")
+  source_document_id   String? @db.Uuid
+
   supplier         Supplier            @relation(fields: [supplier_id], references: [id])
   warehouse        Warehouse           @relation(fields: [warehouse_id], references: [id])
   lines            PurchaseOrderLine[]
   arrival_journals ArrivalJournal[]
 
+  @@index([tenant_id, source_document_type, source_document_id])
   @@map("purchase_orders")
 }
 
@@ -596,6 +632,24 @@ model PurchaseOrderLine {
   item_tax_group_id String?  @db.Uuid
   tax_amount        Decimal? @db.Decimal(14, 2)
   tax_base          Decimal? @db.Decimal(14, 2)
+
+  /// Line-level provenance. The HEADER link is not sufficient on the purchase
+  /// side: **[OFFICIAL]** an RFQ award may accept lines from several vendors
+  /// ("You can also accept lines from different vendors" —
+  /// learn.microsoft.com/dynamics365/supply-chain/procurement/request-quotations),
+  /// and a purchase order carries exactly one supplier. One RFQ case therefore
+  /// fans out into several POs, and only the line records which bid line it was
+  /// awarded from. Without this column the award audit trail is unreconstructable.
+  ///
+  /// Points at `rfq_request_lines.id` or `purchase_requisition_lines.id`, per the
+  /// header's `source_document_type`. Not an FK for the same reason the header
+  /// pair is not.
+  source_line_id    String?  @db.Uuid
+  /// Hook only — purchase agreements are deferred (SCOPE_AND_HOOKS.md §2), and
+  /// the documented requirement is that consumption against a commitment must be
+  /// traceable at line level or agreement fulfilment cannot be computed from
+  /// history. Nothing reads it yet.
+  agreement_line_id String?  @db.Uuid
 
   purchase_order PurchaseOrder @relation(fields: [po_id], references: [id], onDelete: Cascade)
   product        Product       @relation(fields: [product_id], references: [id])
@@ -635,8 +689,11 @@ model Customer {
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt
 
-  sales_orders SalesOrder[]
-  tax_group    TaxGroup?    @relation(fields: [tax_group_id], references: [id])
+  sales_orders    SalesOrder[]
+  tax_group       TaxGroup?       @relation(fields: [tax_group_id], references: [id])
+  converted_from  Lead[]          @relation("converted_customer")
+  opportunities   Opportunity[]
+  quotations      SalesQuotation[]
 
   @@unique([tenant_id, code])
   @@map("customers")
@@ -670,6 +727,20 @@ model SalesOrder {
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
+  /// ── Document provenance (Prospect to Quote upstream) ────────────────────
+  /// Mirrors `PurchaseOrder.source_document_type`. `DIRECT` is every historical
+  /// row and every counter sale.
+  ///
+  /// Note this is NOT the same axis as the existing `source` column, which
+  /// records the CHANNEL the order was captured through (manual / storefront /
+  /// import / pos). An order can be `source = storefront` and
+  /// `source_document_type = QUOTATION` at the same time. Channel and provenance
+  /// are independent facts and collapsing them would lose one of them.
+  ///
+  /// DIRECT | QUOTATION | OPPORTUNITY | SALES_AGREEMENT | SUBSCRIPTION
+  source_document_type String  @default("DIRECT")
+  source_document_id   String? @db.Uuid
+
   customer        Customer?        @relation(fields: [customer_id], references: [id])
   site            Site?            @relation(fields: [site_id], references: [id])
   warehouse       Warehouse?       @relation(fields: [warehouse_id], references: [id])
@@ -677,9 +748,11 @@ model SalesOrder {
   lines           SalesOrderLine[]
   shipments       Shipment[]
   created_by_user User?            @relation("created_by", fields: [created_by], references: [id])
+  from_quotations SalesQuotation[] @relation("converted_order")
 
   @@index([tenant_id, status])
   @@index([tenant_id, created_at(sort: Desc)])
+  @@index([tenant_id, source_document_type, source_document_id])
   @@map("sales_orders")
 }
 
@@ -703,6 +776,12 @@ model SalesOrderLine {
   item_tax_group_id String?  @db.Uuid
   tax_amount        Decimal? @db.Decimal(14, 2)
   tax_base          Decimal? @db.Decimal(14, 2)
+
+  /// Line-level provenance — points at `sales_quotation_lines.id` when the order
+  /// was confirmed from a quotation. Symmetrical with
+  /// `PurchaseOrderLine.source_line_id`, and it is what makes partial conversion
+  /// ("order three of the five quoted lines") reconstructable.
+  source_line_id String? @db.Uuid
 
   order   SalesOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
   product Product    @relation(fields: [product_id], references: [id])
@@ -1187,6 +1266,28 @@ model SalesParameters {
   allow_negative_inventory_sale Boolean @default(false)
   require_customer_tax_id       Boolean @default(false)
 
+  /// ── Prospect to Quote switches ─────────────────────────────────────────
+  /// The upstream chain is Lead → Opportunity → Quotation → Order, and EVERY
+  /// step of it is optional. These switches are how a tenant declares which
+  /// steps its own process actually uses, so that turning the CRM stage on or
+  /// off is configuration rather than a code branch. The anchor customer sells
+  /// shoes across a counter and uses none of them; a B2B/wholesale tenant will
+  /// use all of them.
+  ///
+  /// Default validity window for a new quotation. Business Central expresses the
+  /// same idea as "Quote Validity Calculation" on Sales & Receivables Setup.
+  quotation_validity_days          Int     @default(30)
+  /// Force every quotation to hang off an opportunity. False by default —
+  /// requiring it would make the simple "quote a walk-in customer" case
+  /// two documents long.
+  require_opportunity_for_quotation Boolean @default(false)
+  /// Whether confirming a quotation raised for a LEAD may create the customer
+  /// record automatically. D365 makes this an explicit "Convert to customer"
+  /// step first; for an SME product the extra click buys nothing, but a tenant
+  /// that wants master-data control can turn it off and be forced to convert
+  /// deliberately.
+  auto_convert_lead_on_confirm     Boolean @default(true)
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -1212,6 +1313,29 @@ model PurchaseParameters {
   /// Skarpine recognises at receipt today; whether Bolivian law permits that is an
   /// open question (P2P_REFERENCE.md §7). A switch, not a rewrite, once answered.
   vat_input_recognition String @default("RECEIPT") // RECEIPT | INVOICE
+
+  /// ── Source to Pay upstream switches ────────────────────────────────────
+  /// Same principle as the sales side: Requisition → RFQ → Purchase Order, all
+  /// steps optional, declared per tenant instead of branched in code.
+  ///
+  /// When true, a purchase order may only be raised from an approved
+  /// requisition or an awarded RFQ. False by default — the anchor customer's
+  /// owner decides and buys, and forcing an internal requisition on a
+  /// three-store retailer is exactly the enterprise ceremony this product is
+  /// meant to avoid.
+  require_requisition_for_po Boolean @default(false)
+  /// Whether an approval step exists at all. When false, a submitted
+  /// requisition is approved immediately — the D365 "automatically approve"
+  /// workflow configuration, expressed as a parameter rather than a workflow
+  /// engine. A real workflow engine is deliberately NOT built: at ≤50 employees
+  /// the approver is one person.
+  requisition_approval_enabled   Boolean  @default(true)
+  /// Requisitions at or below this estimated total skip approval. NULL means no
+  /// threshold, so every requisition needs approval when approval is enabled.
+  requisition_approval_threshold Decimal? @db.Decimal(14, 2)
+  /// Default number of days a vendor has to respond to an RFQ. Presentation of
+  /// the deadline only — nothing expires automatically.
+  rfq_response_days Int @default(7)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1415,4 +1539,596 @@ model ItemTaxGroupCode {
 
   @@id([item_tax_group_id, tax_code_id])
   @@map("item_tax_group_codes")
+}
+
+// =====================
+// PROCESS FRONT ENDS — the documents that come BEFORE the order
+// Design: docs/process/PROCESS_CHAIN.md
+//
+// WHY THIS EXISTS
+//
+// A sales order does not appear from nowhere and neither does a purchase order.
+// Until now both did: the earliest document in this system was the order itself,
+// which meant the system could record WHAT was sold but never WHY, to whom it was
+// offered first, at what price, or which of several vendors won the business.
+//
+//   Prospect to Quote (85)  Lead → Opportunity → Quotation → Sales Order
+//   Source to Pay (75)      Requisition → RFQ → Purchase Order
+//
+// Both chains are OFFICIAL end-to-end processes in the Dynamics 365 business
+// process catalog, and the split matters: lead/opportunity/quotation is *Prospect
+// to Quote*, a separate upstream process, NOT part of Order to Cash.
+// learn.microsoft.com/dynamics365/guidance/business-processes/prospect-to-quote-introduction
+//
+// ── THREE RULES THAT MAKE THIS EXTENSIBLE RATHER THAN A SECOND ERP ─────────
+//
+// 1. EVERY STEP IS OPTIONAL. Each link in both chains is nullable and each
+//    document can be created standalone. A counter sale still goes straight to a
+//    sales order with `source_document_type = DIRECT`, exactly as before. Nothing
+//    in the existing POS, storefront or order path changed. Which steps a tenant
+//    actually uses is declared on SalesParameters / PurchaseParameters, not
+//    branched in service code.
+//
+// 2. SEMANTIC STATUS vs CONFIGURABLE STAGE. `status` is a closed vocabulary the
+//    CODE reasons about (OPEN / WON / LOST); `stage_id` points at a per-tenant
+//    `SalesPipelineStage` row the USER names and orders. This is the same split
+//    that `Account.category` versus `Account.code` already makes, and for the
+//    same reason: a customer who wants "Demo booked" between two stages edits
+//    data, and a customer whose pipeline has nine stages does not fork the code.
+//    Hardcoding a stage enum is the customisation trap this product exists to
+//    avoid.
+//
+// 3. PROVENANCE IS RECORDED AT BOTH HEADER AND LINE. See
+//    `PurchaseOrderLine.source_line_id` for why the header alone is not enough.
+//
+// NOTHING HERE POSTS TO THE GENERAL LEDGER. Leads, opportunities, quotations,
+// requisitions and RFQs are all pre-financial: no journal entry, no posting
+// profile, no factura. The first financial event remains the order and its
+// invoice, which is why none of this can disturb the books.
+// =====================
+
+/// User-defined pipeline stages. Rule 2 above: the NAMES and ORDER of the
+/// pipeline belong to the tenant, the semantics do not.
+///
+/// `default_probability` seeds `Opportunity.probability` when a stage is
+/// selected, which is what makes a weighted pipeline value computable without
+/// asking the user for a percentage on every deal.
+model SalesPipelineStage {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code                String
+  name                String
+  sort_order          Int     @default(0)
+  /// 0–100. Enforced by a CHECK constraint in the migration — Prisma cannot
+  /// express one.
+  default_probability Int     @default(50)
+  is_active           Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  opportunities Opportunity[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@index([tenant_id, sort_order])
+  @@map("sales_pipeline_stages")
+}
+
+/// An unqualified prospect.
+///
+/// **[OFFICIAL]** "Lead management is largely the same as opportunity
+/// management. However, keep a lead separate from customer and opportunity data
+/// until the lead is qualified. The possible states for a lead are Open,
+/// Qualified, and Disqualified."
+/// learn.microsoft.com/dynamics365/sales/developer/lead-entity
+///
+/// That separation is the reason this is its own table rather than a flag on
+/// `Customer`: an unqualified lead must never appear in customer lists, AR
+/// aging, or lifetime-value figures, and a boolean on `Customer` would leak into
+/// all three.
+model Lead {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  lead_number String
+
+  company_name String?
+  first_name   String
+  last_name    String?
+  email        String?
+  phone        String?
+  city         String?
+  country      String?
+
+  /// MANUAL | WEB | REFERRAL | CAMPAIGN | WALK_IN | STOREFRONT | IMPORT
+  /// Kept as a string rather than an enum so a tenant can record its own
+  /// channels; the reporting value of this column is comparing conversion rate
+  /// BY source, which only works if the tenant can name its real sources.
+  source String @default("MANUAL")
+  /// HOT | WARM | COLD
+  rating String @default("WARM")
+
+  /// OPEN | QUALIFIED | DISQUALIFIED — the official three states, no others.
+  status            String  @default("OPEN")
+  disqualify_reason String?
+
+  owner_user_id    String?  @db.Uuid
+  estimated_amount Decimal? @db.Decimal(14, 2)
+  currency         String   @default("BOB")
+  notes            String?
+
+  /// Set by qualification. **[OFFICIAL]** qualifying a lead associates an
+  /// account and contact and creates the opportunity; the lead itself is
+  /// retained rather than deleted, "to allow for accurate business reporting,
+  /// such as analysis of the effectiveness of different lead sources."
+  converted_customer_id String?   @db.Uuid
+  qualified_at          DateTime?
+  disqualified_at       DateTime?
+
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  converted_customer  Customer?        @relation("converted_customer", fields: [converted_customer_id], references: [id])
+  /// Opportunities still ADDRESSED to this lead (not yet qualified).
+  opportunities       Opportunity[]    @relation("opportunity_party")
+  /// Opportunities that CAME FROM this lead, whoever they are addressed to now.
+  /// This is the one that survives qualification.
+  originated          Opportunity[]    @relation("opportunity_origin")
+  quotations          SalesQuotation[]
+
+  @@unique([tenant_id, lead_number])
+  @@index([tenant_id, status])
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@map("leads")
+}
+
+/// A qualified deal in the pipeline.
+///
+/// **[OFFICIAL]** "Each opportunity must be associated with one account or a
+/// contact" and tracks "the probability of the sale, and the estimated closing
+/// date". learn.microsoft.com/dynamics365/sales/developer/create-opportunity
+///
+/// Here the party is a `Customer` OR a `Lead` — exactly one, enforced by a CHECK
+/// constraint in the migration. That mirrors D365 Supply Chain, where a
+/// quotation's account type may be *Prospect* rather than *Customer* and the
+/// prospect is converted at confirmation.
+model Opportunity {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  opportunity_number String
+  name               String
+
+  /// WHO the deal is with. Exactly one of these is set — CHECK constraint:
+  /// num_nonnulls(...) = 1.
+  customer_id String? @db.Uuid
+  lead_id     String? @db.Uuid
+
+  /// WHERE the deal came from, which is a different question from who it is
+  /// with, and the distinction is load-bearing.
+  ///
+  /// Qualifying a lead creates a customer and re-points the opportunity's PARTY
+  /// at that customer — at which moment `lead_id` must become null to satisfy
+  /// the exactly-one-party rule. Without a separate column the origin is simply
+  /// destroyed, and "which lead sources actually convert" — the one question
+  /// lead tracking exists to answer — becomes unanswerable.
+  ///
+  /// D365 keeps the same separation: an opportunity has a customer AND an
+  /// `originatingleadid`. Found by the end-to-end verification script, not by
+  /// reading the schema.
+  originating_lead_id String? @db.Uuid
+
+  /// Where the deal sits in the tenant's own pipeline. Nullable so an
+  /// opportunity can exist before the tenant has configured any stages.
+  stage_id String? @db.Uuid
+
+  /// OPEN | WON | LOST | CANCELLED — semantics, not pipeline position.
+  status String @default("OPEN")
+
+  /// 0–100, CHECK-constrained in the migration. Seeded from the stage.
+  probability         Int       @default(50)
+  estimated_amount    Decimal   @default(0) @db.Decimal(14, 2)
+  currency            String    @default("BOB")
+  expected_close_date DateTime? @db.Date
+
+  owner_user_id  String? @db.Uuid
+  /// Free text on WON or LOST. A reason-code table is a deferral that needs no
+  /// hook: it would be a lookup on this column's successor, with no
+  /// back-reference to populate on history.
+  outcome_reason String?
+  notes          String?
+
+  closed_at  DateTime?
+  created_by String?   @db.Uuid
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  customer         Customer?           @relation(fields: [customer_id], references: [id])
+  lead             Lead?               @relation("opportunity_party", fields: [lead_id], references: [id])
+  originating_lead Lead?               @relation("opportunity_origin", fields: [originating_lead_id], references: [id])
+  stage            SalesPipelineStage? @relation(fields: [stage_id], references: [id])
+  quotations       SalesQuotation[]
+
+  @@unique([tenant_id, opportunity_number])
+  @@index([tenant_id, status])
+  @@index([tenant_id, expected_close_date])
+  @@index([tenant_id, originating_lead_id])
+  @@map("opportunities")
+}
+
+/// A priced offer. The last document before the order, and the first one that
+/// carries money.
+///
+/// **[OFFICIAL]** the D365 Supply Chain quotation lifecycle is Created → Sent →
+/// (Revised | Lost | Cancelled | Confirmed), where confirming "creates a sales
+/// order from the quotation confirmation", links the two so users can navigate
+/// between them, and makes the quotation read-only.
+/// learn.microsoft.com/dynamics365/fin-ops-core/fin-ops/data-entities/add-efficiency-in-quote-to-cash-concept
+///
+/// Revision is modelled as a NEW ROW pointing back at its predecessor rather
+/// than an in-place edit, for the same reason posting profiles are date
+/// effective: what was offered on a given date must stay recoverable after the
+/// offer changes.
+model SalesQuotation {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  quotation_number String
+
+  /// Exactly one of these is set — CHECK constraint in the migration. Quoting a
+  /// LEAD is the "account type = Prospect" case and is the whole reason the
+  /// upstream chain connects to anything.
+  customer_id String? @db.Uuid
+  lead_id     String? @db.Uuid
+
+  opportunity_id String? @db.Uuid
+
+  /// DRAFT | SENT | REVISED | CONFIRMED | LOST | CANCELLED | EXPIRED
+  status String @default("DRAFT")
+
+  quotation_date DateTime  @default(now()) @db.Date
+  valid_until    DateTime? @db.Date
+
+  currency        String  @default("BOB")
+  subtotal        Decimal @default(0) @db.Decimal(14, 2)
+  discount_amount Decimal @default(0) @db.Decimal(14, 2)
+  tax_amount      Decimal @default(0) @db.Decimal(14, 2)
+  total_amount    Decimal @default(0) @db.Decimal(14, 2)
+
+  site_id      String? @db.Uuid
+  warehouse_id String? @db.Uuid
+  notes        String?
+
+  /// Revision chain. `revision` is 0 for the original.
+  revision       Int     @default(0)
+  revised_from_id String? @db.Uuid
+
+  /// Set on CONFIRMED. The reverse direction (`SalesOrder.source_document_id`)
+  /// is the generic hook; this one is the direct navigation D365 provides
+  /// between a quotation and the order it produced.
+  converted_order_id String? @db.Uuid
+  outcome_reason     String?
+
+  sent_at      DateTime?
+  confirmed_at DateTime?
+  closed_at    DateTime?
+
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  customer        Customer?            @relation(fields: [customer_id], references: [id])
+  lead            Lead?                @relation(fields: [lead_id], references: [id])
+  opportunity     Opportunity?         @relation(fields: [opportunity_id], references: [id])
+  site            Site?                @relation(fields: [site_id], references: [id])
+  warehouse       Warehouse?           @relation(fields: [warehouse_id], references: [id])
+  revised_from    SalesQuotation?      @relation("quotation_revision", fields: [revised_from_id], references: [id])
+  revisions       SalesQuotation[]     @relation("quotation_revision")
+  converted_order SalesOrder?          @relation("converted_order", fields: [converted_order_id], references: [id])
+  lines           SalesQuotationLine[]
+
+  @@unique([tenant_id, quotation_number])
+  @@index([tenant_id, status])
+  @@index([tenant_id, quotation_date(sort: Desc)])
+  @@map("sales_quotations")
+}
+
+model SalesQuotationLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  quotation_id String  @db.Uuid
+  product_id   String  @db.Uuid
+  variant_id   String? @db.Uuid
+
+  /// Decimal, unlike `SalesOrderLine.quantity`, which is an Int. That existing
+  /// Int is the anomaly — the purchase side is already Decimal(12,2). Conversion
+  /// to an order therefore REFUSES a fractional quantity rather than truncating
+  /// it silently; see quotation.service.ts.
+  quantity     Decimal @db.Decimal(12, 2)
+  unit_price   Decimal @db.Decimal(12, 4)
+  discount_pct Decimal @default(0) @db.Decimal(5, 2)
+  line_total   Decimal @db.Decimal(14, 2)
+
+  /// Same line-level tax hook the order lines carry, so the pending per-line tax
+  /// refactor (HANDOVER — required before Turkey or Germany) covers quotations in
+  /// the same pass instead of leaving a document type behind.
+  item_tax_group_id String?  @db.Uuid
+  tax_amount        Decimal? @db.Decimal(14, 2)
+  tax_base          Decimal? @db.Decimal(14, 2)
+
+  sort_order Int     @default(0)
+  notes      String?
+
+  quotation SalesQuotation  @relation(fields: [quotation_id], references: [id], onDelete: Cascade)
+  product   Product         @relation(fields: [product_id], references: [id])
+  variant   ProductVariant? @relation(fields: [variant_id], references: [id])
+
+  @@index([quotation_id])
+  @@map("sales_quotation_lines")
+}
+
+/// An INTERNAL request to buy. Not a vendor-facing document.
+///
+/// **[OFFICIAL]** "A purchase requisition is an internal document that
+/// authorizes the Purchasing department to buy items or services… After a
+/// purchase requisition is approved, you can use it to generate a purchase
+/// order."
+/// learn.microsoft.com/dynamics365/supply-chain/procurement/purchase-requisitions-overview
+///
+/// Header AND line both carry a status, and the header's is DERIVED from the
+/// lines — that is Microsoft's model, not an embellishment: "The overall status
+/// of a purchase requisition depends on the status of the purchase requisition
+/// lines." It matters because approving four of five requested lines is the
+/// normal case, not an edge case.
+model PurchaseRequisition {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  requisition_number String
+  requester_user_id  String? @db.Uuid
+
+  site_id      String? @db.Uuid
+  warehouse_id String? @db.Uuid
+
+  /// CONSUMPTION | REPLENISHMENT — **[OFFICIAL]** the requisition purpose, which
+  /// decides what an approved line generates: consumption produces a purchase
+  /// order, replenishment produces one or more fulfilment documents. Only
+  /// CONSUMPTION is implemented; REPLENISHMENT is the enum value that lets
+  /// transfer orders and (should it ever exist) production attach later without
+  /// a migration.
+  purpose String @default("CONSUMPTION")
+
+  /// DRAFT | IN_REVIEW | APPROVED | REJECTED | CANCELLED | CLOSED
+  status String @default("DRAFT")
+
+  required_date   DateTime? @db.Date
+  justification   String?
+  estimated_total Decimal   @default(0) @db.Decimal(14, 2)
+  currency        String    @default("BOB")
+
+  submitted_at     DateTime?
+  approved_at      DateTime?
+  approved_by      String?   @db.Uuid
+  rejected_at      DateTime?
+  rejected_by      String?   @db.Uuid
+  rejection_reason String?
+  closed_at        DateTime?
+
+  notes      String?
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  site      Site?                     @relation(fields: [site_id], references: [id])
+  warehouse Warehouse?                @relation(fields: [warehouse_id], references: [id])
+  lines     PurchaseRequisitionLine[]
+  rfq_cases RfqCase[]
+
+  @@unique([tenant_id, requisition_number])
+  @@index([tenant_id, status])
+  @@index([tenant_id, created_at(sort: Desc)])
+  @@map("purchase_requisitions")
+}
+
+model PurchaseRequisitionLine {
+  id             String  @id @default(uuid()) @db.Uuid
+  requisition_id String  @db.Uuid
+  product_id     String  @db.Uuid
+  variant_id     String? @db.Uuid
+
+  quantity            Decimal   @db.Decimal(12, 2)
+  estimated_unit_cost Decimal   @default(0) @db.Decimal(12, 4)
+  line_total          Decimal   @default(0) @db.Decimal(14, 2)
+  required_date       DateTime? @db.Date
+
+  /// The requester's preference, not a commitment. An RFQ exists precisely to
+  /// test it.
+  preferred_supplier_id String? @db.Uuid
+
+  /// DRAFT | IN_REVIEW | APPROVED | REJECTED | CANCELLED | CLOSED
+  /// **[OFFICIAL]** CLOSED means "the purchase requisition line was approved,
+  /// and documents are generated" — so CLOSED is what a line becomes once its
+  /// purchase order exists, and it is per line, not per requisition.
+  status String @default("DRAFT")
+
+  /// What consumed this line. PURCHASE_ORDER | RFQ.
+  fulfilled_by_type    String?
+  fulfilled_by_line_id String? @db.Uuid
+
+  sort_order Int     @default(0)
+  notes      String?
+
+  requisition        PurchaseRequisition @relation(fields: [requisition_id], references: [id], onDelete: Cascade)
+  product            Product             @relation(fields: [product_id], references: [id])
+  variant            ProductVariant?     @relation(fields: [variant_id], references: [id])
+  preferred_supplier Supplier?           @relation("preferred_supplier", fields: [preferred_supplier_id], references: [id])
+  rfq_case_lines     RfqCaseLine[]
+
+  @@index([requisition_id])
+  @@map("purchase_requisition_lines")
+}
+
+/// The sourcing event: WHAT we want to buy and WHO we asked.
+///
+/// **[OFFICIAL]** D365 splits this in two — an RFQ *case* holds the demand and
+/// the lines, and one RFQ per invited vendor holds that vendor's bid. The split
+/// is not ceremony: comparing bids is only possible if every vendor answers the
+/// same case line, which requires the case line to be a real row that each
+/// vendor's reply line points at.
+/// learn.microsoft.com/dynamics365/supply-chain/procurement/request-quotations
+model RfqCase {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  rfq_number String
+  title      String
+
+  /// PURCHASE_ORDER | PURCHASE_REQUISITION | PURCHASE_AGREEMENT
+  /// **[OFFICIAL]** the type decides what accepting a bid produces. The
+  /// PURCHASE_REQUISITION type "is automatically assigned" when the case is
+  /// generated from a requisition and cannot be chosen manually.
+  /// PURCHASE_AGREEMENT is a hook — agreements are deferred.
+  purchase_type String @default("PURCHASE_ORDER")
+
+  /// DRAFT | SENT | AWARDED | CANCELLED | CLOSED — the CASE's own lifecycle.
+  ///
+  /// Deliberately NOT the same thing as D365's stored "lowest status" and
+  /// "highest status" aggregates across vendors and lines. Those are computed on
+  /// read here (see rfq.service.ts) rather than stored, because a denormalised
+  /// aggregate of two child tables is a value that can silently drift out of
+  /// agreement with the rows it summarises. At SME row counts the computation is
+  /// free.
+  status String @default("DRAFT")
+
+  requisition_id String? @db.Uuid
+  warehouse_id   String? @db.Uuid
+
+  bid_deadline DateTime?
+  currency     String    @default("BOB")
+  notes        String?
+
+  sent_at    DateTime?
+  awarded_at DateTime?
+  closed_at  DateTime?
+
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  requisition PurchaseRequisition? @relation(fields: [requisition_id], references: [id])
+  warehouse   Warehouse?           @relation(fields: [warehouse_id], references: [id])
+  lines       RfqCaseLine[]
+  requests    RfqRequest[]
+
+  @@unique([tenant_id, rfq_number])
+  @@index([tenant_id, status])
+  @@map("rfq_cases")
+}
+
+/// One demand line on the case. Every vendor bids against this row, which is
+/// what makes replies comparable.
+model RfqCaseLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  case_id    String  @db.Uuid
+  product_id String  @db.Uuid
+  variant_id String? @db.Uuid
+
+  quantity      Decimal   @db.Decimal(12, 2)
+  required_date DateTime? @db.Date
+
+  requisition_line_id String? @db.Uuid
+
+  sort_order Int     @default(0)
+  notes      String?
+
+  rfq_case         RfqCase                  @relation(fields: [case_id], references: [id], onDelete: Cascade)
+  product          Product                  @relation(fields: [product_id], references: [id])
+  variant          ProductVariant?          @relation(fields: [variant_id], references: [id])
+  requisition_line PurchaseRequisitionLine? @relation(fields: [requisition_line_id], references: [id])
+  request_lines    RfqRequestLine[]
+
+  @@index([case_id])
+  @@map("rfq_case_lines")
+}
+
+/// One invited vendor's bid. D365 calls this "the request for quotation"; the
+/// parent is "the RFQ case".
+///
+/// **[OFFICIAL]** the reply statuses and their ranking are
+/// Created < Sent < Received < Rejected < Accepted < Declined < Canceled.
+model RfqRequest {
+  id          String @id @default(uuid()) @db.Uuid
+  tenant_id   String @db.Uuid
+  case_id     String @db.Uuid
+  supplier_id String @db.Uuid
+
+  /// CREATED | SENT | RECEIVED | ACCEPTED | REJECTED | DECLINED | CANCELLED
+  status String @default("CREATED")
+
+  sent_at     DateTime?
+  received_at DateTime?
+  decided_at  DateTime?
+
+  /// Bid scoring. **[OFFICIAL]** a solicitation type carries scoring criteria
+  /// and the totals are compared on the Compare replies page. A single score is
+  /// the SME-sized version of that; a criteria table attaches to this column's
+  /// successor without touching existing rows.
+  score       Int?
+  /// **[OFFICIAL]** "you can add a reason code to explain why you accepted or
+  /// rejected a bid."
+  reason_code String?
+
+  currency       String  @default("BOB")
+  total_amount   Decimal @default(0) @db.Decimal(14, 2)
+  lead_time_days Int?
+  notes          String?
+
+  /// Set when this bid is awarded and a purchase order is generated from it.
+  generated_po_id String? @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  rfq_case RfqCase          @relation(fields: [case_id], references: [id], onDelete: Cascade)
+  supplier Supplier         @relation(fields: [supplier_id], references: [id])
+  lines    RfqRequestLine[]
+
+  /// One bid per vendor per case. Re-bidding overwrites the lines rather than
+  /// creating a rival row, which is what keeps "compare replies" a flat list.
+  @@unique([tenant_id, case_id, supplier_id])
+  @@index([tenant_id, status])
+  @@map("rfq_requests")
+}
+
+model RfqRequestLine {
+  id           String @id @default(uuid()) @db.Uuid
+  request_id   String @db.Uuid
+  case_line_id String @db.Uuid
+
+  product_id String  @db.Uuid
+  variant_id String? @db.Uuid
+
+  quantity       Decimal   @db.Decimal(12, 2)
+  unit_price     Decimal   @default(0) @db.Decimal(12, 4)
+  line_total     Decimal   @default(0) @db.Decimal(14, 2)
+  delivery_date  DateTime? @db.Date
+  lead_time_days Int?
+
+  /// CREATED | SENT | RECEIVED | ACCEPTED | REJECTED
+  /// Per line, because **[OFFICIAL]** "You can accept some lines in a bid and
+  /// reject others. You can also accept lines from different vendors."
+  status String @default("CREATED")
+
+  sort_order Int @default(0)
+
+  request   RfqRequest      @relation(fields: [request_id], references: [id], onDelete: Cascade)
+  case_line RfqCaseLine     @relation(fields: [case_line_id], references: [id], onDelete: Cascade)
+  product   Product         @relation(fields: [product_id], references: [id])
+  variant   ProductVariant? @relation(fields: [variant_id], references: [id])
+
+  @@index([request_id])
+  @@index([case_line_id])
+  @@map("rfq_request_lines")
 }
