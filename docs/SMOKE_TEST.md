@@ -42,6 +42,37 @@ PO-2026-00014  DIRECT  tax  28,76   total   278,76   effective 11,50%   ← befo
 Posted documents were deliberately not restated (§5 of BOLIVIA_TAX_BASIS.md), so the list holds two
 arithmetics side by side until the historical correction is decided. Expected, not a defect.
 
+**Update, 2026-08-16 — the unposted half was restated.** `scripts/restatePurchaseOrderTax.ts`
+splits the 17 orders into three populations and rewrites only the safe one:
+
+| | Orders | Action |
+|---|---|---|
+| Header already agrees with the engine | 1 | none |
+| Drifted, **no journal entry references the order** | 3 — PO-2026-00001, -00019, -00023 | restated to 13,00% |
+| Drifted, **already posted** | 13 | untouched |
+
+The dividing line is the ledger, not the document status. A received PO has produced a POSTED
+journal whose `VAT_INPUT` and `AP` lines were taken from `tax_amount` / `total_amount`, and the
+supplier payment posts `total_amount` again under `source_module = 'PURCHASE_PAYMENT'`. Rewriting
+such a header does not correct the ledger — it desynchronises the subledger from it, which is worse
+than two arithmetics side by side. Those 13 need a reversing/adjusting journal, which is
+BOLIVIA_TAX_BASIS.md §6 question 3 and belongs to the Finance co-founder:
+
+```
+understated recoverable input tax on posted orders      27,68
+difference in AP owed on posted orders              -1 350,32
+```
+
+PO-2026-00002 is the reason the check is `source_id`-based rather than `source_module = 'PURCHASE'`:
+its receipt predates auto-posting so it carries no receipt journal, but it *was* paid, so JE-2026-00009
+anchors it to the GL anyway. A module-scoped check would have restated it wrongly.
+
+**Separate finding, not fixed:** `inventory_batches.unit_cost` is written from
+`PurchaseOrderLine.unit_cost`, which is the **gross** agreed price, while the receipt journal
+capitalises `total − recoverable tax`, i.e. the **net**. Inventory subledger and GL therefore
+disagree by the IVA on every receipt, and COGS drawn from the batch is overstated by ~13%. This is
+independent of the tax-basis fix and predates it.
+
 **My verification script was littering.** Each `--keep` run minted a new `Proveedor Rival` supplier;
 three accumulated. Fixed — it now reuses one `E2E-RIVAL` fixture. The three existing strays each hold
 a purchase order from an earlier run, so `scripts/cleanupE2EFixtures.ts` correctly refuses to delete
