@@ -27,6 +27,7 @@ const NAV = [
           { href: '/products', label: 'All Products' },
           { href: '/products/variants', label: 'Variant Types' },
           { href: '/products/categories', label: 'Categories' },
+          { href: '/products/setup', label: 'Financial Setup' },
         ],
       },
       // Prospect to Quote (85) — the documents in front of the sales order.
