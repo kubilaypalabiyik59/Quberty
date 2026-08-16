@@ -219,7 +219,7 @@ Consequences adopted here:
 | 5.3 | **Guard group changes once transactions exist** | The official warning above; cheap now, ugly later | S |
 | ~~5.4~~ | ~~Honour `stocked = false`~~ | **DONE 2026-08-16** — no stock, no batches, no inventory transactions, no COGS; purchase cost expensed | — |
 | 5.11 | **A `PURCHASE_EXPENSE` posting type** | A not-stocked purchase currently expenses to `COGS` because that is the closest configured account. Small, and it removes a wrong-account-by-approximation | S |
-| 5.12 | **Separate physical from financial posting on the purchase side** | The receipt does both at once, so `post_physical_inventory` / `post_financial_inventory` cannot be honoured there. Needs a vendor invoice document — which also unblocks `receiving_requirements` and three-way matching | L |
+| 5.12 | **Separate physical from financial posting on the purchase side** | The receipt does both at once, so `post_physical_inventory` / `post_financial_inventory` cannot be honoured there. Needs a vendor invoice document — which also unblocks `receiving_requirements` and three-way matching. **Designed 2026-08-16 — [VENDOR_INVOICE.md](../process/VENDOR_INVOICE.md), not yet approved for implementation** | L |
 | 5.5 | **Financial dimensions (Store axis)** | Three stores, no per-store P&L, and the attribution of a past transaction is **unrecoverable** | L |
 | 5.6 | **Currency + exchange rate tables** | Foreign purchases are unrecordable; the functional-currency amount must be stored **at transaction time** or history cannot be restated | L |
 | 5.7 | **UoM conversions** | Buy in boxes, sell in pairs | S |
