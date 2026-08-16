@@ -4,8 +4,14 @@
 >
 > **Smoke-testing the 2026-08-16 session? Start at [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)** —
 > what to click, what to expect, and the four things that need Kubi rather than me.
+>
+> **Two standing rules were set this session and they bind all future work:**
+> 1. Everything built is **parametric and configurable** unless Kubi says otherwise.
+> 2. For anything he asks: **research the official process first** (the real Learn parameter screens,
+>    not overview pages) **and record what we are NOT building**, so future scope is visible.
+>    The artefact is [docs/architecture/ERP_SETUP_CHECKLIST.md](docs/architecture/ERP_SETUP_CHECKLIST.md).
 
-**Last updated**: 2026-08-16 (process chain: Lead→Opportunity→Quotation→Order, Requisition→RFQ→PO)
+**Last updated**: 2026-08-16 — process chain, Bolivian tax basis, item groups wired into posting
 
 ---
 
@@ -497,8 +503,55 @@ transactions exist breaks ledger-to-subledger reconciliation. `PUT /products/:id
 New endpoints: `GET/POST /products/setup/item-groups`, `.../item-model-groups`,
 `GET /products/setup/coverage` (how many products are still unassigned — currently 7/8).
 
-**Not wired yet:** the posting routes do not pass `itemGroupId`, so per-group accounts still resolve
-to the ALL scope. That is item 5.1 in the checklist and the next thing worth doing.
+### Corrected same day — the group implied something false
+
+The first cut seeded `FIFO` (stocked) and `SERVICE` (standard cost, not stocked), which made the
+setup screen read as *"choosing STANDARD costing declares it a service"*. Kubi caught it from the UI.
+It came from modelling the entity off an overview page instead of its parameter screen.
+
+The documentation says the opposite three times: different costing models per item are normal;
+`accrue liability on receipt` applies "regardless of whether you have a stocked product or a
+not-stocked product"; and a **service item on a BOM must be stocked**. The axes are independent.
+
+**Migration 009** adds the settings that were missing — accrual, deferred revenue and the four
+process gates — turning the group into a real parameter screen. The seed is now `STOCKED-FIFO`,
+`STOCKED-STD` and `NON-STOCKED`, with `STOCKED-STD` existing purely to occupy the cell the old pair
+excluded. `reseedItemModelGroups.ts` renamed the originals in place, so assignments survived.
+
+### Then wired — migration 008/009 stopped being declarative
+
+Kubi's call: *"bunu öncelikle bir çözmemiz lazım"* — configuration nothing reads is worse than none,
+because it looks like it works.
+
+`shared/services/itemPolicy.service.ts` is the single resolver both posting and inventory consult.
+
+| Setting | Now read by |
+|---|---|
+| **Item group** | COGS, purchase receipt and sales revenue postings — one debit/credit pair per group |
+| **Stocked** | availability, reservation, fulfilment, COGS, purchase receipt |
+| Registration / Picking / Deduction gates | purchase receipt · sales shipment · sales invoice |
+
+A not-stocked item keeps no stock rows, batches or inventory transactions, posts no COGS, has its
+purchase cost expensed rather than capitalised, and never reports "out of stock" — which is what made
+a repair or a delivery charge unsellable.
+
+**Proof:** `scripts/verifyItemPolicy.ts`, 21 assertions against the real database. The one that
+matters: with an `ACCESSORY`-scoped COGS profile in place, one shipment posts **200 to 5101
+[FOOTWEAR] and 30 to 5201 [ACCESSORY] in the same journal**. That is the item axis of the posting
+matrix working end to end for the first time since migration 001 defined it.
+
+Unassigned products are untouched: stocked, both postings on, no gates, costed by
+`InventoryParameters` — identical to before.
+
+**Still not wired, and why** (checklist items 5.11, 5.12):
+
+- `receiving_requirements`, `post_physical_inventory`, `post_financial_inventory` — **there is no
+  vendor invoice document**. The receipt *is* the posting, so there is nothing to gate and nothing to
+  separate. Building that document also unblocks three-way matching.
+- Accrual, deferred revenue, fixed receipt price, include physical value — accounts and the costing
+  engine do not exist yet.
+- A not-stocked purchase expenses to the `COGS` posting type because that is the closest configured
+  account. A dedicated `PURCHASE_EXPENSE` type is correct — item 5.11.
 
 ---
 
