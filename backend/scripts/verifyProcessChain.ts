@@ -201,11 +201,15 @@ function heading(s: string) {
   note('quotation number', quotation.quotation_number);
   note('valid until', quotation.valid_until?.toISOString().slice(0, 10));
 
-  // The tax engine must decompose the same way the factura will.
+  // [OFFICIAL] Ley 843 art. 5 + art. 7: the IVA is inside the invoiced price and
+  // the 13% is applied to that price. So the tax is 13% OF THE GROSS, not
+  // `gross − gross/1,13` (which is 11,50% and is what this engine used to do).
   const iva = Number(quotation.tax_amount);
-  const expectedIva = Number((expectedGross - expectedGross / 1.13).toFixed(2));
-  check('IVA 13% decomposed from the INCLUSIVE gross', iva, expectedIva);
+  const expectedIva = Number((expectedGross * 0.13).toFixed(2));
+  check('IVA is 13% of the invoiced amount (IVA por dentro)', iva, expectedIva);
   note('gross / net / IVA', `${expectedGross} / ${(expectedGross - iva).toFixed(2)} / ${iva}`);
+  note('effective burden on the true net',
+    `${(((iva) / (expectedGross - iva)) * 100).toFixed(4)}% — the published 14,9425%`);
 
   const sent = await sendQuotation(tenant.id, quotation.id);
   check('quotation SENT', sent.status, 'SENT');
@@ -362,33 +366,25 @@ function heading(s: string) {
   check('PO lines carry bid-line provenance', award.purchase_order.lines.every((l) => l.source_line_id !== null), true);
   note('PO number', award.purchase_order.po_number);
 
-  // ── The purchase tax arithmetic is INCOHERENT, and that is on purpose ────
+  // ── The purchase arithmetic, now coherent ───────────────────────────────
   //
-  // The existing `POST /purchase/orders` decomposes IVA *out of* the subtotal
-  // (because the Bolivian IVA13 code is price-INCLUSIVE) and then ADDS the
-  // result on top. So a Bs 2 500 order is taxed 2500 − 2500/1.13 = 287,61 and
-  // totals 2 787,61 — an effective 11,5%, not 13%. Either the subtotal is gross
-  // (and nothing should be added) or it is net (and the tax should be 325,00).
-  // It cannot be both.
+  // It used to decompose IVA out of the subtotal and then add it straight back
+  // on: Bs 2 500 → tax 287,61 → total 2 787,61, an effective 11,5% and a total
+  // that was neither the net nor the gross.
   //
-  // This is the "purchase net-vs-inclusive" question already parked with the
-  // Finance co-founder. It is NOT fixed here: correcting it moves every purchase
-  // total in the system, which is a decision for Kubi and the co-founder, not
-  // for an overnight session. What IS asserted is that the new RFQ path produces
-  // exactly what the existing purchase path produces — consistency, so that
-  // whichever way the question is answered, one fix covers both.
-  const poNet = Number(award.purchase_order.subtotal);
-  const { computeDocumentTax } = await import('../src/shared/services/documentTax.service');
-  const existingPathTax = await computeDocumentTax(tenant.id, poNet, {
-    partyId: rival.id,
-    side: 'PURCHASE',
-  });
-  check('RFQ-generated PO taxes identically to the existing purchase path',
-    Number(award.purchase_order.tax_amount), existingPathTax.vat);
-  check('PO total = subtotal + that tax, as the existing path does',
-    Number(award.purchase_order.total_amount), Number((poNet + existingPathTax.vat).toFixed(2)));
-  note('KNOWN ISSUE effective purchase tax rate',
-    `${((existingPathTax.vat / poNet) * 100).toFixed(2)}% — should be 13,00% or 0%, not both`);
+  // Under Ley 843 a supplier's factura carries ONE amount with the IVA inside
+  // it, and the buyer's crédito fiscal is 13% of that invoiced amount. So the
+  // agreed figure IS the gross: AP owes it in full, 13% of it is recoverable,
+  // and the remainder capitalises into inventory.
+  const agreed = Number(award.purchase_order.subtotal);
+  const poTax = Number(award.purchase_order.tax_amount);
+  const poTotal = Number(award.purchase_order.total_amount);
+
+  check('crédito fiscal is 13% of the invoiced amount', poTax, Number((agreed * 0.13).toFixed(2)));
+  check('AP owes the supplier the invoiced amount, nothing added on top', poTotal, agreed);
+  check('the effective purchase tax rate is exactly 13%',
+    Number(((poTax / agreed) * 100).toFixed(2)), 13);
+  note('capitalises to inventory (gross − recoverable IVA)', (poTotal - poTax).toFixed(2));
 
   check('requisition closed by the award', award.requisition_status, 'CLOSED');
 

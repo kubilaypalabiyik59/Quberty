@@ -3,7 +3,7 @@ import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
-import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import {
   RFQ_CASE_STATUS,
@@ -553,12 +553,9 @@ export async function awardRfq(
     throw new AppError('This RFQ case has no warehouse; a purchase order needs one.', 400);
   }
 
-  // Purchase-side arithmetic, unchanged: subtotal is NET and tax is added on top.
-  const subtotal = Number(selected.reduce((s, l) => s + Number(l.line_total), 0).toFixed(2));
-  const poTax = await computeDocumentTax(tenantId, subtotal, {
-    partyId: request.supplier_id,
-    side: 'PURCHASE',
-  });
+  // The winning bid is what the vendor will invoice, i.e. gross.
+  const agreed = Number(selected.reduce((s, l) => s + Number(l.line_total), 0).toFixed(2));
+  const money = await computePurchaseMoney(tenantId, agreed, { partyId: request.supplier_id });
   const po_number = await nextPurchaseOrderNumber(tenantId);
 
   return db.$transaction(async (tx) => {
@@ -570,9 +567,9 @@ export async function awardRfq(
         warehouse_id: warehouseId,
         expected_date: input.expected_date ? new Date(input.expected_date) : null,
         currency: request.currency,
-        subtotal,
-        tax_amount: poTax.vat,
-        total_amount: Number((subtotal + poTax.vat).toFixed(2)),
+        subtotal: agreed,
+        tax_amount: money.recoverable_tax,
+        total_amount: money.total,
         notes: `Awarded from RFQ ${rfq.rfq_number} — ${request.supplier.name}`,
         created_by: userId,
         source_document_type: PURCHASE_SOURCE_DOCUMENT.RFQ,

@@ -16,7 +16,8 @@
         "region_type": "DOMESTIC",
         "posting_type_payable": "VAT_OUTPUT",
         "posting_type_receivable": "VAT_INPUT",
-        "note": "Rate 0 by design — set the local standard rate on onboarding."
+        "note": "Rate 0 by design — set the local standard rate on onboarding.",
+        "base_kind": "NET"
       },
       {
         "code": "ZERO",
@@ -28,7 +29,8 @@
         "region_type": "THIRD",
         "is_exempt": true,
         "posting_type_payable": "VAT_OUTPUT",
-        "posting_type_receivable": "VAT_INPUT"
+        "posting_type_receivable": "VAT_INPUT",
+        "base_kind": "NET"
       },
       {
         "code": "RC",
@@ -41,7 +43,8 @@
         "reverse_charge": true,
         "posting_type_payable": "VAT_OUTPUT",
         "posting_type_receivable": "VAT_INPUT",
-        "note": "Germany §13b / EU B2B. Set the rate and exempt_reason per jurisdiction."
+        "note": "Germany §13b / EU B2B. Set the rate and exempt_reason per jurisdiction.",
+        "base_kind": "NET"
       }
     ],
     "tax_groups": [

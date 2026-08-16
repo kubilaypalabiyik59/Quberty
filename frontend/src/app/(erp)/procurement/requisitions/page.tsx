@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
+import { Dialog, dialogField, apiErrorMessage } from '@/components/erp/Dialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
 
 /**
@@ -108,7 +109,6 @@ export default function RequisitionsPage() {
         <NewRequisitionDialog
           onClose={() => setCreating(false)}
           onSaved={() => { qc.invalidateQueries({ queryKey: ['requisitions'] }); setError(''); }}
-          onError={(e) => setError(e.response?.data?.error?.message ?? 'Could not create requisition')}
         />
       )}
     </div>
@@ -116,19 +116,20 @@ export default function RequisitionsPage() {
 }
 
 function NewRequisitionDialog({
-  onClose, onSaved, onError,
-}: { onClose: () => void; onSaved: () => void; onError: (e: any) => void }) {
+  onClose, onSaved,
+}: { onClose: () => void; onSaved: () => void }) {
   const [warehouseId, setWarehouseId] = useState('');
   const [justification, setJustification] = useState('');
+  const [error, setError] = useState('');
   const [lines, setLines] = useState<{ product_id: string; quantity: string; estimated_unit_cost: string }[]>([
     { product_id: '', quantity: '1', estimated_unit_cost: '0' },
   ]);
 
-  const { data: warehouses } = useQuery({
+  const { data: warehouses, isLoading: whLoading } = useQuery({
     queryKey: ['warehouses-lookup'],
-    queryFn: () => api.get('/warehouse/warehouses').then((r) => r.data.data).catch(() => []),
+    queryFn: () => api.get('/warehouse/warehouses').then((r) => r.data.data ?? []),
   });
-  const { data: products } = useQuery({
+  const { data: products, isLoading: prLoading } = useQuery({
     queryKey: ['products-lookup'],
     queryFn: () => api.get('/products', { params: { limit: 200 } }).then((r) => r.data.data ?? []),
   });
@@ -143,89 +144,112 @@ function NewRequisitionDialog({
           .map((l) => ({
             product_id: l.product_id,
             quantity: Number(l.quantity),
-            estimated_unit_cost: Number(l.estimated_unit_cost),
+            estimated_unit_cost: Number(l.estimated_unit_cost || 0),
           })),
       }),
     onSuccess: () => { onSaved(); onClose(); },
-    onError,
+    onError: (e) => setError(apiErrorMessage(e, 'Could not create the requisition.')),
   });
 
-  const field = 'h-9 w-full rounded-control border border-border bg-surface px-2.5 text-body text-fg focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring';
-  const valid = warehouseId && lines.some((l) => l.product_id && Number(l.quantity) > 0);
+  // Stated in words, next to the button. A form that refuses to submit without
+  // saying why is indistinguishable from a broken one — which is exactly how
+  // this page failed the first person who tried to use it.
+  const blockedReason =
+    whLoading || prLoading
+      ? 'Loading warehouses and products…'
+      : !(warehouses ?? []).length
+        ? 'No warehouses exist yet — create one under Warehouse first.'
+        : !warehouseId
+          ? 'Choose a warehouse.'
+          : !lines.some((l) => l.product_id)
+            ? 'Add at least one product line.'
+            : lines.some((l) => l.product_id && !(Number(l.quantity) > 0))
+              ? 'Every product line needs a quantity greater than zero.'
+              : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/30 p-4" onClick={onClose}>
-      <div className="w-full max-w-2xl rounded-surface border border-border bg-surface p-4 shadow-pop" onClick={(e) => e.stopPropagation()}>
-        <h2 className="mb-3 text-lead font-semibold text-fg">New purchase requisition</h2>
+    <Dialog
+      title="New purchase requisition"
+      description="An internal request. Nothing is ordered and nothing is posted until it is approved."
+      width="max-w-2xl"
+      onClose={onClose}
+      error={error}
+      blockedReason={blockedReason}
+      submitLabel="Create requisition"
+      submitting={create.isPending}
+      onSubmit={() => create.mutate()}
+    >
+      <div className="mb-3 grid grid-cols-2 gap-2.5">
+        <label className="text-caption text-fg-muted">
+          Warehouse *
+          <select className={dialogField} value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+            <option value="">— select —</option>
+            {(warehouses ?? []).map((w: any) => (
+              <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-caption text-fg-muted">
+          Justification
+          <input className={dialogField} value={justification} onChange={(e) => setJustification(e.target.value)} />
+        </label>
+      </div>
 
-        <div className="mb-3 grid grid-cols-2 gap-2.5">
-          <label className="text-caption text-fg-muted">
-            Warehouse *
-            <select className={field} value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
-              <option value="">— select —</option>
-              {(warehouses ?? []).map((w: any) => (
-                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+      {/* Grid, not flex: `dialogField` carries `w-full`, which fights `flex-1` and
+          collapsed the product select to the width of its arrow. Fixed columns
+          make the row predictable regardless of the field's own width class. */}
+      <div className="mb-1 grid grid-cols-[1fr_5rem_7rem_2.25rem] gap-2 text-micro font-semibold uppercase tracking-wide text-fg-muted">
+        <span>Product</span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Est. cost</span>
+        <span />
+      </div>
+      <div className="space-y-2">
+        {lines.map((l, i) => (
+          <div key={i} className="grid grid-cols-[1fr_5rem_7rem_2.25rem] items-center gap-2">
+            <select
+              className={dialogField}
+              aria-label={`Product for line ${i + 1}`}
+              value={l.product_id}
+              onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, product_id: e.target.value } : x)))}
+            >
+              <option value="">— product —</option>
+              {(products ?? []).map((p: any) => (
+                <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>
               ))}
             </select>
-          </label>
-          <label className="text-caption text-fg-muted">
-            Justification
-            <input className={field} value={justification} onChange={(e) => setJustification(e.target.value)} />
-          </label>
-        </div>
-
-        <div className="mb-2 text-micro font-semibold uppercase tracking-wide text-fg-muted">Lines</div>
-        <div className="space-y-2">
-          {lines.map((l, i) => (
-            <div key={i} className="flex gap-2">
-              <select
-                className={`${field} flex-1`}
-                value={l.product_id}
-                onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, product_id: e.target.value } : x)))}
-              >
-                <option value="">— product —</option>
-                {(products ?? []).map((p: any) => (
-                  <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>
-                ))}
-              </select>
-              <input
-                className={`${field} w-24`} type="number" min="1" placeholder="Qty"
-                value={l.quantity}
-                onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))}
-              />
-              <input
-                className={`${field} w-28`} type="number" min="0" placeholder="Est. cost"
-                value={l.estimated_unit_cost}
-                onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, estimated_unit_cost: e.target.value } : x)))}
-              />
-              <Button
-                variant="ghost" size="icon" type="button"
-                onClick={() => setLines(lines.filter((_, j) => j !== i))}
-                disabled={lines.length === 1}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
-        <Button
-          variant="ghost" size="sm" className="mt-2"
-          onClick={() => setLines([...lines, { product_id: '', quantity: '1', estimated_unit_cost: '0' }])}
-        >
-          <Plus className="h-3.5 w-3.5" /> Add line
-        </Button>
-
-        <p className="mt-3 text-micro text-fg-subtle">
-          The estimated cost is the requester&apos;s guess. An RFQ replaces it with a real quoted price.
-        </p>
-
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" disabled={!valid || create.isPending} onClick={() => create.mutate()}>
-            Create requisition
-          </Button>
-        </div>
+            <input
+              className={`${dialogField} text-right`} type="number" min="1" placeholder="Qty"
+              aria-label={`Quantity for line ${i + 1}`}
+              value={l.quantity}
+              onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x)))}
+            />
+            <input
+              className={`${dialogField} text-right`} type="number" min="0" step="0.01" placeholder="0,00"
+              aria-label={`Estimated unit cost for line ${i + 1}`}
+              value={l.estimated_unit_cost}
+              onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, estimated_unit_cost: e.target.value } : x)))}
+            />
+            <Button
+              variant="ghost" size="icon" type="button" aria-label={`Remove line ${i + 1}`}
+              onClick={() => setLines(lines.filter((_, j) => j !== i))}
+              disabled={lines.length === 1}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
       </div>
-    </div>
+      <Button
+        variant="ghost" size="sm" className="mt-2"
+        onClick={() => setLines([...lines, { product_id: '', quantity: '1', estimated_unit_cost: '0' }])}
+      >
+        <Plus className="h-3.5 w-3.5" /> Add line
+      </Button>
+
+      <p className="mt-3 text-micro text-fg-subtle">
+        The estimated cost is the requester&apos;s guess. An RFQ replaces it with a real quoted price.
+      </p>
+    </Dialog>
   );
 }

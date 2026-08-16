@@ -15,7 +15,9 @@
         "is_recoverable": true,
         "region_type": "DOMESTIC",
         "posting_type_payable": "VAT_OUTPUT",
-        "posting_type_receivable": "VAT_INPUT"
+        "posting_type_receivable": "VAT_INPUT",
+        "base_kind": "GROSS",
+        "note": "Ley 843 art. 5 + art. 7: the tax forms part of the invoiced price and the 13% alicuota is applied to those totals, so base_kind = GROSS. Nominal 13%, effective 13/(1-0.13) = 14.9425% of the true net. Ley 1733 (27 May 2026) moves Bolivia to IVA por fuera; when its reglamentary Decreto Supremo is published, add a NEW date-effective row with base_kind = NET and is_inclusive = false rather than editing this one."
       },
       {
         "code": "IT3",
@@ -26,7 +28,9 @@
         "is_recoverable": false,
         "region_type": "DOMESTIC",
         "posting_type_payable": "TAX_TURNOVER_PAYABLE",
-        "posting_type_receivable": "TAX_TURNOVER_EXPENSE"
+        "posting_type_receivable": "TAX_TURNOVER_EXPENSE",
+        "base_kind": "GROSS",
+        "note": "Ley 843 art. 74: the base is 'los ingresos brutos devengados ... el valor o monto total ... devengados en concepto de venta de bienes' - the invoiced amount, not the amount left after IVA. Hence base_kind = GROSS."
       }
     ],
     "tax_groups": [

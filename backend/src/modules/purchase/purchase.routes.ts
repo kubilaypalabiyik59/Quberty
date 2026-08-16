@@ -8,7 +8,7 @@ import { ok, created, message, paginated } from '../../shared/response';
 import { validate } from '../../shared/middleware/validate';
 import { CreatePurchaseOrderSchema } from '../../shared/schemas';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
-import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import type { AppEnv } from '../../shared/context';
@@ -119,15 +119,13 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
       };
     });
 
-    // Tax now comes from the tenant's configured engine instead of the hardcoded
-    // Bolivian constant. The TOTAL formula is left exactly as it was on purpose:
-    // purchase treats `subtotal` as net and adds tax on top (the receipt posting
-    // debits Inventory + IVA and credits AP for the total, so it only balances
-    // that way), whereas the Bolivian IVA code is price-INCLUSIVE. Reconciling
-    // those two is a finance question — parked with the co-founder list, not
-    // silently changed here, because it would move every purchase total.
-    const poTax = await computeDocumentTax(c.get('tenantId'), subtotal, {
-      partyId: supplier_id ?? po.supplier_id, side: 'PURCHASE', legacyConfig: c.get('taxConfig'),
+  // The agreed amount IS the supplier's invoiced figure. `computePurchaseMoney`
+  // splits it into what we owe (AP), the recoverable input tax (VAT_INPUT) and
+  // what capitalises into inventory. Purchase used to decompose the tax out and
+  // then add it straight back on, which produced an effective 11,5% and a total
+  // that was neither the net nor the gross. See documentTax.service.ts.
+    const money = await computePurchaseMoney(c.get('tenantId'), subtotal, {
+      partyId: supplier_id ?? po.supplier_id, legacyConfig: c.get('taxConfig'),
     });
 
     await db.purchaseOrderLine.createMany({ data: newLines });
@@ -140,8 +138,8 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
         expected_date:       expected_date ? new Date(expected_date) : po.expected_date,
         notes:               notes ?? po.notes,
         subtotal,
-        tax_amount:   poTax.vat,
-        total_amount: subtotal + poTax.vat,
+        tax_amount:   money.recoverable_tax,
+        total_amount: money.total,
         updated_at:   new Date(),
       },
     });
@@ -180,15 +178,13 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
     };
   });
 
-  // Tax now comes from the tenant's configured engine instead of the hardcoded
-  // Bolivian constant. The TOTAL formula is left exactly as it was on purpose:
-  // purchase treats `subtotal` as net and adds tax on top (the receipt posting
-  // debits Inventory + IVA and credits AP for the total, so it only balances
-  // that way), whereas the Bolivian IVA code is price-INCLUSIVE. Reconciling
-  // those two is a finance question — parked with the co-founder list, not
-  // silently changed here, because it would move every purchase total.
-  const poTax = await computeDocumentTax(c.get('tenantId'), subtotal, {
-    partyId: body.supplier_id, side: 'PURCHASE', legacyConfig: c.get('taxConfig'),
+  // The agreed amount IS the supplier's invoiced figure. `computePurchaseMoney`
+  // splits it into what we owe (AP), the recoverable input tax (VAT_INPUT) and
+  // what capitalises into inventory. Purchase used to decompose the tax out and
+  // then add it straight back on, which produced an effective 11,5% and a total
+  // that was neither the net nor the gross. See documentTax.service.ts.
+  const money = await computePurchaseMoney(c.get('tenantId'), subtotal, {
+    partyId: body.supplier_id, legacyConfig: c.get('taxConfig'),
   });
 
   const po = await db.purchaseOrder.create({
@@ -202,8 +198,8 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
       currency:            body.currency ?? 'BOB',
       notes:               body.notes,
       subtotal,
-      tax_amount:   poTax.vat,
-      total_amount: subtotal + poTax.vat,
+      tax_amount:   money.recoverable_tax,
+      total_amount: money.total,
       created_by:   c.get('user').id,
       lines: { create: lines },
     },
@@ -306,9 +302,13 @@ app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c)
   );
 
   if (acc) {
-    const subtotal    = Number(po.subtotal);
+    // `subtotal` on the header is the agreed (gross) figure; the amount that
+    // capitalises into inventory is that less the recoverable tax. Debiting the
+    // gross would capitalise IVA that is going to be reclaimed, overstating both
+    // stock value and the COGS that later flows from it.
     const ivaAmount   = Number(po.tax_amount);
     const totalAmount = Number(po.total_amount);
+    const subtotal    = Number((totalAmount - ivaAmount).toFixed(2));
     // D-5: was `count() + 1` computed OUTSIDE any transaction, on a globally
     // @unique column — the loosest of the three racing implementations.
     const entryNumber = await nextJournalVoucher(c.get('tenantId'));

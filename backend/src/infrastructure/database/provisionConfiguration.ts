@@ -463,6 +463,7 @@ async function provisionTax(
         `${(c.rate * 100).toFixed(c.rate * 100 % 1 === 0 ? 0 : 1)}%`,
         c.tax_type,
         c.is_inclusive ? 'inclusive' : 'exclusive',
+        `rate on ${(c.base_kind ?? 'NET').toLowerCase()}`,
         c.is_recoverable ? 'recoverable' : 'NOT recoverable',
         c.reverse_charge ? 'reverse charge' : null,
         c.is_exempt ? 'exempt' : null,
@@ -489,6 +490,7 @@ async function provisionTax(
         tax_type: c.tax_type,
         rate: c.rate,
         is_inclusive: c.is_inclusive,
+        base_kind: c.base_kind ?? 'NET',
         is_recoverable: c.is_recoverable,
         region_type: c.region_type,
         reverse_charge: c.reverse_charge ?? false,
@@ -620,6 +622,103 @@ async function provisionPipelineStages(tenant: Tenant): Promise<void> {
   console.log(`  OK       ${DEFAULT_PIPELINE_STAGES.length} pipeline stages created (rename freely — they are data)`);
 }
 
+/* ─────────────────────── item groups and model groups ─────────────────── */
+
+/**
+ * The two mandatory financial fields on a released product.
+ *
+ * **[OFFICIAL]** creating a released product requires an ITEM MODEL GROUP (how
+ * the item is valued and controlled) and an ITEM GROUP (which GL accounts it
+ * posts to), among others.
+ * learn.microsoft.com/dynamics365/supply-chain/pim/tasks/create-released-product-single-company
+ *
+ * These defaults are the smallest set that is actually meaningful for a shoe
+ * retailer, and they are DATA — rename them, add "Packaging", split "Footwear"
+ * into leather and synthetic. What matters is that every product has one, so the
+ * posting matrix has an item axis to resolve on.
+ *
+ * Products are NOT auto-assigned here. Assigning an item group changes which GL
+ * account a product posts to, and **[OFFICIAL]** Microsoft warns that changing
+ * a group after transactions exist breaks ledger-to-subledger reconciliation:
+ * "revenue on new transactions posts to the updated account. However, any
+ * revenue that you posted before the change remains in the original account."
+ * So the assignment is a deliberate act, reported by the setup audit.
+ */
+const DEFAULT_ITEM_MODEL_GROUPS = [
+  {
+    code: 'FIFO',
+    name: 'Stocked — FIFO',
+    costing_method: 'FIFO',
+    stocked: true,
+    post_physical_inventory: true,
+    post_financial_inventory: true,
+  },
+  {
+    code: 'SERVICE',
+    name: 'Service — not stocked',
+    costing_method: 'STANDARD',
+    // The switch that lets a service be sold without inventing a stock record
+    // for it. Today every product is implicitly stocked.
+    stocked: false,
+    post_physical_inventory: false,
+    post_financial_inventory: true,
+  },
+];
+
+const DEFAULT_ITEM_GROUPS = [
+  { code: 'FOOTWEAR', name: 'Footwear', description: 'Shoes, boots, sandals — the trading stock' },
+  { code: 'ACCESSORY', name: 'Accessories', description: 'Laces, care products, insoles' },
+  { code: 'SERVICE', name: 'Services', description: 'Repairs and non-stock services' },
+];
+
+async function provisionItemGroups(tenant: Tenant): Promise<void> {
+  const models = await db.itemModelGroup.count({ where: { tenant_id: tenant.id } });
+  const groups = await db.itemGroup.count({ where: { tenant_id: tenant.id } });
+
+  if (models > 0 && groups > 0) {
+    console.log(`  SKIP     item groups — ${models} model group(s), ${groups} item group(s) already configured`);
+  } else if (!APPLY) {
+    console.log(
+      `  DRY RUN  item model groups: ${DEFAULT_ITEM_MODEL_GROUPS.map(g => g.code).join(', ')}\n` +
+      `           item groups:       ${DEFAULT_ITEM_GROUPS.map(g => g.code).join(', ')}`,
+    );
+  } else {
+    if (models === 0) {
+      await db.itemModelGroup.createMany({
+        data: DEFAULT_ITEM_MODEL_GROUPS.map(g => ({ ...g, tenant_id: tenant.id, legal_entity_id: null })),
+        skipDuplicates: true,
+      });
+      console.log(`  OK       ${DEFAULT_ITEM_MODEL_GROUPS.length} item model groups created`);
+    }
+    if (groups === 0) {
+      await db.itemGroup.createMany({
+        data: DEFAULT_ITEM_GROUPS.map(g => ({ ...g, tenant_id: tenant.id, legal_entity_id: null })),
+        skipDuplicates: true,
+      });
+      console.log(`  OK       ${DEFAULT_ITEM_GROUPS.length} item groups created`);
+    }
+  }
+
+  // The setup gap that matters: a product with no item group can only ever
+  // resolve the ALL-scope posting profile, so per-group accounts are unreachable
+  // for it. Report it rather than guessing an assignment.
+  const unassigned = await db.product.count({
+    where: { tenant_id: tenant.id, OR: [{ item_group_id: null }, { item_model_group_id: null }] },
+  });
+  if (unassigned > 0) {
+    const total = await db.product.count({ where: { tenant_id: tenant.id } });
+    console.log(
+      `  ACTION   ${unassigned}/${total} product(s) have no item group and/or item model group.\n` +
+      `           They fall back to the ALL-scope posting profile and to\n` +
+      `           InventoryParameters.costing_method — which is exactly today's behaviour,\n` +
+      `           so nothing is broken. But per-group GL accounts and per-item costing\n` +
+      `           stay unreachable until they are assigned. Assign under Products, or via\n` +
+      `           PUT /api/v1/products/:id. NOT auto-assigned: changing an item group after\n` +
+      `           transactions exist splits the ledger from the subledger.`,
+    );
+  }
+}
+
 /* ──────────────────────────────── driver ──────────────────────────────── */
 
 async function provisionTenant(tenant: Tenant) {
@@ -638,6 +737,7 @@ async function provisionTenant(tenant: Tenant) {
   const taxDefaults = await provisionTax(tenant, template);
   await provisionParameters(tenant, template, taxDefaults);
   await provisionPipelineStages(tenant);
+  await provisionItemGroups(tenant);
 }
 
 async function main() {

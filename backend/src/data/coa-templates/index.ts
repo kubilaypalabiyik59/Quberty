@@ -35,6 +35,13 @@ export interface CoaTaxCode {
   tax_type: string;
   rate: number;
   is_inclusive: boolean;
+  /**
+   * NET | GROSS — what the rate multiplies. Optional so existing templates keep
+   * working; the schema default is NET, which is right everywhere except a
+   * jurisdiction that taxes the tax-inclusive price. Bolivia does: see
+   * TaxCode.base_kind and docs/process/BOLIVIA_TAX_BASIS.md.
+   */
+  base_kind?: string;
   is_recoverable: boolean;
   region_type: string;
   reverse_charge?: boolean;

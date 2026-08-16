@@ -2,10 +2,26 @@ import { calculateTax, TaxCodeSpec } from '../shared/services/tax.service';
 import { resolveTax, BOLIVIA_DEFAULTS } from '../config/tax';
 
 /**
- * The generalised tax engine must not change a single Bolivian number.
- * Bolivia is the anchor customer and files real tax returns from these figures,
- * so equivalence with the existing config/tax.ts is the acceptance criterion for
- * the whole multi-jurisdiction design.
+ * This suite used to assert that the engine reproduced `config/tax.ts` exactly,
+ * on the grounds that Bolivia files real returns from these figures and must not
+ * move.
+ *
+ * The premise was right and the reference was wrong. `config/tax.ts` computes
+ * `gross - gross/1,13`, which is 11,50% of the invoiced amount. Bolivian law puts
+ * the tax INSIDE the price and applies the 13% to that price:
+ *
+ *   [OFFICIAL] Ley 843 art. 5 - the tax "forma parte integrante del precio neto
+ *   de la venta [...] no se mostrara por separado", with art. 7 applying the
+ *   alicuota to "los importes totales de los precios netos". Nominal 13%,
+ *   effective 13/(1-0,13) = 14,9425% of the true net.
+ *
+ *   [OFFICIAL] Ley 843 art. 74 - IT is levied on "los ingresos brutos
+ *   devengados [...] el valor o monto total [...] devengados en concepto de
+ *   venta de bienes": the invoiced amount, not the post-IVA net.
+ *
+ * So these tests now assert the LAW, and the old equivalence survives only in
+ * reverse - as a record of how much the previous behaviour understated by.
+ * See docs/process/BOLIVIA_TAX_BASIS.md.
  */
 
 const spec = (over: Partial<TaxCodeSpec>): TaxCodeSpec => ({
@@ -15,6 +31,7 @@ const spec = (over: Partial<TaxCodeSpec>): TaxCodeSpec => ({
   tax_type: 'VAT',
   rate: 0,
   is_inclusive: false,
+  base_kind: 'NET',
   is_recoverable: true,
   reverse_charge: false,
   is_exempt: false,
@@ -26,38 +43,82 @@ const spec = (over: Partial<TaxCodeSpec>): TaxCodeSpec => ({
   ...over,
 });
 
-const IVA13 = spec({ code: 'IVA13', rate: 0.13, is_inclusive: true, tax_type: 'VAT' });
+// Bolivia BEFORE the Ley 1733 reglamentary decree: both taxes bite on the gross.
+const IVA13 = spec({ code: 'IVA13', rate: 0.13, is_inclusive: true, base_kind: 'GROSS', tax_type: 'VAT' });
 const IT3   = spec({
-  code: 'IT3', rate: 0.03, tax_type: 'TURNOVER', is_recoverable: false,
+  code: 'IT3', rate: 0.03, tax_type: 'TURNOVER', is_recoverable: false, base_kind: 'GROSS',
   posting_type_payable: 'TAX_TURNOVER_PAYABLE', posting_type_receivable: 'TAX_TURNOVER_EXPENSE',
 });
+// Bolivia AFTER Ley 1733 takes effect: IVA por fuera, 13% on the net, added on
+// top. A different TaxCode row with its own valid_from - which is the whole
+// reason TaxCode is date-effective.
+const IVA13_POR_FUERA = spec({ code: 'IVA13F', rate: 0.13, is_inclusive: false, base_kind: 'NET', tax_type: 'VAT' });
 
-describe('Bolivia — must match config/tax.ts exactly', () => {
-  const legacy = resolveTax(BOLIVIA_DEFAULTS);
+describe('Bolivia — IVA por dentro, per Ley 843 art. 5 and 7', () => {
   const amounts = [100, 10, 1299, 3000, 115, 25000, 0.01, 7127];
 
-  it.each(amounts)('gross %p produces the same subtotal, IVA and IT', gross => {
-    const expected = legacy.breakdown(gross);
-    const actual = calculateTax(gross, [IVA13, IT3]);
-
-    const iva = actual.lines.find(l => l.code === 'IVA13')!;
-    const it  = actual.lines.find(l => l.code === 'IT3')!;
-
-    expect(actual.subtotal).toBeCloseTo(expected.subtotal, 2);
-    expect(iva.amount).toBeCloseTo(expected.iva, 2);
-    expect(it.amount).toBeCloseTo(expected.it, 2);
+  it.each(amounts)('IVA on an invoice of %p is 13% OF THE INVOICED AMOUNT', gross => {
+    const iva = calculateTax(gross, [IVA13, IT3]).lines.find(l => l.code === 'IVA13')!;
+    expect(iva.amount).toBeCloseTo(Math.round(gross * 0.13 * 100) / 100, 2);
+    expect(iva.base).toBeCloseTo(gross, 2);
   });
 
-  it('IVA is inclusive — the customer pays the gross, unchanged', () => {
+  it.each(amounts)('IT on an invoice of %p is 3% of gross income, not of the net', gross => {
+    const it = calculateTax(gross, [IVA13, IT3]).lines.find(l => l.code === 'IT3')!;
+    expect(it.amount).toBeCloseTo(Math.round(gross * 0.03 * 100) / 100, 2);
+    expect(it.base).toBeCloseTo(gross, 2);
+  });
+
+  it('the effective IVA burden on the true net is 14,9425% — the published figure', () => {
+    const r = calculateTax(1000, [IVA13]);
+    const iva = r.lines.find(l => l.code === 'IVA13')!;
+    expect(iva.amount).toBeCloseTo(130, 2);
+    expect(r.subtotal).toBeCloseTo(870, 2);
+    expect((iva.amount / r.subtotal) * 100).toBeCloseTo(14.9425, 3);
+  });
+
+  it('to keep Bs 100 net a merchant invoices Bs 114,94 — the worked example', () => {
+    // 100 / 0,87 = 114,9425...  the standard Bolivian illustration.
+    const r = calculateTax(114.94, [IVA13]);
+    expect(r.subtotal).toBeCloseTo(100, 1);
+  });
+
+  it('the customer pays exactly the invoiced amount — IVA is inside it', () => {
     expect(calculateTax(1299, [IVA13, IT3]).total).toBeCloseTo(1299, 2);
   });
 
-  it('IT is a turnover tax on the net, not a surcharge on the customer', () => {
+  it('IT is a cost to the seller, never a surcharge added to the invoice', () => {
     const r = calculateTax(1299, [IVA13, IT3]);
     const it = r.lines.find(l => l.code === 'IT3')!;
-    expect(it.base).toBeCloseTo(r.subtotal, 2);
     expect(it.is_recoverable).toBe(false);
-    expect(r.total).toBeCloseTo(1299, 2); // IT did not increase what is charged
+    expect(r.total).toBeCloseTo(1299, 2);
+  });
+
+  it('records how much the OLD arithmetic understated, for the correction decision', () => {
+    // config/tax.ts is the legacy fallback and still computes gross - gross/1,13.
+    // This does not endorse it; it sizes the gap so the Finance co-founder can
+    // judge the historical correction.
+    const legacy = resolveTax(BOLIVIA_DEFAULTS).breakdown(1299);
+    const now = calculateTax(1299, [IVA13, IT3]);
+    const iva = now.lines.find(l => l.code === 'IVA13')!;
+    const it = now.lines.find(l => l.code === 'IT3')!;
+
+    expect(legacy.iva).toBeCloseTo(149.44, 2);   // 11,50% of gross - understated
+    expect(iva.amount).toBeCloseTo(168.87, 2);   // 13,00% of gross - the law
+    expect(legacy.it).toBeCloseTo(34.49, 2);     // 3% of the net - understated
+    expect(it.amount).toBeCloseTo(38.97, 2);     // 3% of gross income - the law
+  });
+});
+
+describe('Bolivia after Ley 1733 — IVA por fuera, once the decree takes effect', () => {
+  it('is a configuration change, not a code change: 13% on the net, added on top', () => {
+    const r = calculateTax(1000, [IVA13_POR_FUERA]);
+    const iva = r.lines.find(l => l.code === 'IVA13F')!;
+    expect(r.subtotal).toBeCloseTo(1000, 2);
+    expect(iva.amount).toBeCloseTo(130, 2);
+    expect(r.total).toBeCloseTo(1130, 2);
+    // The point of the reform: the effective rate really is 13%.
+    expect((iva.amount / r.subtotal) * 100).toBeCloseTo(13, 6);
   });
 });
 

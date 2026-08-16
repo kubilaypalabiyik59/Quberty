@@ -70,6 +70,74 @@ export interface DocumentTaxContext {
   side?: 'SALES' | 'PURCHASE';
 }
 
+/**
+ * Money for a PURCHASE document, from one place.
+ *
+ * ── The incoherence this replaces ──────────────────────────────────────────
+ * Purchase used to do `computeDocumentTax(subtotal)` and then
+ * `total = subtotal + vat`. With a price-inclusive code that DECOMPOSES the tax
+ * out of the amount and then adds it straight back on, which produced an
+ * effective 11,5% and a total that was neither the net nor the gross:
+ *
+ *   Bs 2 500 → tax 287,61 → total 2 787,61
+ *
+ * ── What is correct in Bolivia ─────────────────────────────────────────────
+ * A supplier's factura carries ONE amount with the IVA inside it (Ley 843
+ * art. 5), and the buyer's crédito fiscal is the alícuota applied to that
+ * invoiced amount. So the figure a buyer agrees with a vendor IS the gross:
+ *
+ *   gross          what we owe the supplier      → AP
+ *   gross − IVA    the recoverable tax removed   → Inventory / expense
+ *   IVA            13% of the gross              → VAT_INPUT
+ *
+ * Inventory must be debited NET of a recoverable tax — capitalising IVA that
+ * will be reclaimed overstates stock value and therefore COGS.
+ *
+ * Where the tax is NOT recoverable, or the jurisdiction adds it on top (Turkey,
+ * Germany, Bolivia after Ley 1733), the same engine yields `total > net` and the
+ * arithmetic still holds. That is the point of asking the engine instead of
+ * hardcoding a sign.
+ */
+export interface PurchaseDocumentMoney {
+  /** Goes to Inventory / expense. Net of recoverable tax. */
+  net: number;
+  /** Recoverable input tax → VAT_INPUT. */
+  recoverable_tax: number;
+  /** Non-recoverable tax, already inside `net` because it is a cost. */
+  non_recoverable_tax: number;
+  /** What the supplier is owed → AP, and the document's total_amount. */
+  total: number;
+  source: 'ENGINE' | 'LEGACY';
+}
+
+export async function computePurchaseMoney(
+  tenantId: string,
+  /** The amount agreed with the supplier, as it appears on their invoice. */
+  amount: number,
+  ctx: Omit<DocumentTaxContext, 'side'> = {},
+): Promise<PurchaseDocumentMoney> {
+  const tax = await computeDocumentTax(tenantId, amount, { ...ctx, side: 'PURCHASE' });
+
+  const recoverable = tax.lines
+    .filter((l) => l.is_recoverable)
+    .reduce((s, l) => s + l.amount, 0);
+  const nonRecoverable = tax.lines
+    .filter((l) => !l.is_recoverable)
+    .reduce((s, l) => s + l.amount, 0);
+
+  // The legacy fallback has no line detail; treat its VAT as recoverable, which
+  // is what the old code assumed anyway.
+  const recoverableTax = tax.source === 'LEGACY' ? tax.vat : recoverable;
+
+  return {
+    net: Number((tax.total - recoverableTax).toFixed(2)),
+    recoverable_tax: Number(recoverableTax.toFixed(2)),
+    non_recoverable_tax: Number(nonRecoverable.toFixed(2)),
+    total: Number(tax.total.toFixed(2)),
+    source: tax.source,
+  };
+}
+
 export async function computeDocumentTax(
   tenantId: string,
   amount: number,

@@ -21,12 +21,22 @@ import { AppError } from '../errors/AppError';
  *   Germany  USt 19/7 by product, reverse charge and intra-community exemption by
  *            customer — i.e. by which codes intersect, not by an if-branch.
  *
- * ── Bolivia must not regress ────────────────────────────────────────────────
- * Configured with IVA13 (inclusive) + IT3 (turnover), `calculateTax` returns
- * exactly what `config/tax.ts resolveTax()` returns today:
+ * ── Bolivia: the old equivalence was equivalence with a DEFECT ──────────────
+ * This file used to promise that `calculateTax` reproduced `config/tax.ts`
+ * exactly:
  *   subtotal = gross / 1.13 · iva = gross - subtotal · it = subtotal * 0.03
- * There is a test asserting this equivalence. If it fails, the generalisation is
- * wrong — not the test.
+ * and a test asserted it.
+ *
+ * That arithmetic is wrong for Bolivia, and the test was faithfully protecting
+ * the error. Ley 843 art. 5 makes IVA part of the invoiced price and art. 7
+ * applies the 13% to those totals, so the tax is 13% OF THE GROSS, not
+ * `gross − gross/1,13` (11,50%). Art. 74 puts IT on "ingresos brutos", not on
+ * the post-IVA net. Both are now driven by `TaxCode.base_kind`; see
+ * docs/process/BOLIVIA_TAX_BASIS.md for the sources and the decision.
+ *
+ * `config/tax.ts` is therefore no longer a reference implementation — it is the
+ * legacy fallback for unprovisioned tenants and reproduces the old defect. It
+ * should be deleted once every tenant is provisioned.
  */
 
 export interface TaxCodeSpec {
@@ -36,6 +46,8 @@ export interface TaxCodeSpec {
   tax_type: string;
   rate: number;
   is_inclusive: boolean;
+  /** NET | GROSS — what the rate multiplies. See TaxCode.base_kind. */
+  base_kind: string;
   is_recoverable: boolean;
   reverse_charge: boolean;
   is_exempt: boolean;
@@ -106,7 +118,7 @@ export async function resolveApplicableTaxCodes(
     },
     select: {
       id: true, code: true, name: true, tax_type: true, rate: true,
-      is_inclusive: true, is_recoverable: true, reverse_charge: true,
+      is_inclusive: true, base_kind: true, is_recoverable: true, reverse_charge: true,
       is_exempt: true, exempt_reason: true,
       withholding_share: true, withholding_threshold: true,
       posting_type_payable: true, posting_type_receivable: true,
@@ -156,8 +168,32 @@ export function calculateTax(amount: number, codes: TaxCodeSpec[]): TaxCalculati
   }
 
   // 1. Establish the net.
-  const inclusiveRateSum = inclusive.reduce((s, c) => s + c.rate, 0);
-  const subtotal = inclusive.length > 0 ? amount / (1 + inclusiveRateSum) : amount;
+  //
+  // Two different meanings of "the price includes the tax", and Bolivia uses the
+  // one almost nobody else does:
+  //
+  //   GROSS  the rate multiplies the INVOICED amount.  tax = amount × rate
+  //          [OFFICIAL] Ley 843 art. 5 + art. 7 — the tax "forma parte
+  //          integrante del precio neto" and the alícuota is applied to those
+  //          totals. Nominal 13%, effective 13/(1−0,13) = 14,9425% of the net.
+  //
+  //   NET    the rate multiplies the amount net of this tax, and the quoted
+  //          price happens to contain it. tax = amount − amount/(1+rate)
+  //          The international norm, and Bolivia's own destination once the
+  //          Ley 1733 reglamentary decree takes effect.
+  //
+  // The engine previously assumed NET for every inclusive code, which understated
+  // Bolivian IVA by 1,5 points of the invoiced amount on every document.
+  const inclusiveGross = inclusive.filter(c => c.base_kind === 'GROSS');
+  const inclusiveNet = inclusive.filter(c => c.base_kind !== 'GROSS');
+
+  const grossTaxTotal = inclusiveGross.reduce((s, c) => s + amount * c.rate, 0);
+  const netRateSum = inclusiveNet.reduce((s, c) => s + c.rate, 0);
+
+  // Take the GROSS-based taxes out first — they are a fixed share of the
+  // invoiced amount — then extract any NET-based inclusive tax from what is left.
+  const afterGross = amount - grossTaxTotal;
+  const subtotal = inclusiveNet.length > 0 ? afterGross / (1 + netRateSum) : afterGross;
 
   const lines: TaxLineResult[] = [];
 
@@ -203,11 +239,22 @@ export function calculateTax(amount: number, codes: TaxCodeSpec[]): TaxCalculati
     });
   };
 
-  for (const c of inclusive) emit(c, subtotal, subtotal * c.rate);
+  // A GROSS-based inclusive tax reports the INVOICED amount as its base, because
+  // that is literally what the rate multiplied — which is also what has to appear
+  // on a Bolivian IVA return.
+  for (const c of inclusiveGross) emit(c, amount, amount * c.rate);
+  for (const c of inclusiveNet) emit(c, subtotal, subtotal * c.rate);
   for (const c of exclusive) emit(c, subtotal, subtotal * c.rate);
-  // 3. Turnover tax is on the net, never the gross — Bolivia's IT is 3% of the
-  //    subtotal after IVA has been taken out.
-  for (const c of turnoverCodes) emit(c, subtotal, subtotal * c.rate);
+
+  // 3. Turnover tax. Its base is configuration, not a constant.
+  //    [OFFICIAL] Bolivia's IT takes "los ingresos brutos devengados […] el valor
+  //    o monto total […] devengados en concepto de venta de bienes" (Ley 843
+  //    art. 74) — the invoiced amount, NOT the amount left after IVA. It was
+  //    previously computed on the net, understating IT on every sale.
+  for (const c of turnoverCodes) {
+    const base = c.base_kind === 'GROSS' ? amount : subtotal;
+    emit(c, base, base * c.rate);
+  }
 
   // Exempt codes produce a zero line so the reason still reaches the invoice —
   // a German intra-community supply is invalid without its §6a reference.
@@ -227,6 +274,8 @@ export function calculateTax(amount: number, codes: TaxCodeSpec[]): TaxCalculati
     .filter(l => l.tax_type === 'VAT' && exclusive.some(e => e.id === l.tax_code_id))
     .reduce((s, l) => s + l.amount, 0);
 
+  // `amount - subtotal` is everything the inclusive codes took out of the quoted
+  // price, whichever basis they used, so the total returns to the quoted price.
   return {
     subtotal: round2(subtotal),
     total: round2(subtotal + addedByExclusiveVat + (inclusive.length > 0 ? amount - subtotal : 0)),

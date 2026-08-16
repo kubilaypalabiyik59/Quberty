@@ -3,7 +3,7 @@ import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
-import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import {
   REQUISITION_STATUS,
@@ -366,18 +366,13 @@ export async function createPurchaseOrderFromRequisition(
     );
   }
 
-  // Same arithmetic as `POST /purchase/orders`: purchase treats `subtotal` as
-  // NET and adds tax on top. That differs from the sales side, where Bolivian
-  // IVA is price-inclusive. The inconsistency is known, is on the co-founder
-  // question list, and is preserved here rather than silently corrected —
-  // changing it would move every purchase total in the system.
-  const subtotal = Number(
+  // The estimated costs are what we expect the supplier to invoice, i.e. gross.
+  // `computePurchaseMoney` splits that into AP, recoverable tax and the amount
+  // that capitalises — the same helper the direct purchase path uses.
+  const agreed = Number(
     selected.reduce((s, l) => s + Number(l.quantity) * Number(l.estimated_unit_cost), 0).toFixed(2),
   );
-  const poTax = await computeDocumentTax(tenantId, subtotal, {
-    partyId: supplier.id,
-    side: 'PURCHASE',
-  });
+  const money = await computePurchaseMoney(tenantId, agreed, { partyId: supplier.id });
 
   const po_number = await nextPurchaseOrderNumber(tenantId);
 
@@ -392,9 +387,9 @@ export async function createPurchaseOrderFromRequisition(
           ? new Date(input.expected_date)
           : req.required_date ?? null,
         currency: req.currency,
-        subtotal,
-        tax_amount: poTax.vat,
-        total_amount: Number((subtotal + poTax.vat).toFixed(2)),
+        subtotal: agreed,
+        tax_amount: money.recoverable_tax,
+        total_amount: money.total,
         notes: `From requisition ${req.requisition_number}`,
         created_by: userId,
         source_document_type: PURCHASE_SOURCE_DOCUMENT.REQUISITION,

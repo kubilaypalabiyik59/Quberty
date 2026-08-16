@@ -307,10 +307,9 @@ live orders. **It must be done before selling into either market.** Documented i
 2. **Per-line tax refactor** — required before Turkey or Germany. **Now covers three more document
    types**: quotation, requisition and RFQ lines all carry the same `item_tax_group_id` hook, so one
    refactor handles them together (§3b).
-3. **Purchase net-vs-inclusive.** Purchase treats `subtotal` as net and adds tax on top, while the
-   Bolivian IVA code is price-inclusive. The existing arithmetic was preserved rather than silently
-   changed — it would move every purchase total. **Quantified 2026-08-16: the effective rate is
-   11,5%, not 13%** (§3b). Add to the co-founder question list.
+3. ~~**Purchase net-vs-inclusive.**~~ **RESOLVED 2026-08-16 from the legislation — see §3c.** The
+   remaining question is not the arithmetic but whether the *historical* Bs 637,47 understatement
+   needs correcting, and whether the Ley 1733 decree has been published.
 4. **Turkish tevkifat ratios need legal validation** — the threshold is now sourced from primary law,
    but which of 2/10…9/10 applies per service category is not. Flagged in the template `note` and
    surfaced by the provisioning script.
@@ -418,6 +417,85 @@ purchase total in the system — that is a decision, not a bug fix.
   own migration and were left alone deliberately.
 - `skarpine-pos` still has uncommitted content. It is a separate repo and unrelated to this work —
   left untouched.
+
+---
+
+## 3c. Bolivian tax basis — DECIDED and fixed 2026-08-16
+
+Kubi asked me to read the legislation and decide rather than hand the question back. Full reasoning,
+sources and open questions: **[docs/process/BOLIVIA_TAX_BASIS.md](docs/process/BOLIVIA_TAX_BASIS.md)**.
+
+**The purchase incoherence was the smaller half.** Reading Ley 843 to answer it showed the *sales*
+side was wrong the same way.
+
+**[OFFICIAL]** Ley 843 art. 5 — the tax "forma parte integrante del precio neto de la venta […] no se
+mostrará por separado"; art. 7 applies the 13% to those totals. So Bolivian IVA is **13% of the
+invoiced amount** (*IVA por dentro*), effective **14,9425%** of the true net. Art. 74 puts IT on
+"ingresos brutos", i.e. the invoiced amount too.
+
+The engine computed `gross − gross/1,13` = **11,50%**, and IT on the post-IVA net.
+
+| On a Bs 1 299,00 factura | Engine (before) | Ley 843 |
+|---|---:|---:|
+| IVA débito | 149,44 | **168,87** |
+| IT | 34,49 | **38,97** |
+
+**Decision: one new column, `TaxCode.base_kind` (`NET` \| `GROSS`) — migration 007.** Not a fix in
+the formula, because **Ley 1733 of 27 May 2026** moves Bolivia to IVA *por fuera* at a real 13% once
+its reglamentary Decreto Supremo is published. `TaxCode` is date-effective, so that transition is a
+new row, not a migration. **Whether that decree has already been published is unconfirmed — check
+before relying on it.**
+
+Purchase now goes through one helper, `computePurchaseMoney`: the agreed figure is the supplier's
+gross, AP owes it in full, 13% is recoverable, and **inventory is debited net of the recoverable
+tax** (capitalising reclaimable IVA was overstating stock and every COGS figure downstream).
+
+**Historical impact, quantified, not restated** — `scripts/reportTaxBasisImpact.ts`:
+
+```
+27 issued facturas · invoiced Bs 34 632,00
+UNDERSTATED IVA   517,96      UNDERSTATED IT   119,51      TOTAL  637,47
+```
+
+Test-database figures. **No factura was modified.** Whether a correction is filed is the co-founder's
+call. The old test suite asserted equivalence with `config/tax.ts` and had been faithfully protecting
+the defect; it now asserts the law (33 tests).
+
+---
+
+## 3d. Released-product setup — item groups, from the Learn documentation
+
+Kubi's instruction: *"released product'ta item model grup, item group, procurement hierarchy — bu
+detaylara bak, finansal ve muhasebe ilişkilerini çıkar; ne nereden başlar, neyi neden tanımlamalısın
+oku ve kendine bir takip listesi çıkar."*
+
+**The list: [docs/architecture/ERP_SETUP_CHECKLIST.md](docs/architecture/ERP_SETUP_CHECKLIST.md).**
+It maps the official setup order tier by tier against what this codebase actually has, and produces a
+dependency-ordered backlog. Use it to locate any proposed change before building it.
+
+**The finding that mattered:** `PostingProfile.scope_kind` has accepted `ITEM_GROUP` since migration
+001 and the resolver reads `ctx.itemGroupId` — but **no item group table existed**, so the most useful
+axis of the posting matrix was unreachable. Same is still true of `PARTY_GROUP`.
+
+**Migration 008** adds both mandatory released-product groups:
+
+| | Answers | Drives |
+|---|---|---|
+| `ItemModelGroup` | HOW the item is valued and controlled | costing method per product, `stocked`, whether physical/financial updates post |
+| `ItemGroup` | WHERE its money goes | the item axis of the posting profile matrix |
+
+Deliberately **not** merged with `ProductCategory`, which is merchandising. F&O keeps them apart too;
+conflating them means a shop re-shuffle silently repoints the ledger.
+
+**The change guard is the interesting part.** **[OFFICIAL]** changing an item group after
+transactions exist breaks ledger-to-subledger reconciliation. `PUT /products/:id` now refuses with a
+409 that explains why, and requires `?force=true` plus a WARN log to proceed.
+
+New endpoints: `GET/POST /products/setup/item-groups`, `.../item-model-groups`,
+`GET /products/setup/coverage` (how many products are still unassigned — currently 7/8).
+
+**Not wired yet:** the posting routes do not pass `itemGroupId`, so per-group accounts still resolve
+to the ALL scope. That is item 5.1 in the checklist and the next thing worth doing.
 
 ---
 
@@ -659,8 +737,13 @@ next action.**
 - Inverted KPI trend colours on the dashboard (section 4).
 - `skarpine-pos` has uncommitted content in the working tree. Separate repo, unrelated to the
   process-chain work; deliberately left untouched.
-- **Purchase tax arithmetic is incoherent** — decompose-then-add gives an effective 11,5% instead of
-  13%. Quantified 2026-08-16, deliberately not fixed, see §3b.
+- ~~Purchase tax arithmetic is incoherent~~ — **fixed 2026-08-16** (§3c). What remains open is the
+  historical Bs 637,47 and the Ley 1733 decree status.
+- **Silent-failure dialogs** — the first three dialogs written for the process chain rendered their
+  error *behind* the modal and disabled the submit button with no stated reason, so a rejected
+  request looked like a dead button. Kubi hit this on the requisition form. Fixed by
+  `components/erp/Dialog.tsx`, which takes the error and the blocking reason as props so a caller
+  cannot forget. **Any new dialog must use it.**
 - `sales_orders.order_number` and `purchase_orders.po_number` still carry a bare `@unique` rather
   than a tenant-scoped one. All tables added in migrations 005/006 are scoped correctly.
 - Turkish template leftovers in a Bolivian product: `PurchaseOrder.currency` defaults to `TRY`,

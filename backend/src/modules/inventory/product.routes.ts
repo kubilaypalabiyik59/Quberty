@@ -2,6 +2,7 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
+import { logger } from '../../shared/logger';
 import { ok, created, paginated } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
 
@@ -212,6 +213,7 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
     uom_id, product_type,
     cost_price, selling_price, sale_price,
     weight_kg, reorder_point, images, is_active, is_published,
+    item_group_id, item_model_group_id, item_tax_group_id,
   } = await c.req.json();
 
   const data: any = { updated_at: new Date() };
@@ -231,12 +233,148 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
   if (images !== undefined) data.images = images;
   if (is_active !== undefined) data.is_active = is_active;
   if (is_published !== undefined) data.is_published = is_published;
+  if (item_tax_group_id !== undefined) data.item_tax_group_id = item_tax_group_id || null;
+
+  // ── Item group / item model group ────────────────────────────────────────
+  // [OFFICIAL] "If you change the item group that you assigned to an item after
+  // transactions exist, the revenue on new transactions posts to the updated
+  // account. However, any revenue that you posted before the change remains in
+  // the original account."
+  // learn.microsoft.com/dynamics365/finance/general-ledger/recommended-practices-pstg-prfles
+  //
+  // So a change here splits the ledger from the subledger. It is allowed - the
+  // owner may genuinely need to reclassify - but never silently: it is refused
+  // once the product has posted transactions unless ?force=true says the caller
+  // means it, and it is always logged.
+  const changesGrouping =
+    (item_group_id !== undefined || item_model_group_id !== undefined);
+
+  if (changesGrouping) {
+    const existing = await db.product.findFirst({
+      where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+      select: { id: true, sku: true, item_group_id: true, item_model_group_id: true },
+    });
+    if (!existing) throw new AppError('Product not found', 404);
+
+    const groupMoved =
+      (item_group_id !== undefined && (item_group_id || null) !== existing.item_group_id) ||
+      (item_model_group_id !== undefined && (item_model_group_id || null) !== existing.item_model_group_id);
+
+    if (groupMoved) {
+      const posted = await db.inventoryTransaction.count({
+        where: { tenant_id: c.get('tenantId'), product_id: existing.id },
+      });
+      const force = c.req.query('force') === 'true';
+
+      if (posted > 0 && !force) {
+        throw new AppError(
+          `"${existing.sku}" already has ${posted} posted inventory transaction(s). ` +
+            `Changing its item group or item model group now means new postings go to different ` +
+            `accounts while the existing ones stay where they are, so the ledger will no longer ` +
+            `reconcile to the subledger. Re-send with ?force=true if that is intended.`,
+          409,
+          'ITEM_GROUP_CHANGE_AFTER_TRANSACTIONS',
+        );
+      }
+      if (posted > 0 && force) {
+        logger.warn(
+          {
+            tenantId: c.get('tenantId'), sku: existing.sku, posted,
+            from: { item_group_id: existing.item_group_id, item_model_group_id: existing.item_model_group_id },
+            to: { item_group_id, item_model_group_id },
+          },
+          'Item grouping changed on a product WITH posted transactions - ledger and subledger will diverge for this item',
+        );
+      }
+    }
+
+    if (item_group_id !== undefined) data.item_group_id = item_group_id || null;
+    if (item_model_group_id !== undefined) data.item_model_group_id = item_model_group_id || null;
+  }
 
   await db.product.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     data,
   });
   return ok(c, null);
+});
+
+/* ── Released-product setup groups ──────────────────────────────────────────
+ * [OFFICIAL] a released product requires an item MODEL group (how it is valued
+ * and controlled) and an item group (which GL accounts it posts to), among
+ * others.
+ * learn.microsoft.com/dynamics365/supply-chain/pim/tasks/create-released-product-single-company
+ * Design and the full setup order: docs/architecture/ERP_SETUP_CHECKLIST.md
+ */
+
+app.get('/setup/item-groups', async (c) => {
+  const groups = await db.itemGroup.findMany({
+    where: { tenant_id: c.get('tenantId') },
+    include: { _count: { select: { products: true } } },
+    orderBy: { code: 'asc' },
+  });
+  return ok(c, groups);
+});
+
+app.get('/setup/item-model-groups', async (c) => {
+  const groups = await db.itemModelGroup.findMany({
+    where: { tenant_id: c.get('tenantId') },
+    include: { _count: { select: { products: true } } },
+    orderBy: { code: 'asc' },
+  });
+  return ok(c, groups);
+});
+
+app.post('/setup/item-groups', requireRole('admin'), async (c) => {
+  const { code, name, description } = await c.req.json();
+  if (!code || !name) throw new AppError('code and name are required', 400);
+  const group = await db.itemGroup.create({
+    data: { tenant_id: c.get('tenantId'), code, name, description: description || null },
+  });
+  return created(c, group);
+});
+
+app.post('/setup/item-model-groups', requireRole('admin'), async (c) => {
+  const b = await c.req.json();
+  if (!b.code || !b.name) throw new AppError('code and name are required', 400);
+  const group = await db.itemModelGroup.create({
+    data: {
+      tenant_id: c.get('tenantId'),
+      code: b.code,
+      name: b.name,
+      costing_method: b.costing_method ?? 'FIFO',
+      stocked: b.stocked ?? true,
+      post_physical_inventory: b.post_physical_inventory ?? true,
+      post_financial_inventory: b.post_financial_inventory ?? true,
+      include_physical_value: b.include_physical_value ?? false,
+      fixed_receipt_price: b.fixed_receipt_price ?? false,
+    },
+  });
+  return created(c, group);
+});
+
+/**
+ * The setup gap, as a number. Products with no item group can only ever resolve
+ * the ALL-scope posting profile, so per-group accounts are unreachable for them.
+ */
+app.get('/setup/coverage', async (c) => {
+  const tenantId = c.get('tenantId');
+  const total = await db.product.count({ where: { tenant_id: tenantId } });
+  const noItemGroup = await db.product.count({ where: { tenant_id: tenantId, item_group_id: null } });
+  const noModelGroup = await db.product.count({ where: { tenant_id: tenantId, item_model_group_id: null } });
+  const noTaxGroup = await db.product.count({ where: { tenant_id: tenantId, item_tax_group_id: null } });
+
+  return ok(c, {
+    products: total,
+    missing_item_group: noItemGroup,
+    missing_item_model_group: noModelGroup,
+    missing_item_tax_group: noTaxGroup,
+    note:
+      'Unassigned products fall back to the ALL-scope posting profile and to ' +
+      'InventoryParameters.costing_method, which is the behaviour that existed before ' +
+      'item groups were introduced. Nothing is broken; per-group accounts and per-item ' +
+      'costing are simply unreachable until assigned.',
+  });
 });
 
 app.delete('/:id', requireRole('admin'), async (c) => {

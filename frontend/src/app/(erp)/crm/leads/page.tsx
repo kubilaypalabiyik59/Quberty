@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { Plus, UserCheck, UserX, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
+import { Dialog, dialogField, apiErrorMessage } from '@/components/erp/Dialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
 
 /**
@@ -185,7 +186,7 @@ export default function LeadsPage() {
         </tbody>
       </TableShell>
 
-      {creating && <NewLeadDialog onClose={() => setCreating(false)} onSaved={invalidate} onError={fail} />}
+      {creating && <NewLeadDialog onClose={() => setCreating(false)} onSaved={invalidate} />}
     </div>
   );
 }
@@ -193,12 +194,11 @@ export default function LeadsPage() {
 function NewLeadDialog({
   onClose,
   onSaved,
-  onError,
 }: {
   onClose: () => void;
   onSaved: () => void;
-  onError: (e: any) => void;
 }) {
+  const [error, setError] = useState('');
   const [form, setForm] = useState({
     company_name: '',
     first_name: '',
@@ -226,19 +226,23 @@ function NewLeadDialog({
       onSaved();
       onClose();
     },
-    onError,
+    onError: (e) => setError(apiErrorMessage(e, 'Could not create the lead.')),
   });
 
-  const field = 'h-9 w-full rounded-control border border-border bg-surface px-2.5 text-body text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none focus:ring-1 focus:ring-ring';
+  const field = dialogField;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-fg/30 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-lg rounded-surface border border-border bg-surface p-4 shadow-pop"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="mb-3 text-lead font-semibold text-fg">New lead</h2>
-        <div className="grid grid-cols-2 gap-2.5">
+    <Dialog
+      title="New lead"
+      description="Somebody who might buy. Kept out of the customer list until qualified."
+      onClose={onClose}
+      error={error}
+      blockedReason={form.first_name.trim() ? null : 'A first name is required.'}
+      submitLabel="Create lead"
+      submitting={create.isPending}
+      onSubmit={() => create.mutate()}
+    >
+      <div className="grid grid-cols-2 gap-2.5">
           <label className="col-span-2 text-caption text-fg-muted">
             Company
             <input className={field} value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} />
@@ -273,18 +277,11 @@ function NewLeadDialog({
               {['HOT', 'WARM', 'COLD'].map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </label>
-          <label className="col-span-2 text-caption text-fg-muted">
-            Estimated value
-            <input className={field} type="number" value={form.estimated_amount} onChange={(e) => setForm({ ...form, estimated_amount: e.target.value })} />
-          </label>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" disabled={!form.first_name || create.isPending} onClick={() => create.mutate()}>
-            Create lead
-          </Button>
-        </div>
+        <label className="col-span-2 text-caption text-fg-muted">
+          Estimated value
+          <input className={field} type="number" value={form.estimated_amount} onChange={(e) => setForm({ ...form, estimated_amount: e.target.value })} />
+        </label>
       </div>
-    </div>
+    </Dialog>
   );
 }

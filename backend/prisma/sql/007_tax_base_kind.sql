@@ -1,0 +1,50 @@
+-- =============================================================================
+-- 007 — TaxCode.base_kind: what the rate actually multiplies
+--
+-- THE DEFECT THIS FIXES
+--
+-- The engine computed every price-inclusive tax as `gross − gross/(1+rate)`.
+-- That is the EXTRACT arithmetic: correct wherever a tax-inclusive price means
+-- "net plus tax, quoted together". It is NOT how Bolivia works.
+--
+-- [OFFICIAL] Ley 843 art. 5 — "El impuesto de este Título forma parte integrante
+-- del precio neto de la venta […] y se facturará juntamente con éste, es decir,
+-- no se mostrará por separado." Art. 7 applies the alícuota to "los importes
+-- totales de los precios netos", a base that by art. 5 already contains the tax.
+--
+-- So in Bolivia the 13% is 13% OF THE INVOICED AMOUNT — the *IVA por dentro*
+-- regime, whose effective burden on the true net is the widely-quoted
+-- 13/(1−0,13) = 14,9425%.
+--
+--   invoiced Bs 1 299,00
+--     engine said   1299 − 1299/1,13 = 149,44   (11,50% of gross)
+--     law says      1299 × 0,13      = 168,87   (13,00% of gross)
+--
+-- The same applies to IT. Art. 74 sets its base as "los ingresos brutos
+-- devengados […] el valor o monto total […] devengados en concepto de venta de
+-- bienes" — the invoiced amount, not the amount left after IVA.
+--
+--   engine said   1 149,56 × 0,03 = 34,49
+--   law says      1 299,00 × 0,03 = 38,97
+--
+-- WHY A COLUMN RATHER THAN A FIX IN THE FORMULA
+--
+-- Ley 1733 of 27 May 2026 rewrites art. 5 and moves Bolivia to IVA *por fuera*
+-- at a real 13%. Its IVA provisions take effect from the first day of the month
+-- following publication of the reglamentary Decreto Supremo. Hardcoding either
+-- arithmetic would be wrong within the year. `TaxCode` is already date-effective,
+-- so the transition becomes a new row with base_kind = 'NET' and the right
+-- valid_from — no migration, no code change.
+--
+-- Additive: one column with a default. 'NET' is the international norm and the
+-- correct default for a new jurisdiction; Bolivia's two codes are set to 'GROSS'
+-- by the accompanying backfill, which is scoped by code and prints what it did.
+--
+-- NOTE: this changes FORWARD calculation only. Facturas already posted keep the
+-- amounts they were posted with. The size of the historical difference is
+-- reported by scripts/reportTaxBasisImpact.ts and is a decision for the Finance
+-- co-founder, not something a migration should quietly restate.
+-- =============================================================================
+
+-- AlterTable
+ALTER TABLE "tax_codes" ADD COLUMN     "base_kind" TEXT NOT NULL DEFAULT 'NET';

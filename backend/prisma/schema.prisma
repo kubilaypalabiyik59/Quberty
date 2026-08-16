@@ -212,6 +212,17 @@ model Product {
   /// so every existing product keeps the SalesParameters default until classified.
   /// This is the column that carries reduced rates (Turkish KDV 10%/1%, German 7%).
   item_tax_group_id String?  @db.Uuid
+
+  /// ── Released-product financial setup ────────────────────────────────────
+  /// **[OFFICIAL]** both are mandatory fields on a D365 released product, and
+  /// they answer different questions: the MODEL group is how the item is valued
+  /// and controlled, the ITEM group is which GL accounts it posts to.
+  /// Nullable here so existing products keep working; the resolver falls back to
+  /// the ALL-scope posting profile and to InventoryParameters.costing_method
+  /// exactly as before when they are unset.
+  item_model_group_id String? @db.Uuid
+  item_group_id       String? @db.Uuid
+
   images            String[]
   video_urls        String[]
   is_active         Boolean  @default(true)
@@ -222,6 +233,8 @@ model Product {
   category               ProductCategory?       @relation(fields: [category_id], references: [id])
   uom                    UnitOfMeasure?         @relation(fields: [uom_id], references: [id])
   item_tax_group         ItemTaxGroup?          @relation(fields: [item_tax_group_id], references: [id])
+  item_model_group       ItemModelGroup?        @relation(fields: [item_model_group_id], references: [id])
+  item_group             ItemGroup?             @relation(fields: [item_group_id], references: [id])
   variants               ProductVariant[]
   inventory_stock        InventoryStock[]
   inventory_transactions InventoryTransaction[]
@@ -1418,9 +1431,40 @@ model TaxCode {
 
   rate Decimal @db.Decimal(9, 6)
 
-  /// Bolivia's IVA is quoted inside the price; Turkish and German VAT are added on
-  /// top. This is per code, not per tenant — a jurisdiction can have both.
+  /// Does the quoted price already contain this tax? Bolivia's IVA is quoted
+  /// inside the price; Turkish and German VAT are added on top. Per code, not per
+  /// tenant — a jurisdiction can have both.
   is_inclusive Boolean @default(false)
+
+  /// WHAT THE RATE MULTIPLIES. Orthogonal to `is_inclusive`, and the distinction
+  /// is not academic — it was worth 1,5 points of tax on every Bolivian invoice.
+  ///
+  ///   NET    rate × (amount excluding this tax).  The international norm, and
+  ///          what Turkish KDV, German USt and Bolivia AFTER Ley 1733 do.
+  ///   GROSS  rate × (amount INCLUDING this tax).  Bolivia's *IVA por dentro*.
+  ///
+  /// **[OFFICIAL]** Ley 843 art. 5: "El impuesto de este Título forma parte
+  /// integrante del precio neto de la venta […] y se facturará juntamente con
+  /// éste, es decir, no se mostrará por separado." Art. 7 then applies the
+  /// alícuota to "los importes totales de los precios netos" — a base that, by
+  /// art. 5, already contains the tax. Hence the well-known Bolivian pair:
+  /// nominal rate 13%, EFFECTIVE rate 13/(1−0,13) = 14,9425% of the true net.
+  ///
+  /// The engine originally computed `gross − gross/1,13` for every inclusive
+  /// code, which is the EXTRACT arithmetic — correct for a tax-inclusive price
+  /// elsewhere in the world, and 11,50% rather than 13,00% of gross in Bolivia.
+  ///
+  /// Bolivia's IT is also GROSS: art. 74 sets the base as "los ingresos brutos
+  /// devengados […] el valor o monto total […] devengados en concepto de venta
+  /// de bienes", which is the invoiced amount, not the amount after IVA.
+  ///
+  /// **Ley 1733 (27 May 2026) changes this**, moving Bolivia to IVA *por fuera*
+  /// at a real 13%. Its IVA articles take effect only from the first day of the
+  /// month following publication of the reglamentary Decreto Supremo. Because
+  /// `TaxCode` is date-effective, that transition is a NEW ROW with
+  /// `base_kind = NET`, `is_inclusive = false` and the right `valid_from` — not
+  /// a migration and not a code change. See docs/process/BOLIVIA_TAX_BASIS.md.
+  base_kind String @default("NET")
 
   /// Input tax that can be reclaimed (IVA crédito fiscal, Vorsteuer, indirilecek
   /// KDV). False for Bolivia's IT, which is a cost, not a receivable.
@@ -1528,6 +1572,119 @@ model TaxGroupCode {
 
   @@id([tax_group_id, tax_code_id])
   @@map("tax_group_codes")
+}
+
+// =====================
+// RELEASED PRODUCT SETUP — item group and item model group
+// Design: docs/architecture/ERP_SETUP_CHECKLIST.md
+//
+// **[OFFICIAL]** creating a released product in D365 requires, in this order:
+// product number, name, **item model group**, **item group**, storage dimension
+// group, tracking dimension group, inventory unit.
+// learn.microsoft.com/dynamics365/supply-chain/pim/tasks/create-released-product-single-company
+//
+// Two of those are financial and neither existed here. They answer different
+// questions and are routinely confused:
+//
+//   ITEM MODEL GROUP  — HOW is this item valued and controlled?
+//                       costing method, is it stocked at all, does a physical or
+//                       financial update hit the ledger.
+//   ITEM GROUP        — WHERE does its money go?
+//                       the GL accounts, via the posting profile matrix.
+//
+// **[OFFICIAL]** on the item group: "to manage how information is posted to main
+// accounts, create a series of different item groups that are associated with
+// specific main accounts."
+//
+// **[OFFICIAL]** on the item model group: "You can select only one costing model
+// for each released product. The item model group controls this behavior."
+// learn.microsoft.com/dynamics365/supply-chain/cost-management/inventory-costing-faq
+//
+// ── Why this matters here specifically ─────────────────────────────────────
+// `PostingProfile.scope_kind` has accepted 'ITEM_GROUP' since migration 001 and
+// `postingProfile.service.ts` resolves `ctx.itemGroupId` — but nothing could ever
+// supply one, because no item group existed. The most useful axis of the posting
+// matrix was unreachable. This makes it real.
+//
+// Costing method was likewise a single tenant-wide switch on
+// `InventoryParameters.costing_method`, which cannot express "footwear is FIFO,
+// packaging is weighted average" — and Microsoft is explicit that the choice is
+// per released product, through this group.
+// =====================
+
+/// HOW an item is valued and controlled.
+model ItemModelGroup {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code String
+  name String
+
+  /// FIFO | LIFO | WEIGHTED_AVG | MOVING_AVG | STANDARD
+  /// Only FIFO is implemented in the costing engine today; the others are the
+  /// enum values that let a future tenant be configured rather than forked.
+  /// Changing this once transactions exist is not a supported operation.
+  costing_method String @default("FIFO")
+
+  /// **[OFFICIAL]** "Enable the Stocked product option for any item that you want
+  /// to track in your inventory […] If you don't enable [it], the system doesn't
+  /// track any inventory transactions in the inventory subledger, and the cost of
+  /// the items is typically expensed into your general ledger."
+  ///
+  /// This is the switch that makes a SERVICE sellable without inventing a
+  /// phantom stock record for it — which the current code cannot express at all.
+  stocked Boolean @default(true)
+
+  /// **[OFFICIAL]** whether a physical update (product receipt, packing slip) and
+  /// a financial update (vendor invoice, sales invoice) each raise a voucher.
+  /// Both true reproduces today's behaviour exactly.
+  post_physical_inventory  Boolean @default(true)
+  post_financial_inventory Boolean @default(true)
+
+  /// **[OFFICIAL]** include physically-updated receipts in the running average.
+  include_physical_value Boolean @default(false)
+
+  /// **[OFFICIAL]** use the receipt price as standard cost and post the variance.
+  /// Hook only — the variance accounts are not configured yet.
+  fixed_receipt_price Boolean @default(false)
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("item_model_groups")
+}
+
+/// WHERE an item's money goes. The item axis of the posting matrix.
+///
+/// Deliberately NOT merged with `ProductCategory`, which already exists and is a
+/// merchandising hierarchy for the storefront. **[OFFICIAL]** D365 keeps them
+/// apart too — the inventory posting profile takes *Item code* = Table | Group |
+/// All | **Category**, listing group and category as different axes. A category
+/// answers "where does this appear in the shop"; an item group answers "which
+/// inventory and COGS account does it hit". Conflating them means a
+/// merchandising change silently repoints the ledger.
+model ItemGroup {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code        String
+  name        String
+  description String?
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("item_groups")
 }
 
 model ItemTaxGroupCode {
