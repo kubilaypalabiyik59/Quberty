@@ -334,6 +334,41 @@ app.post('/setup/item-groups', requireRole('admin'), async (c) => {
   return created(c, group);
 });
 
+/**
+ * The item model group's settings, as one payload.
+ *
+ * [OFFICIAL] every setting here is independent of every other. In particular
+ * `costing_method` and `stocked` are separate axes: a tangible, inventory-
+ * tracked item may be valued at standard cost, and a service that appears on a
+ * BOM must be stocked. The API therefore never derives one from the other.
+ * learn.microsoft.com/dynamics365/supply-chain/cost-management/inventory-costing-faq
+ */
+const COSTING_METHODS = ['FIFO', 'LIFO', 'WEIGHTED_AVG', 'MOVING_AVG', 'STANDARD'];
+
+function modelGroupSettings(b: any) {
+  if (b.costing_method !== undefined && !COSTING_METHODS.includes(b.costing_method)) {
+    throw new AppError(
+      `Unknown costing method "${b.costing_method}". Expected one of ${COSTING_METHODS.join(', ')}.`,
+      400,
+    );
+  }
+  const bool = (v: any, dflt: boolean) => (v === undefined ? dflt : Boolean(v));
+  return {
+    costing_method: b.costing_method ?? 'FIFO',
+    stocked: bool(b.stocked, true),
+    include_physical_value: bool(b.include_physical_value, false),
+    fixed_receipt_price: bool(b.fixed_receipt_price, false),
+    post_physical_inventory: bool(b.post_physical_inventory, true),
+    post_financial_inventory: bool(b.post_financial_inventory, true),
+    accrue_liability_on_receipt: bool(b.accrue_liability_on_receipt, true),
+    post_deferred_revenue_on_delivery: bool(b.post_deferred_revenue_on_delivery, false),
+    registration_requirements: bool(b.registration_requirements, false),
+    receiving_requirements: bool(b.receiving_requirements, false),
+    picking_requirements: bool(b.picking_requirements, false),
+    deduction_requirements: bool(b.deduction_requirements, false),
+  };
+}
+
 app.post('/setup/item-model-groups', requireRole('admin'), async (c) => {
   const b = await c.req.json();
   if (!b.code || !b.name) throw new AppError('code and name are required', 400);
@@ -342,15 +377,81 @@ app.post('/setup/item-model-groups', requireRole('admin'), async (c) => {
       tenant_id: c.get('tenantId'),
       code: b.code,
       name: b.name,
-      costing_method: b.costing_method ?? 'FIFO',
-      stocked: b.stocked ?? true,
-      post_physical_inventory: b.post_physical_inventory ?? true,
-      post_financial_inventory: b.post_financial_inventory ?? true,
-      include_physical_value: b.include_physical_value ?? false,
-      fixed_receipt_price: b.fixed_receipt_price ?? false,
+      description: b.description ?? null,
+      ...modelGroupSettings(b),
     },
   });
   return created(c, group);
+});
+
+app.put('/setup/item-model-groups/:id', requireRole('admin'), async (c) => {
+  const b = await c.req.json();
+  const existing = await db.itemModelGroup.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    include: { _count: { select: { products: true } } },
+  });
+  if (!existing) throw new AppError('Item model group not found', 404);
+
+  // Changing the costing method of a group that products already use is not a
+  // supported operation once those products have transactions: the valuation of
+  // history and of the future would disagree. Refuse unless forced, and say why.
+  const changingCosting = b.costing_method !== undefined && b.costing_method !== existing.costing_method;
+  const changingStocked = b.stocked !== undefined && Boolean(b.stocked) !== existing.stocked;
+
+  if ((changingCosting || changingStocked) && existing._count.products > 0) {
+    const productIds = (
+      await db.product.findMany({
+        where: { tenant_id: c.get('tenantId'), item_model_group_id: existing.id },
+        select: { id: true },
+      })
+    ).map((p) => p.id);
+    const posted = await db.inventoryTransaction.count({
+      where: { tenant_id: c.get('tenantId'), product_id: { in: productIds } },
+    });
+
+    if (posted > 0 && c.req.query('force') !== 'true') {
+      throw new AppError(
+        `"${existing.code}" is used by ${existing._count.products} product(s) with ${posted} posted ` +
+          `inventory transaction(s). Changing ` +
+          `${[changingCosting && 'the costing method', changingStocked && 'whether it is stocked'].filter(Boolean).join(' and ')} ` +
+          `now would value history and future differently for the same items. ` +
+          `Re-send with ?force=true if that is intended.`,
+        409,
+        'MODEL_GROUP_CHANGE_AFTER_TRANSACTIONS',
+      );
+    }
+    if (posted > 0) {
+      logger.warn(
+        { tenantId: c.get('tenantId'), group: existing.code, products: existing._count.products, posted },
+        'Item model group valuation settings changed despite posted transactions',
+      );
+    }
+  }
+
+  const group = await db.itemModelGroup.update({
+    where: { id: existing.id },
+    data: {
+      ...(b.name !== undefined && { name: b.name }),
+      ...(b.description !== undefined && { description: b.description || null }),
+      ...(b.is_active !== undefined && { is_active: Boolean(b.is_active) }),
+      ...modelGroupSettings({ ...existing, ...b }),
+    },
+  });
+  return ok(c, group);
+});
+
+app.put('/setup/item-groups/:id', requireRole('admin'), async (c) => {
+  const b = await c.req.json();
+  const { count } = await db.itemGroup.updateMany({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    data: {
+      ...(b.name !== undefined && { name: b.name }),
+      ...(b.description !== undefined && { description: b.description || null }),
+      ...(b.is_active !== undefined && { is_active: Boolean(b.is_active) }),
+    },
+  });
+  if (count === 0) throw new AppError('Item group not found', 404);
+  return ok(c, null);
 });
 
 /**

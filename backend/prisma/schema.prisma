@@ -1613,41 +1613,103 @@ model TaxGroupCode {
 // =====================
 
 /// HOW an item is valued and controlled.
+///
+/// ── EVERY SETTING BELOW IS INDEPENDENT OF EVERY OTHER ──────────────────────
+/// The first cut of this model shipped two seeded groups, `FIFO` (stocked) and
+/// `SERVICE` (standard cost, not stocked), which made the setup screen imply
+/// that choosing STANDARD costing meant declaring the item a service. That is
+/// simply false, and Microsoft says so twice:
+///
+///   "**Yes, you can use different costing models for each item.** It's common
+///    for manufacturers to use a periodic costing model for raw materials and
+///    standard cost for semi-finished and finished goods."
+///
+///   "enable the **Accrue liability on product receipt** option for all item
+///    model groups, **regardless of whether you have a stocked product or a
+///    not-stocked product**."
+///
+///   — learn.microsoft.com/dynamics365/supply-chain/cost-management/inventory-costing-faq
+///
+/// A tangible item tracked in inventory can be valued at standard cost. A
+/// service item can be STOCKED — officially required if it appears on a BOM.
+/// Costing method and stocked-ness are orthogonal axes and the seed data must
+/// demonstrate that, not collapse it.
 model ItemModelGroup {
   id              String  @id @default(uuid()) @db.Uuid
   tenant_id       String  @db.Uuid
   legal_entity_id String? @db.Uuid
 
-  code String
-  name String
+  code        String
+  name        String
+  description String?
+
+  // ── Axis 1: valuation ───────────────────────────────────────────────────
 
   /// FIFO | LIFO | WEIGHTED_AVG | MOVING_AVG | STANDARD
-  /// Only FIFO is implemented in the costing engine today; the others are the
-  /// enum values that let a future tenant be configured rather than forked.
+  /// **[OFFICIAL]** "You can select only one costing model for each released
+  /// product. The item model group controls this behavior."
+  /// Only FIFO is implemented in the costing engine today; the rest are the enum
+  /// values that let a future tenant be configured rather than forked.
   /// Changing this once transactions exist is not a supported operation.
   costing_method String @default("FIFO")
+
+  /// **[OFFICIAL]** include physically-updated receipts in the running average.
+  include_physical_value Boolean @default(false)
+
+  /// **[OFFICIAL]** use the receipt price as the standard cost, posting the
+  /// difference to fixed-receipt-price profit/loss with an offset. Meaningful
+  /// alongside a periodic model when a purchase-price variance must be visible.
+  /// Hook only — the variance accounts are not configured yet.
+  fixed_receipt_price Boolean @default(false)
+
+  // ── Axis 2: is it inventory at all ──────────────────────────────────────
 
   /// **[OFFICIAL]** "Enable the Stocked product option for any item that you want
   /// to track in your inventory […] If you don't enable [it], the system doesn't
   /// track any inventory transactions in the inventory subledger, and the cost of
   /// the items is typically expensed into your general ledger."
   ///
-  /// This is the switch that makes a SERVICE sellable without inventing a
-  /// phantom stock record for it — which the current code cannot express at all.
+  /// Note the official caveat that kills the "not stocked = service" shortcut:
+  /// "You should also enable this option if you plan to add a non-tangible item
+  /// such as a **service item** to your bills of materials (BOMs) or formulas."
   stocked Boolean @default(true)
 
-  /// **[OFFICIAL]** whether a physical update (product receipt, packing slip) and
-  /// a financial update (vendor invoice, sales invoice) each raise a voucher.
-  /// Both true reproduces today's behaviour exactly.
+  // ── Axis 3: what reaches the general ledger, and when ───────────────────
+
+  /// **[OFFICIAL]** a physical update (product receipt, packing slip) and a
+  /// financial update (vendor invoice, sales invoice) raise SEPARATE vouchers.
+  /// These two switches decide whether each one does. Both true reproduces
+  /// today's behaviour exactly.
   post_physical_inventory  Boolean @default(true)
   post_financial_inventory Boolean @default(true)
 
-  /// **[OFFICIAL]** include physically-updated receipts in the running average.
-  include_physical_value Boolean @default(false)
+  /// **[OFFICIAL]** "In most organizations, enable [this] for all item model
+  /// groups, regardless of whether you have a stocked product or a not-stocked
+  /// product… most organizations must recognize the liability on the balance
+  /// sheet to comply with local regulations such as GAAP."
+  /// Default true for that reason. Hook only — no accrual account yet.
+  accrue_liability_on_receipt Boolean @default(true)
 
-  /// **[OFFICIAL]** use the receipt price as standard cost and post the variance.
-  /// Hook only — the variance accounts are not configured yet.
-  fixed_receipt_price Boolean @default(false)
+  /// **[OFFICIAL]** recognise revenue in the ledger at packing slip rather than
+  /// at invoice. "Use this option when there's a long delay between the packing
+  /// slip and invoice." Off by default, which is right when invoicing follows
+  /// delivery immediately — as it does at a shop counter.
+  post_deferred_revenue_on_delivery Boolean @default(false)
+
+  // ── Axis 4: process gates ───────────────────────────────────────────────
+  //
+  // Four independent "you may not do B before A" rules. [OFFICIAL] each applies
+  // to ALL receipts or issues for the item, not only to purchase or sales
+  // orders — an inventory journal with a positive quantity is caught too.
+
+  /// No product receipt until an arrival registration exists (two-step receiving).
+  registration_requirements Boolean @default(false)
+  /// No vendor invoice until a product receipt exists (accrual discipline).
+  receiving_requirements    Boolean @default(false)
+  /// No packing slip until a picking list is posted.
+  picking_requirements      Boolean @default(false)
+  /// No sales invoice until a packing slip is posted.
+  deduction_requirements    Boolean @default(false)
 
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())

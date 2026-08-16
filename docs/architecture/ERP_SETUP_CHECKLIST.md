@@ -104,18 +104,52 @@ Sales, purchase, inventory, warehouse. ✅ broadly built. The chain in front of 
 
 ### Item model group — [official](https://learn.microsoft.com/dynamics365/supply-chain/cost-management/inventory-costing-faq)
 
-| Setting | Official meaning | Built |
-|---|---|---|
-| Costing method | "You can select only **one** costing model for each released product. The item model group controls this behavior." | ✅ column; only FIFO implemented in the engine |
-| **Stocked product** | "If you don't enable [it], the system doesn't track any inventory transactions in the inventory subledger, and the cost of the items is typically expensed into your general ledger." | ✅ column; ❌ not honoured by the inventory service yet |
-| Post physical inventory | Whether a product receipt / packing slip raises a voucher | ✅ column, ❌ not honoured |
-| Post financial inventory | Whether an invoice raises a voucher | ✅ column, ❌ not honoured |
-| Include physical value | Include physically-updated receipts in the running average | ✅ column, ❌ not honoured |
-| Fixed receipt price | Receipt price as standard cost, variance posted | ✅ column, ❌ variance accounts not configured |
+> ⚠️ **The mistake this section exists to prevent.** The first cut modelled this entity from an
+> overview page and seeded two groups — `FIFO` (stocked) and `SERVICE` (standard cost, not stocked).
+> That made the setup screen imply *choosing STANDARD costing means declaring it a service*. It does
+> not. Kubi caught it. The documentation contradicts it twice:
+>
+> - *"**Yes, you can use different costing models for each item.** It's common for manufacturers to
+>   use a periodic costing model for raw materials and standard cost for semi-finished and finished
+>   goods."*
+> - *"enable the **Accrue liability on product receipt** option for all item model groups,
+>   **regardless of whether you have a stocked product or a not-stocked product**."*
+>
+> And the one that kills the shortcut outright: *"You should also enable [Stocked] if you plan to add
+> a non-tangible item such as a **service item** to your bills of materials."* A service can be
+> stocked. **Every setting on this group is independent of every other.**
 
-**The important one is `stocked`.** Today every product is implicitly stocked, so a repair service or
-a delivery charge cannot be sold without inventing a phantom stock record. That is a real limitation
-for a shoe shop that also does repairs.
+Four independent axes, all built as of migration 009:
+
+| Axis | Setting | Official meaning | State |
+|---|---|---|---|
+| **Valuation** | Costing method | "You can select only one costing model for each released product. The item model group controls this behavior." | ✅ column; only FIFO implemented in the engine |
+| | Include physical value | Include physically-updated receipts in the running average | ✅ column, ❌ not honoured |
+| | Fixed receipt price | Receipt price as standard cost, variance posted | ✅ column, ❌ variance accounts not configured |
+| **Inventory** | Stocked product | "If you don't enable [it], the system doesn't track any inventory transactions in the inventory subledger, and the cost of the items is typically expensed into your general ledger." | ✅ column; ❌ not honoured by the inventory service |
+| **Ledger** | Post physical inventory | Product receipt / packing slip raises a voucher | ✅ column, ❌ not honoured |
+| | Post financial inventory | Invoice raises a voucher | ✅ column, ❌ not honoured |
+| | Accrue liability on product receipt | GAAP accrual between receipt and invoice; recommended for **all** groups | ✅ column, ❌ no accrual account yet |
+| | Post deferred revenue on sales delivery | Revenue at packing slip instead of invoice | ✅ column, ❌ not honoured |
+| **Process gates** | Registration requirements | No product receipt until arrival registration is posted | ✅ column, ❌ not enforced |
+| | Receiving requirements | No vendor invoice until a product receipt is posted | ✅ column, ❌ not enforced |
+| | Picking requirements | No packing slip until a picking list is posted | ✅ column, ❌ not enforced |
+| | Deduction requirements | No sales invoice until a packing slip is posted | ✅ column, ❌ not enforced |
+
+**[OFFICIAL]** each gate applies to *all* receipts or issues for the item, not only to purchase or
+sales orders — an inventory journal with a positive quantity is caught too.
+
+**Seeded groups now demonstrate the independence** rather than collapsing it:
+`STOCKED-FIFO`, `STOCKED-STD` (tangible, inventory-tracked, standard cost — the cell the old seed
+excluded) and `NON-STOCKED`.
+
+**The important one is still `stocked`.** Today every product is implicitly stocked, so a repair
+service or a delivery charge cannot be sold without inventing a phantom stock record. That is a real
+limitation for a shoe shop that also does repairs — item 5.4 in the backlog.
+
+**Every column above is currently DECLARATIVE.** The group can be configured, but nothing in the
+posting or inventory services reads it yet. That gap is deliberate and is items 5.1 and 5.4; recording
+it here is the point of the checklist.
 
 ### Item group
 

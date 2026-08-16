@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { apiErrorMessage } from '@/components/erp/Dialog';
+import { ItemModelGroupDialog } from '@/components/erp/ItemModelGroupDialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
 
 /**
@@ -28,6 +29,8 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from
 export default function ProductSetupPage() {
   const qc = useQueryClient();
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState<any | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const { data: coverage } = useQuery({
     queryKey: ['product-setup-coverage'],
@@ -135,45 +138,66 @@ export default function ProductSetupPage() {
 
       <div className="mb-5 grid gap-4 lg:grid-cols-2">
         <div>
-          <h2 className="mb-2 text-body font-semibold text-fg">
-            Item model groups <span className="font-normal text-fg-muted">— how it is valued</span>
-          </h2>
+          <div className="mb-2 flex items-end justify-between gap-2">
+            <h2 className="text-body font-semibold text-fg">
+              Item model groups <span className="font-normal text-fg-muted">— how it is valued and controlled</span>
+            </h2>
+            <Button size="sm" variant="secondary" onClick={() => setCreating(true)}>New group</Button>
+          </div>
           <TableShell>
             <thead>
               <tr>
                 <Th>Code</Th>
-                <Th>Name</Th>
-                <Th>Costing</Th>
-                <Th>Stocked</Th>
+                {/* The two axes sit in adjacent columns on purpose: every
+                    combination of them is legal, and an earlier version of this
+                    page implied otherwise. */}
+                <Th>Valuation</Th>
+                <Th>Inventory</Th>
+                <Th>Gates</Th>
                 <Th className="text-right">Products</Th>
+                <Th />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {mgLoading && <LoadingRows cols={5} rows={2} />}
-              {(modelGroups ?? []).map((g: any) => (
-                <tr key={g.id} className="hover:bg-surface-sunken">
-                  <Td className="font-mono text-caption">{g.code}</Td>
-                  <Td>{g.name}</Td>
-                  <Td className="text-caption text-fg-muted">{g.costing_method}</Td>
-                  {/* Not a StatusPill: "stocked" is a property, not a document
-                      state, and borrowing APPROVED/DRAFT for it reads as
-                      nonsense. Say the word. */}
-                  <Td className="text-caption">
-                    {g.stocked ? (
-                      <span className="text-fg">Stocked</span>
-                    ) : (
-                      <span className="text-fg-muted">Not stocked — expensed</span>
-                    )}
-                  </Td>
-                  <Td className="text-right font-mono text-caption text-fg-muted">{g._count?.products ?? 0}</Td>
-                </tr>
-              ))}
+              {mgLoading && <LoadingRows cols={6} rows={3} />}
+              {(modelGroups ?? []).map((g: any) => {
+                const gates = [
+                  g.registration_requirements && 'registration',
+                  g.receiving_requirements && 'receiving',
+                  g.picking_requirements && 'picking',
+                  g.deduction_requirements && 'deduction',
+                ].filter(Boolean) as string[];
+                return (
+                  <tr key={g.id} className="hover:bg-surface-sunken">
+                    <Td>
+                      <div className="font-mono text-caption text-fg">{g.code}</div>
+                      <div className="text-micro text-fg-subtle">{g.name}</div>
+                    </Td>
+                    <Td className="text-caption text-fg">{g.costing_method.replace('_', ' ')}</Td>
+                    <Td className="text-caption">
+                      {g.stocked ? (
+                        <span className="text-fg">Stocked</span>
+                      ) : (
+                        <span className="text-fg-muted">Not stocked — expensed</span>
+                      )}
+                    </Td>
+                    <Td className="text-caption text-fg-muted">
+                      {gates.length ? gates.join(', ') : <span className="text-fg-subtle">none</span>}
+                    </Td>
+                    <Td className="text-right font-mono text-caption text-fg-muted">{g._count?.products ?? 0}</Td>
+                    <Td className="text-right">
+                      <Button size="sm" variant="ghost" onClick={() => setEditing(g)}>Settings</Button>
+                    </Td>
+                  </tr>
+                );
+              })}
             </tbody>
           </TableShell>
           <p className="mt-1.5 text-micro text-fg-subtle">
-            A group that is not stocked keeps no inventory transactions and expenses its cost
-            directly — that is how a repair or a delivery charge is sold without inventing a stock
-            record for it.
+            <strong className="text-fg-muted">Valuation and Inventory are independent axes.</strong> A
+            tangible item tracked in inventory can be valued at standard cost, and a service that
+            appears on a bill of materials must be <em>stocked</em>. Choosing a costing method never
+            decides whether something is a service.
           </p>
         </div>
 
@@ -262,6 +286,14 @@ export default function ProductSetupPage() {
         subledger: new postings go to the new accounts while existing ones stay where they are. The
         system will refuse and explain; confirming overrides it and writes a warning to the log.
       </p>
+
+      {(editing || creating) && (
+        <ItemModelGroupDialog
+          group={editing ?? undefined}
+          onClose={() => { setEditing(null); setCreating(false); }}
+          onSaved={refresh}
+        />
+      )}
     </div>
   );
 }

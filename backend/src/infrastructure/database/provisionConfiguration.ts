@@ -644,22 +644,54 @@ async function provisionPipelineStages(tenant: Tenant): Promise<void> {
  * revenue that you posted before the change remains in the original account."
  * So the assignment is a deliberate act, reported by the setup audit.
  */
+/**
+ * THREE groups, chosen to make the two axes visibly INDEPENDENT.
+ *
+ * An earlier version shipped only `FIFO` (stocked) and `SERVICE` (standard cost,
+ * not stocked), which read as "standard cost means it is a service". That is
+ * wrong, and the documentation contradicts it directly: *"Yes, you can use
+ * different costing models for each item. It's common for manufacturers to use a
+ * periodic costing model for raw materials and standard cost for semi-finished
+ * and finished goods."*
+ *
+ * `STOCKED-STD` exists specifically to occupy the cell the old seed excluded —
+ * a tangible, inventory-tracked item valued at standard cost. Delete it if the
+ * tenant has no use for it; what matters is that the combination is reachable.
+ *
+ * Note also that a NOT-stocked group is not the same thing as "a service".
+ * **[OFFICIAL]** a service item that appears on a BOM must be *stocked*. The
+ * axis is "does this item have an inventory subledger", nothing more.
+ */
 const DEFAULT_ITEM_MODEL_GROUPS = [
   {
-    code: 'FIFO',
-    name: 'Stocked — FIFO',
+    code: 'STOCKED-FIFO',
+    name: 'Stocked · FIFO',
+    description: 'Tangible item, tracked in inventory, valued first-in-first-out. The default for trading stock.',
     costing_method: 'FIFO',
     stocked: true,
     post_physical_inventory: true,
     post_financial_inventory: true,
   },
   {
-    code: 'SERVICE',
-    name: 'Service — not stocked',
+    code: 'STOCKED-STD',
+    name: 'Stocked · Standard cost',
+    description:
+      'Tangible item, tracked in inventory, valued at a standard cost with variances posted. ' +
+      'Costing method is independent of whether an item is stocked — this group exists to make that plain.',
     costing_method: 'STANDARD',
-    // The switch that lets a service be sold without inventing a stock record
-    // for it. Today every product is implicitly stocked.
+    stocked: true,
+    post_physical_inventory: true,
+    post_financial_inventory: true,
+  },
+  {
+    code: 'NON-STOCKED',
+    name: 'Not stocked · expensed',
+    description:
+      'No inventory subledger; the cost is expensed to the ledger directly. For shop supplies and ' +
+      'charges. NOTE: a service that appears on a BOM must be STOCKED instead.',
+    costing_method: 'STANDARD',
     stocked: false,
+    // No inventory means no physical inventory voucher to post.
     post_physical_inventory: false,
     post_financial_inventory: true,
   },
