@@ -11,6 +11,7 @@ import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
+import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -168,6 +169,25 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
     throw new AppError(`Cannot invoice an order in ${order.status} status. Confirm it first.`, 400);
   }
 
+  // [OFFICIAL] "Deduction requirements" prevents posting a sales invoice before
+  // the packing slip is posted. Here the shipment IS the packing slip.
+  {
+    const lines = await db.salesOrderLine.findMany({
+      where: { order_id: order.id },
+      select: { product_id: true },
+    });
+    const gatePolicies = await resolveItemPolicies(c.get('tenantId'), lines.map((l) => l.product_id));
+    const needDeduction = lines.filter((l) => gatePolicies.get(l.product_id)?.deductionRequirements);
+    if (needDeduction.length > 0 && !order.shipped_at) {
+      throw new AppError(
+        `${needDeduction.length} line(s) require the packing slip to be posted before this order ` +
+          `can be invoiced. Ship ${order.order_number} first.`,
+        409,
+        'DEDUCTION_REQUIRED',
+      );
+    }
+  }
+
   const { customer_nit, notes } = c.get('body');
 
   const shippingAddr = order.shipping_address as any;
@@ -177,6 +197,17 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
       : shippingAddr?.name ?? 'Cliente Mostrador';
 
   const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
+
+  // Lines and their item-group policy, resolved before the transaction so the
+  // revenue split can be computed inside it without extra round trips.
+  const orderLines = await db.salesOrderLine.findMany({
+    where: { order_id: order.id },
+    select: { product_id: true, line_total: true },
+  });
+  const linePolicies = await resolveItemPolicies(
+    c.get('tenantId'),
+    orderLines.map((l) => l.product_id),
+  );
 
   const total = Number(order.total_amount);
   // Tax from the configured engine — tax group (customer) ∩ item tax group.
@@ -219,6 +250,62 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
 
     // ── Auto GL Journal Entry ────────────────────────────────────────────────
     if (acc) {
+      // Revenue is split by item group.
+      //
+      // [OFFICIAL] revenue posting is determined by the combination of the party
+      // group and the item group, so two products in different item groups can
+      // legitimately credit different revenue accounts. AR and the taxes are
+      // party- or tax-driven and stay single lines.
+      // learn.microsoft.com/dynamics365/business-central/finance-posting-groups
+      const revenueTotal = Number(f.subtotal);
+      const grossTotal = orderLines.reduce((sTotal, l) => sTotal + Number(l.line_total), 0);
+      const revenueBuckets = groupByItemGroup(
+        orderLines,
+        linePolicies,
+        (l) => l.product_id,
+        // Apportion the NET revenue across lines by their share of the gross, so
+        // the credits always add back to `f.subtotal`.
+        (l) => (grossTotal > 0 ? (Number(l.line_total) / grossTotal) * revenueTotal : 0),
+      ).filter((b) => b.amount > 0);
+
+      const revenueLines: { account_id: string; debit_amount: number; credit_amount: number; description: string }[] = [];
+      for (const b of revenueBuckets) {
+        const bucketAcc = await resolvePostingAccounts_orExplain(
+          c.get('tenantId'), ['REVENUE'] as const,
+          {
+            document: `Sales invoice for ${order.order_number}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
+            partyId: order.customer_id ?? null,
+            itemGroupId: b.itemGroupId ?? undefined,
+            client: tx,
+          },
+        );
+        if (bucketAcc) {
+          revenueLines.push({
+            account_id: bucketAcc.REVENUE,
+            debit_amount: 0,
+            credit_amount: b.amount,
+            description: `Revenue${b.itemGroupCode ? ` [${b.itemGroupCode}]` : ''} — ${order.order_number}`,
+          });
+        }
+      }
+
+      // Rounding guard — apportioning can leave a cent, and an unbalanced
+      // journal is worse than a cent in the wrong bucket.
+      const credited = Number(revenueLines.reduce((sTotal, l) => sTotal + l.credit_amount, 0).toFixed(2));
+      if (revenueLines.length > 0 && credited !== revenueTotal) {
+        revenueLines[0].credit_amount = Number(
+          (revenueLines[0].credit_amount + (revenueTotal - credited)).toFixed(2),
+        );
+      }
+      // If nothing resolved per group, fall back to the single ALL-scope account
+      // so an invoice is never posted without its revenue leg.
+      if (revenueLines.length === 0) {
+        revenueLines.push({
+          account_id: acc.REVENUE, debit_amount: 0, credit_amount: revenueTotal,
+          description: `Revenue — ${order.order_number}`,
+        });
+      }
+
       // D-5: this used to be `count() + 1`, computed inside the transaction, on a
       // column that is globally @unique — two concurrent invoices produced the
       // same number and one rolled back. The sequence allocator is atomic.
@@ -237,10 +324,10 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
           lines: {
             create: [
               { account_id: acc.AR,                   debit_amount: total,               credit_amount: 0,                   description: `AR — ${customerName}` },
-              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: Number(f.it_amount), credit_amount: 0,                   description: `IT 3% expense` },
-              { account_id: acc.REVENUE,              debit_amount: 0,                   credit_amount: Number(f.subtotal),  description: `Revenue — ${order.order_number}` },
-              { account_id: acc.VAT_OUTPUT,           debit_amount: 0,                   credit_amount: Number(f.iva_amount), description: `IVA Débito Fiscal 13%` },
-              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,                   credit_amount: Number(f.it_amount),  description: `IT por Pagar 3%` },
+              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: Number(f.it_amount), credit_amount: 0,                   description: `Turnover tax expense` },
+              ...revenueLines,
+              { account_id: acc.VAT_OUTPUT,           debit_amount: 0,                   credit_amount: Number(f.iva_amount), description: `Output VAT` },
+              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,                   credit_amount: Number(f.it_amount),  description: `Turnover tax payable` },
             ],
           },
         },

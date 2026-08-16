@@ -147,9 +147,37 @@ excluded) and `NON-STOCKED`.
 service or a delivery charge cannot be sold without inventing a phantom stock record. That is a real
 limitation for a shoe shop that also does repairs — item 5.4 in the backlog.
 
-**Every column above is currently DECLARATIVE.** The group can be configured, but nothing in the
-posting or inventory services reads it yet. That gap is deliberate and is items 5.1 and 5.4; recording
-it here is the point of the checklist.
+### Wired 2026-08-16 — what now actually reads these settings
+
+The columns were declarative for a day; Kubi's instruction was to close that first, on the grounds
+that configuration nothing reads is worse than no configuration because it looks like it works.
+
+| Setting | Read by | State |
+|---|---|---|
+| **Item group** | COGS posting, purchase receipt posting, sales revenue posting | ✅ **wired** — one debit/credit pair per group, resolved most-specific-first |
+| **Stocked** | availability, reservation, fulfilment, COGS, purchase receipt | ✅ **wired** — no stock rows, no batches, no inventory transactions, no COGS; purchase cost expensed instead |
+| Registration requirements | purchase receipt | ✅ **wired** — blocks the receipt until a POSTED arrival journal exists |
+| Picking requirements | sales shipment | ✅ **wired** — blocks the shipment until PICK work is COMPLETED |
+| Deduction requirements | sales invoice | ✅ **wired** — blocks the invoice until the order is shipped |
+| Costing method | inventory close / valuation | 🟡 stored and resolved; only FIFO is implemented in the engine |
+| Post physical / financial inventory | — | ❌ the purchase receipt does both at once, so they cannot yet be separated |
+| Accrue liability on product receipt | — | ❌ no accrual account configured |
+| Post deferred revenue on delivery | — | ❌ no deferred revenue account configured |
+| Include physical value, Fixed receipt price | — | ❌ need the costing engine and variance accounts |
+| **Receiving requirements** | — | ❌ **not implementable yet** — there is no vendor invoice document to gate; the receipt *is* the posting |
+
+`shared/services/itemPolicy.service.ts` is the single resolver. An unassigned product falls back to
+stocked, both postings on, no gates, costed by `InventoryParameters.costing_method` — exactly the
+behaviour that existed before groups, so assigning nothing changes nothing.
+
+**Proof:** `backend/scripts/verifyItemPolicy.ts`, 21 assertions against the real database, including
+a group-scoped `COGS` profile that sends `ACCESSORY` to account 5201 while `FOOTWEAR` stays on 5101
+in the same journal. That is the item axis of the posting matrix working end to end for the first
+time.
+
+**Honest gap:** a not-stocked purchase currently expenses to the `COGS` posting type because that is
+the closest configured expense account. A dedicated `PURCHASE_EXPENSE` posting type would be correct
+— added as item 5.11.
 
 ### Item group
 
@@ -186,10 +214,12 @@ Consequences adopted here:
 
 | # | Work | Why it is where it is | Size |
 |---|---|---|---|
-| 5.1 | **Use the item group in posting** — resolve `ctx.itemGroupId` per line and split the journal by group | The tables exist and are unreachable from the posting routes; this is what makes 008 pay off | M |
+| ~~5.1~~ | ~~Use the item group in posting~~ | **DONE 2026-08-16** — COGS, purchase receipt and sales revenue all split by group | — |
 | 5.2 | **Customer / vendor groups** | Completes the party axis; `PARTY_GROUP` is defined and unreachable | S |
 | 5.3 | **Guard group changes once transactions exist** | The official warning above; cheap now, ugly later | S |
-| 5.4 | **Honour `stocked = false`** | Lets services and charges be sold at all | M |
+| ~~5.4~~ | ~~Honour `stocked = false`~~ | **DONE 2026-08-16** — no stock, no batches, no inventory transactions, no COGS; purchase cost expensed | — |
+| 5.11 | **A `PURCHASE_EXPENSE` posting type** | A not-stocked purchase currently expenses to `COGS` because that is the closest configured account. Small, and it removes a wrong-account-by-approximation | S |
+| 5.12 | **Separate physical from financial posting on the purchase side** | The receipt does both at once, so `post_physical_inventory` / `post_financial_inventory` cannot be honoured there. Needs a vendor invoice document — which also unblocks `receiving_requirements` and three-way matching | L |
 | 5.5 | **Financial dimensions (Store axis)** | Three stores, no per-store P&L, and the attribution of a past transaction is **unrecoverable** | L |
 | 5.6 | **Currency + exchange rate tables** | Foreign purchases are unrecordable; the functional-currency amount must be stored **at transaction time** or history cannot be restated | L |
 | 5.7 | **UoM conversions** | Buy in boxes, sell in pairs | S |

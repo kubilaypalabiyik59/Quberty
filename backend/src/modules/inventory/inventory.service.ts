@@ -1,13 +1,30 @@
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
+import { logger } from '../../shared/logger';
+import { resolveItemPolicies } from '../../shared/services/itemPolicy.service';
 
 export class InventoryService {
+  /**
+   * Available stock for a product.
+   *
+   * A NOT-STOCKED item has no inventory subledger at all, so "how much is
+   * available" is not a meaningful question for it — and answering 0 would make
+   * every service, repair or delivery charge look permanently out of stock.
+   * [OFFICIAL] "If you don't enable the Stocked product option, the system
+   * doesn't track any inventory transactions in the inventory subledger, and the
+   * cost of the items is typically expensed into your general ledger."
+   * Returns Infinity so availability checks pass without special-casing at each
+   * call site.
+   */
   async getAvailableStock(
     tenantId: string,
     productId: string,
     variantId: string | null | undefined,
     warehouseId: string | null | undefined
   ): Promise<number> {
+    const policies = await resolveItemPolicies(tenantId, [productId]);
+    if (policies.get(productId)?.stocked === false) return Number.POSITIVE_INFINITY;
+
     const where: any = { tenant_id: tenantId, product_id: productId };
     if (variantId) where.variant_id = variantId;
     if (warehouseId) where.location = { zone: { warehouse_id: warehouseId } };
@@ -24,7 +41,12 @@ export class InventoryService {
     lines: { product_id: string; variant_id?: string | null; quantity: number }[],
     orderId: string
   ) {
+    // Nothing to reserve for an item with no inventory subledger.
+    const policies = await resolveItemPolicies(tenantId, lines.map((l) => l.product_id));
+
     for (const line of lines) {
+      if (policies.get(line.product_id)?.stocked === false) continue;
+
       const stockRecords = await db.inventoryStock.findMany({
         where: {
           tenant_id: tenantId,
@@ -86,7 +108,24 @@ export class InventoryService {
    * order must include order_number for transaction reference.
    */
   async fulfillOrder(tenantId: string, order: any) {
+    // A not-stocked line has no batches to consume and no inventory to relieve;
+    // its cost was expensed when it was bought. Skipping it here is what keeps
+    // the subledger empty for that item, which is the whole meaning of the flag.
+    const policies = await resolveItemPolicies(
+      tenantId,
+      order.lines.map((l: any) => l.product_id),
+    );
+    const skipped = order.lines.filter((l: any) => policies.get(l.product_id)?.stocked === false);
+    if (skipped.length > 0) {
+      logger.info(
+        { tenantId, order: order.order_number, skipped: skipped.length },
+        'Fulfilment skipped inventory movement for not-stocked lines',
+      );
+    }
+
     for (const line of order.lines) {
+      if (policies.get(line.product_id)?.stocked === false) continue;
+
       // Find FIFO batches for this product/variant (oldest received_at first)
       const batches = await db.inventoryBatch.findMany({
         where: {

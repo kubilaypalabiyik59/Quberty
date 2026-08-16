@@ -11,6 +11,7 @@ import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
+import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -231,9 +232,49 @@ app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c)
 
   const packingSlipUrl: string | null = body.packing_slip_url || null;
 
+  // [OFFICIAL] a not-stocked item keeps no inventory transactions and its cost
+  // is expensed straight to the ledger. So it creates no InventoryStock, no
+  // FIFO batch and no InventoryTransaction on receipt - only a GL posting.
+  const policies = await resolveItemPolicies(c.get('tenantId'), po.lines.map((l) => l.product_id));
+
+  // [OFFICIAL] "Registration requirements" blocks a product receipt until an
+  // arrival registration exists. It applies to ALL receipts for the item, not
+  // only to purchase orders.
+  const needRegistration = po.lines.filter(
+    (l) => policies.get(l.product_id)?.registrationRequirements,
+  );
+  if (needRegistration.length > 0) {
+    const registered = await db.arrivalJournal.count({
+      where: { tenant_id: c.get('tenantId'), purchase_order_id: po.id, status: 'POSTED' },
+    });
+    if (registered === 0) {
+      const skus = await db.product.findMany({
+        where: { id: { in: needRegistration.map((l) => l.product_id) } },
+        select: { sku: true },
+      });
+      throw new AppError(
+        `${needRegistration.length} line(s) require arrival registration before a product receipt ` +
+          `can be posted (${skus.map((x) => x.sku).join(', ')}). Post an arrival journal for ` +
+          `${po.po_number} first.`,
+        409,
+        'REGISTRATION_REQUIRED',
+      );
+    }
+  }
+
   for (const line of po.lines) {
     const qty = Number(line.quantity);
     const variantId = line.variant_id ?? null;
+
+    if (policies.get(line.product_id)?.stocked === false) {
+      // Still mark it received so the document closes; there is simply no
+      // inventory behind it.
+      await db.purchaseOrderLine.updateMany({
+        where: { id: line.id },
+        data: { received_qty: { increment: qty } },
+      });
+      continue;
+    }
 
     const existing = await db.inventoryStock.findFirst({
       where: { tenant_id: c.get('tenantId'), product_id: line.product_id, variant_id: variantId, location_id: locationId },
@@ -303,36 +344,105 @@ app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c)
 
   if (acc) {
     // `subtotal` on the header is the agreed (gross) figure; the amount that
-    // capitalises into inventory is that less the recoverable tax. Debiting the
-    // gross would capitalise IVA that is going to be reclaimed, overstating both
-    // stock value and the COGS that later flows from it.
+    // capitalises is that less the recoverable tax. Debiting the gross would
+    // capitalise IVA that is going to be reclaimed, overstating both stock value
+    // and the COGS that later flows from it.
     const ivaAmount   = Number(po.tax_amount);
     const totalAmount = Number(po.total_amount);
-    const subtotal    = Number((totalAmount - ivaAmount).toFixed(2));
-    // D-5: was `count() + 1` computed OUTSIDE any transaction, on a globally
-    // @unique column — the loosest of the three racing implementations.
-    const entryNumber = await nextJournalVoucher(c.get('tenantId'));
+    const capitalised = Number((totalAmount - ivaAmount).toFixed(2));
 
-    await db.journalEntry.create({
-      data: {
-        tenant_id:    c.get('tenantId'),
-        entry_number: entryNumber,
-        entry_date:   new Date(),
-        description:  `PO Receipt: ${po.po_number}`,
-        source_module: 'PURCHASE',
-        source_id:    po.id,
-        status:       'POSTED',
-        posted_at:    new Date(),
-        created_by:   c.get('user').id,
-        lines: {
-          create: [
-            { account_id: acc.INVENTORY, debit_amount: subtotal,  credit_amount: 0,           description: `Inventory — ${po.po_number}` },
-            { account_id: acc.VAT_INPUT, debit_amount: ivaAmount, credit_amount: 0,           description: `IVA Crédito Fiscal 13%` },
-            { account_id: acc.AP,        debit_amount: 0,         credit_amount: totalAmount, description: `AP — ${po.supplier_id}` },
-          ],
+    // Split the debit by item group, and send not-stocked lines to expense
+    // rather than to inventory.
+    //
+    // [OFFICIAL] the inventory posting profile resolves by item Table | Group |
+    // All, so two products in different item groups may capitalise to different
+    // accounts. A single Inventory line for the whole receipt cannot say that.
+    const lineGross = (l: (typeof po.lines)[number]) => Number(l.line_total);
+    const grossTotal = po.lines.reduce((sTotal, l) => sTotal + lineGross(l), 0);
+    // Apportion the capitalised amount across lines in proportion to their share
+    // of the order, so the split always adds back to the same total.
+    const share = (l: (typeof po.lines)[number]) =>
+      grossTotal > 0 ? (lineGross(l) / grossTotal) * capitalised : 0;
+
+    const stockedLines = po.lines.filter((l) => policies.get(l.product_id)?.stocked !== false);
+    const expensedLines = po.lines.filter((l) => policies.get(l.product_id)?.stocked === false);
+
+    const stockedBuckets = groupByItemGroup(stockedLines, policies, (l) => l.product_id, share)
+      .filter((b) => b.amount > 0);
+    const expensedAmount = Number(expensedLines.reduce((sTotal, l) => sTotal + share(l), 0).toFixed(2));
+
+    const debits: { account_id: string; debit_amount: number; credit_amount: number; description: string }[] = [];
+
+    for (const b of stockedBuckets) {
+      const bucketAcc = await resolvePostingAccounts_orExplain(
+        c.get('tenantId'), ['INVENTORY'] as const,
+        {
+          document: `PO receipt ${po.po_number}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
+          partyId: po.supplier_id ?? null,
+          itemGroupId: b.itemGroupId ?? undefined,
         },
-      },
-    });
+      );
+      if (bucketAcc) {
+        debits.push({
+          account_id: bucketAcc.INVENTORY,
+          debit_amount: b.amount,
+          credit_amount: 0,
+          description: `Inventory${b.itemGroupCode ? ` [${b.itemGroupCode}]` : ''} — ${po.po_number}`,
+        });
+      }
+    }
+
+    if (expensedAmount > 0) {
+      // A not-stocked purchase is an expense, not an asset. COGS is the closest
+      // configured expense posting type; a dedicated PURCHASE_EXPENSE type would
+      // be better and is noted in the setup checklist.
+      const expAcc = await resolvePostingAccounts_orExplain(
+        c.get('tenantId'), ['COGS'] as const,
+        { document: `PO receipt ${po.po_number} (not stocked)`, partyId: po.supplier_id ?? null },
+      );
+      if (expAcc) {
+        debits.push({
+          account_id: expAcc.COGS,
+          debit_amount: expensedAmount,
+          credit_amount: 0,
+          description: `Expensed (not stocked) — ${po.po_number}`,
+        });
+      }
+    }
+
+    // Rounding guard: apportioning by share can leave a cent, and an unbalanced
+    // journal is worse than a cent in the wrong bucket.
+    const debited = Number(debits.reduce((sTotal, d) => sTotal + d.debit_amount, 0).toFixed(2));
+    if (debits.length > 0 && debited !== capitalised) {
+      debits[0].debit_amount = Number((debits[0].debit_amount + (capitalised - debited)).toFixed(2));
+    }
+
+    if (debits.length > 0) {
+      // D-5: was `count() + 1` computed OUTSIDE any transaction, on a globally
+      // @unique column — the loosest of the three racing implementations.
+      const entryNumber = await nextJournalVoucher(c.get('tenantId'));
+
+      await db.journalEntry.create({
+        data: {
+          tenant_id:    c.get('tenantId'),
+          entry_number: entryNumber,
+          entry_date:   new Date(),
+          description:  `PO Receipt: ${po.po_number}`,
+          source_module: 'PURCHASE',
+          source_id:    po.id,
+          status:       'POSTED',
+          posted_at:    new Date(),
+          created_by:   c.get('user').id,
+          lines: {
+            create: [
+              ...debits,
+              { account_id: acc.VAT_INPUT, debit_amount: ivaAmount, credit_amount: 0,           description: `Recoverable input tax` },
+              { account_id: acc.AP,        debit_amount: 0,         credit_amount: totalAmount, description: `AP — ${po.supplier_id}` },
+            ],
+          },
+        },
+      });
+    }
   }
 
   return message(c, `PO ${po.po_number} received successfully. Stock updated.${packingSlipUrl ? ' Packing slip attached.' : ''}`);

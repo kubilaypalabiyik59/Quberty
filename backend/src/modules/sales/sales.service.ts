@@ -6,6 +6,7 @@ import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
+import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { WarehouseService } from '../warehouse/warehouse.service';
 
@@ -132,34 +133,101 @@ export class SalesService {
       throw new AppError(`Cannot ship order in ${order.status} status`);
     }
 
+    // [OFFICIAL] "Picking requirements" prevents posting a packing slip before a
+    // picking list is posted, and applies to ALL inventory issues for the item,
+    // not only to sales orders.
+    // learn.microsoft.com/dynamics365/supply-chain/cost-management/inventory-costing-faq
+    {
+      const gatePolicies = await resolveItemPolicies(
+        tenantId,
+        order.lines.map((l: any) => l.product_id),
+      );
+      const needPicking = order.lines.filter(
+        (l: any) => gatePolicies.get(l.product_id)?.pickingRequirements,
+      );
+      if (needPicking.length > 0) {
+        const picked = await db.warehouseWork.count({
+          where: {
+            tenant_id: tenantId,
+            reference_type: 'SALES_ORDER',
+            reference_id: orderId,
+            work_type: 'PICK',
+            status: 'COMPLETED',
+          },
+        });
+        if (picked === 0) {
+          throw new AppError(
+            `${needPicking.length} line(s) on ${order.order_number} require a completed picking ` +
+              `list before the shipment can be posted. Complete the warehouse pick work first.`,
+            409,
+            'PICKING_REQUIRED',
+          );
+        }
+      }
+    }
+
     // Deduct stock and record transactions
     await inventoryService.fulfillOrder(tenantId, order);
 
-    // ── Auto GL Journal Entry: COGS ────────────────────────────────────────────
-    // Dr 5101 Costo de Ventas  — cost of goods shipped
-    // Cr 1110 Inventario       — inventory asset reduced
+    // ── Auto GL Journal Entry: COGS, per item group ───────────────────────────
+    //
+    // Two configuration rules are honoured here, and until they were wired both
+    // were merely declared:
+    //
+    //   stocked = false          the item has no inventory subledger, so there
+    //                            is nothing to relieve and no COGS to post. Its
+    //                            cost was already expensed on the way in.
+    //
+    //   item group               [OFFICIAL] the inventory posting profile
+    //                            resolves by item Table | Group | All, so two
+    //                            products in different groups may post COGS and
+    //                            inventory to different accounts. One journal
+    //                            line for the whole order cannot express that.
+    //
+    // Result: one debit/credit PAIR per item group, and non-stocked lines are
+    // excluded from the calculation entirely rather than valued at zero.
     {
-      const acc = await resolvePostingAccounts_orExplain(
-        tenantId, ['COGS', 'INVENTORY'] as const,
-        { document: `COGS for ${order.order_number}` },
-      );
+      const productIds = order.lines.map((l: any) => l.product_id);
+      const policies = await resolveItemPolicies(tenantId, productIds);
 
-      if (acc) {
-        // Sum COGS from product cost_price × qty per line
-        const productIds = order.lines.map((l: any) => l.product_id);
-        const products = await db.product.findMany({
-          where: { id: { in: productIds } },
-          select: { id: true, cost_price: true },
-        });
-        const costMap = new Map(products.map((p: any) => [p.id, Number(p.cost_price ?? 0)]));
+      const products = await db.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, cost_price: true },
+      });
+      const costMap = new Map(products.map((p: any) => [p.id, Number(p.cost_price ?? 0)]));
 
-        const cogsAmount = order.lines.reduce((sum: number, line: any) => {
-          return sum + line.quantity * costMap.get(line.product_id);
-        }, 0);
+      const stockedLines = order.lines.filter((l: any) => policies.get(l.product_id)?.stocked !== false);
+      const skipped = order.lines.length - stockedLines.length;
+      if (skipped > 0) {
+        logger.info(
+          { tenantId, order: order.order_number, skipped },
+          'COGS skipped for non-stocked lines — their cost is expensed, not relieved from inventory',
+        );
+      }
 
-        if (cogsAmount > 0) {
+      const buckets = groupByItemGroup(
+        stockedLines,
+        policies,
+        (l: any) => l.product_id,
+        (l: any) => l.quantity * (costMap.get(l.product_id) ?? 0),
+      ).filter((b) => b.amount > 0);
+
+      if (buckets.length > 0) {
+        // Resolve per bucket so a group-scoped profile can win over the ALL one.
+        const resolved = [];
+        for (const b of buckets) {
+          const acc = await resolvePostingAccounts_orExplain(
+            tenantId, ['COGS', 'INVENTORY'] as const,
+            {
+              document: `COGS for ${order.order_number}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
+              itemGroupId: b.itemGroupId ?? undefined,
+            },
+          );
+          if (acc) resolved.push({ bucket: b, acc });
+        }
+
+        if (resolved.length > 0) {
           const entryNumber = await nextJournalVoucher(tenantId);
-
           await db.journalEntry.create({
             data: {
               tenant_id: tenantId,
@@ -172,10 +240,13 @@ export class SalesService {
               posted_at: new Date(),
               created_by: userId,
               lines: {
-                create: [
-                  { account_id: acc.COGS,     debit_amount: cogsAmount, credit_amount: 0,           description: `COGS — ${order.order_number}` },
-                  { account_id: acc.INVENTORY, debit_amount: 0,          credit_amount: cogsAmount, description: `Inventory out — ${order.order_number}` },
-                ],
+                create: resolved.flatMap(({ bucket, acc }) => {
+                  const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
+                  return [
+                    { account_id: acc.COGS,      debit_amount: bucket.amount, credit_amount: 0,            description: `COGS${label} — ${order.order_number}` },
+                    { account_id: acc.INVENTORY, debit_amount: 0,             credit_amount: bucket.amount, description: `Inventory out${label} — ${order.order_number}` },
+                  ];
+                }),
               },
             },
           });
