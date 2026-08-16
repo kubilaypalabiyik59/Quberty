@@ -88,7 +88,7 @@ not arbitrary — each step is a prerequisite of the next
 | # | Thing | State |
 |---|---|---|
 | 2.1 | Posting profiles per posting type, resolved most-specific-first | ✅ |
-| 2.2 | …resolvable by **item group** | ✅ possible from 008; ❌ **not yet used by the posting routes** |
+| 2.2 | …resolvable by **item group** | ✅ **wired 2026-08-16** — COGS, purchase receipt and sales revenue split per group |
 | 2.3 | …resolvable by **party group** | ❌ needs 1.3 |
 | 2.4 | Tax codes with the correct base | ✅ **fixed 2026-08-16**, see [BOLIVIA_TAX_BASIS.md](../process/BOLIVIA_TAX_BASIS.md) |
 | 2.5 | Financial dimensions (Store / cost centre) | ❌ **missing and unbackfillable** — three stores, no per-store P&L |
