@@ -1,6 +1,9 @@
 # HANDOVER — Skarpine ERP
 
 > Living context document. Read this first in a new session.
+>
+> **Smoke-testing the 2026-08-16 session? Start at [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)** —
+> what to click, what to expect, and the four things that need Kubi rather than me.
 
 **Last updated**: 2026-08-16 (process chain: Lead→Opportunity→Quotation→Order, Requisition→RFQ→PO)
 
