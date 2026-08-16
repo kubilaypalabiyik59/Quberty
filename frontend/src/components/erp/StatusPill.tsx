@@ -49,6 +49,18 @@ const TONE: Record<string, 'neutral' | 'info' | 'success' | 'warning' | 'danger'
   DECLINED: 'danger',
   AWARDED: 'success',
 
+  // purchase documents — product receipt and vendor invoice
+  POSTED: 'success',
+  PARTIALLY_RECEIVED: 'warning',
+  INVOICED: 'success',
+
+  // invoice matching verdicts. [OFFICIAL] a line that needs no matching shows
+  // "Not performed" rather than a pass — silence is not a verdict.
+  PASSED: 'success',
+  FAILED: 'danger',
+  PENDING: 'info',
+  NOT_APPLICABLE: 'neutral',
+
   // order / po, so the same pill works downstream
   RESERVED: 'info',
   PACKED: 'info',

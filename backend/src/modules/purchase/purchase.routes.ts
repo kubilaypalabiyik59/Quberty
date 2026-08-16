@@ -83,6 +83,56 @@ app.get('/orders', async (c) => {
   return paginated(c, orders, total, Number(page), Number(limit));
 });
 
+
+
+/**
+ * [OFFICIAL] "Purchase orders received but not invoiced" is a page in its own
+ * right — it is where a vendor invoice is raised from. The equivalent grid in the
+ * automation workspace is "Documents not invoiced", with an *Invoice now* button
+ * per row. Same idea, one list.
+ * learn.microsoft.com/dynamics365/finance/accounts-payable/tasks/key-invoice-data-ap-system-vendor-invoice
+ */
+app.get('/orders/received-not-invoiced', async (c) => {
+  const orders = await db.purchaseOrder.findMany({
+    where: {
+      tenant_id: c.get('tenantId'),
+      status: { in: ['RECEIVED', 'PARTIALLY_RECEIVED'] },
+      lines: { some: {} },
+      // Only orders with a real product receipt document belong here. Orders
+      // received before the physical/financial split have no receipt to invoice
+      // against — they were invoiced at receipt, in one voucher, under the old
+      // behaviour. Listing them would invite double-posting them now.
+      product_receipts: { some: { status: 'POSTED' } },
+    },
+    include: {
+      supplier: { select: { code: true, name: true } },
+      lines: { select: { quantity: true, received_qty: true, invoiced_qty: true } },
+      product_receipts: {
+        where: { status: 'POSTED' },
+        select: { id: true, receipt_number: true, packing_slip: true, receipt_date: true },
+        orderBy: { receipt_date: 'asc' },
+      },
+    },
+    orderBy: { received_at: 'desc' },
+    take: 100,
+  });
+
+  // Received but not yet invoiced is a per-LINE question: an order can be fully
+  // received and half invoiced. Filtering on header status alone would show
+  // orders with nothing left to bill.
+  const rows = orders
+    .map((o) => {
+      const receivedNotInvoiced = o.lines.reduce(
+        (s, l) => s + Math.max(0, Number(l.received_qty) - Number(l.invoiced_qty)),
+        0,
+      );
+      return { ...o, uninvoiced_qty: Number(receivedNotInvoiced.toFixed(2)) };
+    })
+    .filter((o) => o.uninvoiced_qty > 0);
+
+  return ok(c, rows);
+});
+
 app.get('/orders/:id', async (c) => {
   const po = await db.purchaseOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },

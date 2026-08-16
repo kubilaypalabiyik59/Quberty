@@ -55,6 +55,10 @@ const NAV = [
       {
         href: '/purchase', icon: Truck, label: 'Purchase', children: [
           { href: '/purchase/orders', label: 'Purchase Orders' },
+          // The order -> product receipt -> vendor invoice cycle, in the order
+          // the documents are actually raised.
+          { href: '/purchase/receipts', label: 'Product Receipts' },
+          { href: '/purchase/invoices', label: 'Vendor Invoices' },
           { href: '/purchase/suppliers', label: 'Suppliers' },
         ],
       },

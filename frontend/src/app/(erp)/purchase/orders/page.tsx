@@ -106,10 +106,34 @@ interface POLine {
 }
 
 // ── Receive Modal ──────────────────────────────────────────────────────────────
+//
+// [OFFICIAL] receiving raises a PRODUCT RECEIPT, and "during product receipt,
+// specify a product receipt identifier, which is typically a reference to the
+// packing slip from the supplier. This identifier is required for accounting,
+// because it enables checks or audits of supplier packing slips against what is
+// received and the accounted inventory or expense."
+//   learn.microsoft.com/dynamics365/supply-chain/procurement/product-receipt-against-purchase-orders
+//
+// So the packing slip reference is a required FIELD now, not an optional file
+// attachment. The URL upload stays, because a scan of the slip is genuinely
+// useful — it is just not the same thing as the slip's number.
+//
+// The second mode exists because of how the anchor customer actually buys: the
+// goods and the factura usually arrive together. Making the owner post two
+// documents in sequence for that is the enterprise ceremony this product exists
+// to avoid, so "the factura came with the goods" raises both in one action. The
+// accounting is identical either way.
 function ReceiveModal({ po, onClose, onSuccess }: { po: any; onClose: () => void; onSuccess: () => void }) {
   const [locationId, setLocationId] = useState('');
-  const [wantPackingSlip, setWantPackingSlip] = useState<boolean | null>(null);
+  const [packingSlip, setPackingSlip] = useState('');
+  const [withInvoice, setWithInvoice] = useState<boolean | null>(null);
   const [packingSlipUrl, setPackingSlipUrl] = useState('');
+  const [inv, setInv] = useState({
+    invoice_number: '',
+    invoice_date: new Date().toISOString().slice(0, 10),
+    supplier_tax_id: '',
+    fiscal_authorization_code: '',
+  });
   const [error, setError] = useState('');
 
   const { data: locations } = useQuery({
@@ -118,19 +142,38 @@ function ReceiveModal({ po, onClose, onSuccess }: { po: any; onClose: () => void
   });
 
   const receive = useMutation({
-    mutationFn: () => api.post(`/purchase/orders/${po.id}/receive`, {
-      receive_location_id: locationId,
-      packing_slip_url: wantPackingSlip && packingSlipUrl ? packingSlipUrl : undefined,
-    }),
+    mutationFn: () =>
+      withInvoice
+        ? api.post(`/purchase/orders/${po.id}/receive-and-invoice`, {
+            receive_location_id: locationId,
+            packing_slip: packingSlip,
+            invoice_number: inv.invoice_number,
+            invoice_date: inv.invoice_date,
+            supplier_tax_id: inv.supplier_tax_id || null,
+            fiscal_authorization_code: inv.fiscal_authorization_code || null,
+          })
+        : api.post(`/purchase/orders/${po.id}/receive`, {
+            receive_location_id: locationId,
+            packing_slip: packingSlip,
+            packing_slip_url: packingSlipUrl || undefined,
+          }),
     onSuccess: () => { onSuccess(); onClose(); },
     onError: (err: any) => setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Failed to receive PO'),
   });
 
-  const canSubmit = locationId && (wantPackingSlip === false || (wantPackingSlip === true && packingSlipUrl));
+  // Every blocked state names itself. A submit button that refuses and will not
+  // say why is indistinguishable from a broken one.
+  const blockedReason =
+    !locationId ? 'Choose the location the goods go into.'
+    : !packingSlip.trim() ? "Enter the supplier's packing slip reference — it is the audit anchor for the receipt."
+    : withInvoice === null ? 'Say whether the factura arrived with the goods.'
+    : withInvoice && !inv.invoice_number.trim() ? "Enter the supplier's invoice number."
+    : withInvoice && !inv.invoice_date ? 'Enter the invoice date.'
+    : null;
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-green-100 rounded-xl flex items-center justify-center">
@@ -187,43 +230,97 @@ function ReceiveModal({ po, onClose, onSuccess }: { po: any; onClose: () => void
           </div>
 
           <div>
-            <p className="text-sm font-medium text-gray-700 mb-2">Attach a Packing Slip?</p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setWantPackingSlip(true)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-all ${wantPackingSlip === true ? 'bg-gray-900 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}
-              >
-                <Paperclip className="h-4 w-4" /> Yes, attach slip
-              </button>
-              <button
-                onClick={() => { setWantPackingSlip(false); setPackingSlipUrl(''); }}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-all ${wantPackingSlip === false ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}
-              >
-                <Package className="h-4 w-4" /> No, just receive
-              </button>
-            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Packing Slip Reference <span className="text-red-500">*</span>
+            </label>
+            <input
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
+              placeholder="the number on the supplier's delivery note"
+              value={packingSlip}
+              onChange={e => setPackingSlip(e.target.value)}
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              Required for accounting — it is what lets the slip be audited against what was received.
+            </p>
           </div>
 
-          {wantPackingSlip === true && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Packing Slip URL <span className="text-red-500">*</span></label>
-              <input type="url" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="https://..." value={packingSlipUrl} onChange={e => setPackingSlipUrl(e.target.value)} />
-              <p className="text-xs text-gray-400 mt-1">Upload the slip to cloud storage and paste the URL here.</p>
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">Did the factura arrive with the goods?</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setWithInvoice(true)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-all ${withInvoice === true ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}
+              >
+                <Paperclip className="h-4 w-4" /> Yes — receive and invoice
+              </button>
+              <button
+                onClick={() => setWithInvoice(false)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-all ${withInvoice === false ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'}`}
+              >
+                <Package className="h-4 w-4" /> No — goods only
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              Goods only records the arrival and accrues the liability. The recoverable IVA and the payable appear
+              when the factura is posted.
+            </p>
+          </div>
+
+          {withInvoice === true && (
+            <div className="space-y-3 rounded-xl border border-gray-200 p-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Factura number <span className="text-red-500">*</span></label>
+                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono"
+                    value={inv.invoice_number} onChange={e => setInv({ ...inv, invoice_number: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Factura date <span className="text-red-500">*</span></label>
+                  <input type="date" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                    value={inv.invoice_date} onChange={e => setInv({ ...inv, invoice_date: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Supplier NIT</label>
+                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono"
+                    value={inv.supplier_tax_id} onChange={e => setInv({ ...inv, supplier_tax_id: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Authorisation code</label>
+                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono"
+                    value={inv.fiscal_authorization_code} onChange={e => setInv({ ...inv, fiscal_authorization_code: e.target.value })} />
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">
+                Both documents are still raised, and the accounting is the same as receiving and invoicing separately.
+                Only the number of clicks differs.
+              </p>
             </div>
           )}
 
+          {withInvoice === false && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Packing slip scan (optional)</label>
+              <input type="url" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="https://..." value={packingSlipUrl} onChange={e => setPackingSlipUrl(e.target.value)} />
+            </div>
+          )}
+
+          {blockedReason && (
+            <p className="text-xs text-gray-500">{blockedReason}</p>
+          )}
+
           {error && (
-            <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <div role="alert" className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
               <AlertCircle className="h-4 w-4 shrink-0" /> {error}
             </div>
           )}
         </div>
 
         <div className="px-6 py-4 border-t border-gray-200 flex gap-3">
-          <button onClick={() => receive.mutate()} disabled={!canSubmit || receive.isPending}
+          <button onClick={() => receive.mutate()} disabled={!!blockedReason || receive.isPending}
             className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-medium">
-            <Truck className="h-4 w-4" /> {receive.isPending ? 'Receiving...' : 'Confirm & Receive'}
+            <Truck className="h-4 w-4" />
+            {receive.isPending ? 'Posting…' : withInvoice ? 'Receive & Invoice' : 'Confirm & Receive'}
           </button>
           <button onClick={onClose} className="border border-gray-200 text-gray-600 px-5 py-2 rounded-lg text-sm font-medium hover:bg-gray-50">Cancel</button>
         </div>
