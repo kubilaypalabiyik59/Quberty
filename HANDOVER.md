@@ -15,11 +15,15 @@
 (see [docs/process/VENDOR_INVOICE.md](docs/process/VENDOR_INVOICE.md)); earlier the same day: process
 chain, Bolivian tax basis, item groups wired into posting
 
-> **Where this leaves the purchase side.** The receipt and the invoice are now separate documents
-> with separate postings, matching, tolerances and an accrual that nets to zero. It is **off by
-> default** (`post_product_receipt_in_ledger = false`) and the test tenant is deliberately still on
-> the old single-voucher behaviour, because **there is no UI for either document yet**. The next
-> piece of work is those two screens. Switch a tenant with
+> **Where this leaves the purchase side.** The receipt and the invoice are separate documents with
+> separate postings, matching, tolerances and an accrual that nets to zero — and they now have
+> screens. **The test tenant runs on the split posting** (three-way matching, 2% price tolerance).
+> Both flows were driven through the real browser end to end; the ledger was checked line by line.
+>
+> **Start here for the whole picture:** [docs/process/S2P_O2C_STATUS.md](docs/process/S2P_O2C_STATUS.md)
+> — where both processes stand and what is left, with the open decisions.
+>
+> Other tenants stay on the old single-voucher behaviour until switched deliberately with
 > `npx tsx scripts/setPurchaseFlow.ts --split --three-way --tolerance 2`.
 
 ---
