@@ -2,7 +2,7 @@
 
 > Living context document. Read this first in a new session.
 
-**Last updated**: 2026-08-15 (config foundation + tax engine + frontend design system)
+**Last updated**: 2026-08-16 (config foundation + tax engine + frontend design system + sign-in rebuild)
 
 ---
 
@@ -420,11 +420,26 @@ palette direction (slate neutral, status colours) and the pre-delivery checklist
   figures, and not the safe default.
 - **Storefront**: still shares the tokens, not yet given its own density scale.
 
-### Sign-in and the entry moment
+### Sign-in and the entry moment — rebuilt once, commit `1242066`
 
-The slideshow split-screen is gone. Left half is a corridor of the store's own photography on
-two rails (`image-stream-hero.tsx`), over a **brand panel that stays dark in both themes** so
-the imagery reads — a deliberate exception to theming, documented at the `--panel` token.
+The slideshow split-screen is gone. `image-stream-hero.tsx` runs a corridor of the store's own
+photography on two rails.
+
+**The first version put the corridor in a half-width column beside the form. Kubi rejected it,
+correctly.** The reason is worth keeping: the component's geometry is measured in `cqw` — a share
+of container **width** — so a tall half-width container collapses the corridor into a thin band
+with dead space above and below. Scaling the path up makes the band bigger without making the
+composition better. **Do not put this component in a narrow column.**
+
+The corridor is now the page: full-bleed behind everything, sign-in card floating over it, which
+is the composition the reference demo actually shows.
+
+- **Two scrims, each with a job.** A linear one darkens top and bottom so the wordmark and footer
+  copy hold at every frame of the loop; a radial one sits under the card so the form never
+  competes with a photograph passing behind it.
+- **The card is a solid surface, not frosted glass.** It carries a form, and form text over moving
+  photography has to be readable at every frame, not most of them.
+- `--panel` now tints the whole page ground rather than a dedicated left panel.
 
 After a successful sign-in, `WelcomeCurtain.tsx` holds ~1.9s, names the product and the three
 things it manages, then navigates. It is a fixed hold with a determinate bar — not a progress
@@ -460,6 +475,17 @@ returns nothing. Never write a new component against those classes.
 *Gotcha worth remembering:* the bridge must use flat descendant selectors (`.dark .bg-white`).
 Written nested (`.dark { .bg-white {} }`) it compiles to nothing, because this project does not
 load `postcss-nesting` — and it fails silently, leaving white cards on a dark ground.
+
+### Waiting on Kubi — two components never arrived
+
+Kubi sent three prompt blocks labelled *login*, *system theme*, and *login→dashboard transition*.
+**All three were byte-identical**, all three the `image-stream-hero` corridor. The clipboard
+evidently repeated the first. Only the login one was actionable and it is done.
+
+The theme system and the entry transition currently use my own implementations
+(`ThemeProvider.tsx`, `WelcomeCurtain.tsx`). Both work, but **Kubi intended specific components
+for them.** Do not assume the current ones are the final choice; ask for the two missing blocks
+before building further on either.
 
 ### Next steps (frontend)
 
