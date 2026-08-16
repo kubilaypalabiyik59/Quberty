@@ -1,6 +1,13 @@
 # Vendor invoice and three-way matching — reference model, gap, and design
 
-> **Status: analysis and design only. No implementation is approved.**
+> **Status: BUILT 2026-08-16.** Steps 1–6 of §11 are implemented, migrated and verified end to
+> end (`backend/scripts/verifyPurchaseCycle.ts`, 25 assertions). **The behaviour is off by
+> default** — `PurchaseParameters.post_product_receipt_in_ledger` is `false`, which reproduces the
+> previous single-voucher posting exactly. Switch a tenant with
+> `npx tsx scripts/setPurchaseFlow.ts --split --three-way --tolerance 2`.
+> **There is no frontend for either document yet**, which is why the test tenant is still on the
+> legacy flow — see §12.
+>
 > Research source: Microsoft Learn MCP. Every claim below is labelled
 > **[OFFICIAL]** (with URL), **[REPO]** (with file:line), **[REC]** (my recommendation), or
 > **[ASSUMPTION]** (needs validation). Nothing is stated from memory.
@@ -359,15 +366,55 @@ authorisation code must be storable on the header for the IVA purchase ledger.
 
 ---
 
-## 11. Sequencing — [REC]
+## 11. Sequencing — all six built 2026-08-16
 
-1. `PURCHASE_ACCRUAL` / `PURCHASE_EXPENSE` / `PRICE_VARIANCE` posting types and the new account
-   category, plus provisioning. Small, independent, and closes checklist 5.11 on its own.
-2. Fix `inventory_batches.unit_cost` to the capitalised net. Independent of everything else, and it
-   is wrong today.
-3. `ProductReceipt` document + split the receipt posting into physical-only.
-4. `VendorInvoice` document + financial posting + the accrual reversal.
-5. `VendorInvoiceMatch` + three-way matching + tolerances.
-6. Invoice totals matching.
+| # | Work | Where it lives |
+|---|---|---|
+| 1 | `PURCHASE_ACCRUAL` / `PURCHASE_EXPENSE` / `PRICE_VARIANCE` posting types, three new account categories, all three country templates, provisioning | [accountCategory.ts](../../backend/src/shared/services/accountCategory.ts), [provisionPurchaseAccounts.ts](../../backend/scripts/provisionPurchaseAccounts.ts) |
+| 2 | Inventory batches valued at the capitalised **net**, not the gross | [productReceipt.service.ts](../../backend/src/modules/purchase/productReceipt.service.ts) |
+| 3 | `ProductReceipt` document + physical-only posting | same file |
+| 4 | `VendorInvoice` document + financial posting + accrual reversal | [vendorInvoice.service.ts](../../backend/src/modules/purchase/vendorInvoice.service.ts) |
+| 5 | `VendorInvoiceMatch` + three-way matching + two-axis policies and tolerances | [invoiceMatching.service.ts](../../backend/src/shared/services/invoiceMatching.service.ts) |
+| 6 | Invoice totals matching | same file |
 
-Steps 3 and 4 must ship together or the accrual account will hold a balance nothing clears.
+Steps 3 and 4 shipped together, as required — otherwise the accrual account would hold a balance
+nothing clears.
+
+Migration [010_vendor_invoice_three_way_match.sql](../../backend/prisma/sql/010_vendor_invoice_three_way_match.sql):
+seven tables, two columns on `purchase_order_lines`, twelve on `purchase_parameters`. Additive, with
+every default reproducing the previous behaviour. **No historical document was backfilled** — the
+existing purchase orders keep the single voucher they were posted with.
+
+### What the verification actually proves
+
+`npx tsx scripts/verifyPurchaseCycle.ts` — 25 assertions against the real database, all passing:
+
+```
+receipt voucher CREDITS the accrual = 522        (net of 6 units at 100 gross)
+receipt voucher posts NO recoverable tax = 0
+receipt voucher posts NO payable = 0
+inventory batch valued at the NET unit cost = 87  ← the subledger/GL divergence, fixed
+matched against BOTH receipts = 2                 ← one invoice line, two deliveries
+recoverable tax recognised HERE, against the factura = 130
+goods received not invoiced nets to ZERO = 0
+posting BLOCKED while the discrepancy is unapproved = true
+variance = invoiced net − received net = 17.4     (a 10% price rise on a 2% tolerance)
+accrual still nets to zero even with a price change = 0
+```
+
+---
+
+## 12. What is NOT built, and it matters
+
+**There is no user interface for either document.** The API is complete —
+`POST /purchase/orders/:id/receive` now raises a real product receipt,
+`/purchase/orders/:id/receipts`, `/purchase/invoices`, `/purchase/invoices/:id/match`,
+`/purchase/invoices/:id/post` and `/purchase/orders/:id/receive-and-invoice` all exist — but nothing
+in the ERP frontend calls the invoice endpoints.
+
+That is why **the test tenant is deliberately left on the legacy flow**. Turning the split on without
+an invoice screen would give a user product receipts that never produce a payable: correct
+accounting, unusable process. The next piece of work is the two screens, not more backend.
+
+`receipt_invoice_flow` is set to `EITHER` because both patterns occur at the anchor customer, so the
+UI must lead with the combined action and keep the separate one a click away — not the reverse.

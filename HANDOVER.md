@@ -11,7 +11,16 @@
 >    not overview pages) **and record what we are NOT building**, so future scope is visible.
 >    The artefact is [docs/architecture/ERP_SETUP_CHECKLIST.md](docs/architecture/ERP_SETUP_CHECKLIST.md).
 
-**Last updated**: 2026-08-16 — process chain, Bolivian tax basis, item groups wired into posting
+**Last updated**: 2026-08-16 — **vendor invoice, product receipt and three-way matching built**
+(see [docs/process/VENDOR_INVOICE.md](docs/process/VENDOR_INVOICE.md)); earlier the same day: process
+chain, Bolivian tax basis, item groups wired into posting
+
+> **Where this leaves the purchase side.** The receipt and the invoice are now separate documents
+> with separate postings, matching, tolerances and an accrual that nets to zero. It is **off by
+> default** (`post_product_receipt_in_ledger = false`) and the test tenant is deliberately still on
+> the old single-voucher behaviour, because **there is no UI for either document yet**. The next
+> piece of work is those two screens. Switch a tenant with
+> `npx tsx scripts/setPurchaseFlow.ts --split --three-way --tolerance 2`.
 
 ---
 
