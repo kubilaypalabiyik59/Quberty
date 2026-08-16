@@ -201,6 +201,14 @@
       "category": "VAT_PAYABLE"
     },
     {
+      "code": "381",
+      "name": "Gider Tahakkukları (teslim alınan, faturalanmamış)",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "300",
+      "category": "ACCRUED_PURCHASES"
+    },
+    {
       "code": "361",
       "name": "Ödenecek Sosyal Güvenlik",
       "type": "LIABILITY",
@@ -279,6 +287,22 @@
       "normal_balance": "DEBIT",
       "parent_code": "770",
       "category": "PAYROLL_EXPENSE"
+    },
+    {
+      "code": "770.02",
+      "name": "Stoklanmayan Alımlar",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "770",
+      "category": "PURCHASE_EXPENDITURE"
+    },
+    {
+      "code": "659",
+      "name": "Alım Fiyat Farkları",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "PRICE_VARIANCE"
     }
   ]
 }

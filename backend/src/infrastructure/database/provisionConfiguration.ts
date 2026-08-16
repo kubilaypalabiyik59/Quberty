@@ -410,6 +410,30 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
       next_number: 1,
       current_year: new Date().getFullYear(),
     },
+
+    // ── Purchase documents (migration 010) ────────────────────────────────
+    // Both are internal handles. The product receipt's legal anchor is the
+    // supplier's packing slip, and the vendor invoice's is the supplier's own
+    // factura number — neither of which we allocate, so neither series carries a
+    // legal gaplessness requirement and both are non-continuous.
+    {
+      reference: 'PRODUCT_RECEIPT',
+      name: 'Product receipt',
+      format: 'GRN-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'VENDOR_INVOICE',
+      name: 'Vendor invoice',
+      format: 'VI-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
   ];
 
   for (const s of seqs) {

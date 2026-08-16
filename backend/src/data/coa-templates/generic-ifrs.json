@@ -158,6 +158,14 @@
       "category": "VAT_PAYABLE"
     },
     {
+      "code": "2004",
+      "name": "Goods Received Not Invoiced",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2000",
+      "category": "ACCRUED_PURCHASES"
+    },
+    {
       "code": "2003",
       "name": "Accrued Salaries",
       "type": "LIABILITY",
@@ -236,6 +244,22 @@
       "normal_balance": "DEBIT",
       "parent_code": "5000",
       "category": "OPERATING_EXPENSE"
+    },
+    {
+      "code": "5004",
+      "name": "Purchase Expenditure (Non-Stocked)",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PURCHASE_EXPENDITURE"
+    },
+    {
+      "code": "5005",
+      "name": "Purchase Price Variance",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PRICE_VARIANCE"
     }
   ]
 }

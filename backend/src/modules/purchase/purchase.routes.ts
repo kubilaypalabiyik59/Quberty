@@ -12,6 +12,8 @@ import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
+import { createAndPostReceipt } from './productReceipt.service';
+import { createInvoice, postInvoice, runMatching, autoMatch } from './vendorInvoice.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -218,235 +220,71 @@ app.post('/orders/:id/confirm', requireRole('admin', 'store_manager'), async (c)
   return ok(c, null);
 });
 
-// RECEIVE PO — adds stock at the receive_location_id
+// ── Product receipt ───────────────────────────────────────────────────────────
+//
+// [OFFICIAL] a purchase order may carry MANY product receipts: "Each product
+// receipt represents a partial or complete delivery of the items on the purchase
+// order." This route therefore raises a document rather than flipping a status,
+// and the whole of the physical update lives in productReceipt.service.
+//
+// The legacy shape (`POST /orders/:id/receive` with a body full of nothing) still
+// works and still receives every outstanding line, so no caller breaks.
 app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c) => {
-  const body = await c.req.json();
-  const po = await db.purchaseOrder.findFirst({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: { in: ['CONFIRMED', 'DRAFT'] } },
-    include: { lines: true },
+  const body = await c.req.json().catch(() => ({} as any));
+
+  const result = await createAndPostReceipt(c.get('tenantId'), c.get('user').id, {
+    purchase_order_id: c.req.param('id'),
+    // The supplier's packing slip is the audit anchor. Older callers sent a URL to
+    // a scanned slip instead of its number; accept either rather than reject a
+    // request that used to work, and fall back to the order number so the field is
+    // never empty.
+    packing_slip: body.packing_slip ?? body.packing_slip_url ?? `receipt-${c.req.param('id').slice(0, 8)}`,
+    receipt_date: body.receipt_date ?? null,
+    location_id:  body.receive_location_id ?? body.location_id ?? null,
+    notes:        body.notes ?? null,
+    lines:        body.lines ?? undefined,
   });
-  if (!po) throw new AppError('PO not found or already received/cancelled', 404);
 
-  const locationId = body.receive_location_id || po.receive_location_id;
-  if (!locationId) throw new AppError('Please select a receive location before receiving this PO.', 400);
-
-  const packingSlipUrl: string | null = body.packing_slip_url || null;
-
-  // [OFFICIAL] a not-stocked item keeps no inventory transactions and its cost
-  // is expensed straight to the ledger. So it creates no InventoryStock, no
-  // FIFO batch and no InventoryTransaction on receipt - only a GL posting.
-  const policies = await resolveItemPolicies(c.get('tenantId'), po.lines.map((l) => l.product_id));
-
-  // [OFFICIAL] "Registration requirements" blocks a product receipt until an
-  // arrival registration exists. It applies to ALL receipts for the item, not
-  // only to purchase orders.
-  const needRegistration = po.lines.filter(
-    (l) => policies.get(l.product_id)?.registrationRequirements,
-  );
-  if (needRegistration.length > 0) {
-    const registered = await db.arrivalJournal.count({
-      where: { tenant_id: c.get('tenantId'), purchase_order_id: po.id, status: 'POSTED' },
-    });
-    if (registered === 0) {
-      const skus = await db.product.findMany({
-        where: { id: { in: needRegistration.map((l) => l.product_id) } },
-        select: { sku: true },
-      });
-      throw new AppError(
-        `${needRegistration.length} line(s) require arrival registration before a product receipt ` +
-          `can be posted (${skus.map((x) => x.sku).join(', ')}). Post an arrival journal for ` +
-          `${po.po_number} first.`,
-        409,
-        'REGISTRATION_REQUIRED',
-      );
-    }
-  }
-
-  for (const line of po.lines) {
-    const qty = Number(line.quantity);
-    const variantId = line.variant_id ?? null;
-
-    if (policies.get(line.product_id)?.stocked === false) {
-      // Still mark it received so the document closes; there is simply no
-      // inventory behind it.
-      await db.purchaseOrderLine.updateMany({
-        where: { id: line.id },
-        data: { received_qty: { increment: qty } },
-      });
-      continue;
-    }
-
-    const existing = await db.inventoryStock.findFirst({
-      where: { tenant_id: c.get('tenantId'), product_id: line.product_id, variant_id: variantId, location_id: locationId },
-    });
-
-    if (existing) {
-      await db.inventoryStock.update({ where: { id: existing.id }, data: { quantity: { increment: qty } } });
-    } else {
-      await db.inventoryStock.create({
-        data: { tenant_id: c.get('tenantId'), product_id: line.product_id, variant_id: variantId, location_id: locationId, quantity: qty, reserved_qty: 0 },
-      });
-    }
-
-    await db.inventoryTransaction.create({
-      data: {
-        tenant_id:        c.get('tenantId'),
-        transaction_type: 'PURCHASE_RECEIPT',
-        reference_type:   'PURCHASE_ORDER',
-        reference_id:     po.id,
-        reference_number: po.po_number,
-        product_id:       line.product_id,
-        variant_id:       variantId,
-        to_location_id:   locationId,
-        quantity:         qty,
-        unit_cost:        line.unit_cost,
-        notes:            `PO ${po.po_number}${packingSlipUrl ? ' · packing slip attached' : ''}`,
-        performed_by:     c.get('user').id,
-      },
-    });
-
-    await db.inventoryBatch.create({
-      data: {
-        tenant_id:    c.get('tenantId'),
-        product_id:   line.product_id,
-        variant_id:   variantId,
-        location_id:  locationId,
-        source_po_id: po.id,
-        po_number:    po.po_number,
-        quantity:     qty,
-        unit_cost:    Number(line.unit_cost),
-        received_at:  new Date(),
-      },
-    });
-
-    await db.purchaseOrderLine.updateMany({
-      where: { id: line.id },
-      data: { received_qty: { increment: qty } },
+  if (body.packing_slip_url) {
+    await db.purchaseOrder.updateMany({
+      where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+      data: { packing_slip_url: body.packing_slip_url },
     });
   }
 
-  const updateData: any = { status: 'RECEIVED', received_at: new Date(), received_by: c.get('user').id, receive_location_id: locationId };
-  if (packingSlipUrl) updateData.packing_slip_url = packingSlipUrl;
-  await db.purchaseOrder.updateMany({ where: { id: po.id }, data: updateData });
-
-  // ── Automatic Journal Entry ────────────────────────────────────────────────
-  //
-  // This block used to be wrapped in `try { … } catch { logger.error(…) }`, which
-  // meant a receipt could succeed with no GL entry and no error reaching the user
-  // — the worst instance of D-4, because the swallow was unconditional. The catch
-  // is gone: `resolvePostingAccounts_orExplain` decides, per tenant configuration,
-  // whether an unresolvable posting throws or is logged loudly and skipped.
-  const acc = await resolvePostingAccounts_orExplain(
-    c.get('tenantId'),
-    ['INVENTORY', 'VAT_INPUT', 'AP'] as const,
-    { document: `PO receipt ${po.po_number}`, partyId: po.supplier_id ?? null },
-  );
-
-  if (acc) {
-    // `subtotal` on the header is the agreed (gross) figure; the amount that
-    // capitalises is that less the recoverable tax. Debiting the gross would
-    // capitalise IVA that is going to be reclaimed, overstating both stock value
-    // and the COGS that later flows from it.
-    const ivaAmount   = Number(po.tax_amount);
-    const totalAmount = Number(po.total_amount);
-    const capitalised = Number((totalAmount - ivaAmount).toFixed(2));
-
-    // Split the debit by item group, and send not-stocked lines to expense
-    // rather than to inventory.
-    //
-    // [OFFICIAL] the inventory posting profile resolves by item Table | Group |
-    // All, so two products in different item groups may capitalise to different
-    // accounts. A single Inventory line for the whole receipt cannot say that.
-    const lineGross = (l: (typeof po.lines)[number]) => Number(l.line_total);
-    const grossTotal = po.lines.reduce((sTotal, l) => sTotal + lineGross(l), 0);
-    // Apportion the capitalised amount across lines in proportion to their share
-    // of the order, so the split always adds back to the same total.
-    const share = (l: (typeof po.lines)[number]) =>
-      grossTotal > 0 ? (lineGross(l) / grossTotal) * capitalised : 0;
-
-    const stockedLines = po.lines.filter((l) => policies.get(l.product_id)?.stocked !== false);
-    const expensedLines = po.lines.filter((l) => policies.get(l.product_id)?.stocked === false);
-
-    const stockedBuckets = groupByItemGroup(stockedLines, policies, (l) => l.product_id, share)
-      .filter((b) => b.amount > 0);
-    const expensedAmount = Number(expensedLines.reduce((sTotal, l) => sTotal + share(l), 0).toFixed(2));
-
-    const debits: { account_id: string; debit_amount: number; credit_amount: number; description: string }[] = [];
-
-    for (const b of stockedBuckets) {
-      const bucketAcc = await resolvePostingAccounts_orExplain(
-        c.get('tenantId'), ['INVENTORY'] as const,
-        {
-          document: `PO receipt ${po.po_number}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
-          partyId: po.supplier_id ?? null,
-          itemGroupId: b.itemGroupId ?? undefined,
-        },
-      );
-      if (bucketAcc) {
-        debits.push({
-          account_id: bucketAcc.INVENTORY,
-          debit_amount: b.amount,
-          credit_amount: 0,
-          description: `Inventory${b.itemGroupCode ? ` [${b.itemGroupCode}]` : ''} — ${po.po_number}`,
-        });
-      }
-    }
-
-    if (expensedAmount > 0) {
-      // A not-stocked purchase is an expense, not an asset. COGS is the closest
-      // configured expense posting type; a dedicated PURCHASE_EXPENSE type would
-      // be better and is noted in the setup checklist.
-      const expAcc = await resolvePostingAccounts_orExplain(
-        c.get('tenantId'), ['COGS'] as const,
-        { document: `PO receipt ${po.po_number} (not stocked)`, partyId: po.supplier_id ?? null },
-      );
-      if (expAcc) {
-        debits.push({
-          account_id: expAcc.COGS,
-          debit_amount: expensedAmount,
-          credit_amount: 0,
-          description: `Expensed (not stocked) — ${po.po_number}`,
-        });
-      }
-    }
-
-    // Rounding guard: apportioning by share can leave a cent, and an unbalanced
-    // journal is worse than a cent in the wrong bucket.
-    const debited = Number(debits.reduce((sTotal, d) => sTotal + d.debit_amount, 0).toFixed(2));
-    if (debits.length > 0 && debited !== capitalised) {
-      debits[0].debit_amount = Number((debits[0].debit_amount + (capitalised - debited)).toFixed(2));
-    }
-
-    if (debits.length > 0) {
-      // D-5: was `count() + 1` computed OUTSIDE any transaction, on a globally
-      // @unique column — the loosest of the three racing implementations.
-      const entryNumber = await nextJournalVoucher(c.get('tenantId'));
-
-      await db.journalEntry.create({
-        data: {
-          tenant_id:    c.get('tenantId'),
-          entry_number: entryNumber,
-          entry_date:   new Date(),
-          description:  `PO Receipt: ${po.po_number}`,
-          source_module: 'PURCHASE',
-          source_id:    po.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   c.get('user').id,
-          lines: {
-            create: [
-              ...debits,
-              { account_id: acc.VAT_INPUT, debit_amount: ivaAmount, credit_amount: 0,           description: `Recoverable input tax` },
-              { account_id: acc.AP,        debit_amount: 0,         credit_amount: totalAmount, description: `AP — ${po.supplier_id}` },
-            ],
-          },
-        },
-      });
-    }
-  }
-
-  return message(c, `PO ${po.po_number} received successfully. Stock updated.${packingSlipUrl ? ' Packing slip attached.' : ''}`);
+  return ok(c, result);
 });
+
+app.get('/orders/:id/receipts', async (c) => {
+  const receipts = await db.productReceipt.findMany({
+    where: { tenant_id: c.get('tenantId'), purchase_order_id: c.req.param('id') },
+    include: {
+      lines: { include: { product: { select: { sku: true, name: true } } }, orderBy: { sort_order: 'asc' } },
+    },
+    orderBy: { receipt_date: 'desc' },
+  });
+  return ok(c, receipts);
+});
+
+app.get('/receipts', async (c) => {
+  const { status, supplier_id } = c.req.query();
+  const receipts = await db.productReceipt.findMany({
+    where: {
+      tenant_id: c.get('tenantId'),
+      ...(status ? { status } : {}),
+      ...(supplier_id ? { supplier_id } : {}),
+    },
+    include: {
+      supplier:       { select: { code: true, name: true } },
+      purchase_order: { select: { po_number: true } },
+      lines:          { select: { id: true, quantity: true, matched_qty: true } },
+    },
+    orderBy: { created_at: 'desc' },
+    take: 200,
+  });
+  return ok(c, receipts);
+});
+
 
 app.post('/orders/:id/cancel', requireRole('admin'), async (c) => {
   await db.purchaseOrder.updateMany({
@@ -516,6 +354,177 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
   }
 
   return message(c, `PO ${po.po_number} marked as paid. Journal entry created.`);
+});
+
+// ── Vendor invoices ───────────────────────────────────────────────────────────
+//
+// [OFFICIAL] "There are several ways to enter a vendor invoice." Of the five, two
+// are in scope: from a confirmed purchase order, and standalone with no order at
+// all (a utility bill). The invoice register, the invoice pool and the approval
+// journal are deliberately not built — see docs/process/VENDOR_INVOICE.md §7.
+
+app.get('/invoices', async (c) => {
+  const { status, supplier_id, match } = c.req.query();
+  const invoices = await db.vendorInvoice.findMany({
+    where: {
+      tenant_id: c.get('tenantId'),
+      ...(status ? { status } : {}),
+      ...(supplier_id ? { supplier_id } : {}),
+      ...(match ? { header_match_status: match } : {}),
+    },
+    include: {
+      supplier:       { select: { code: true, name: true } },
+      purchase_order: { select: { po_number: true } },
+      lines:          { select: { id: true } },
+    },
+    orderBy: { created_at: 'desc' },
+    take: 200,
+  });
+  return ok(c, invoices);
+});
+
+app.get('/invoices/:id', async (c) => {
+  const invoice = await db.vendorInvoice.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    include: {
+      supplier:       true,
+      purchase_order: { select: { id: true, po_number: true, status: true } },
+      lines: {
+        include: {
+          product: { select: { sku: true, name: true } },
+          po_line: { select: { id: true, quantity: true, unit_cost: true, received_qty: true, invoiced_qty: true } },
+          matches: {
+            include: {
+              receipt_line: {
+                select: {
+                  id: true, quantity: true, net_unit_cost: true,
+                  receipt: { select: { receipt_number: true, packing_slip: true, receipt_date: true } },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { sort_order: 'asc' },
+      },
+    },
+  });
+  if (!invoice) throw new AppError('Vendor invoice not found', 404);
+  return ok(c, invoice);
+});
+
+app.post('/invoices', requireRole('admin', 'store_manager'), async (c) => {
+  const body = await c.req.json();
+  const result = await createInvoice(c.get('tenantId'), c.get('user').id, body);
+  return created(c, result);
+});
+
+/** Re-run matching without posting — the "Update match status" action. */
+app.post('/invoices/:id/match', requireRole('admin', 'store_manager'), async (c) => {
+  const outcome = await db.$transaction(async (tx) => {
+    await autoMatch(tx, c.get('tenantId'), c.req.param('id'), c.get('user').id);
+    return runMatching(tx, c.get('tenantId'), c.req.param('id'));
+  });
+  return ok(c, outcome);
+});
+
+/**
+ * [OFFICIAL] "select the Approve posting with matching discrepancies toggle on the
+ * Invoice matching details page before the invoice can be posted with price
+ * matching errors and quantity matching errors."
+ */
+app.post('/invoices/:id/approve-discrepancies', requireRole('admin'), async (c) => {
+  const updated = await db.vendorInvoice.updateMany({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'DRAFT' },
+    data: {
+      discrepancy_approved: true,
+      discrepancy_approved_by: c.get('user').id,
+      discrepancy_approved_at: new Date(),
+    },
+  });
+  if (updated.count === 0) throw new AppError('Invoice not found, or not in DRAFT', 404);
+  return ok(c, null);
+});
+
+app.post('/invoices/:id/post', requireRole('admin', 'store_manager'), async (c) => {
+  const result = await postInvoice(c.get('tenantId'), c.get('user').id, c.req.param('id'));
+  return ok(c, result);
+});
+
+app.post('/invoices/:id/cancel', requireRole('admin'), async (c) => {
+  const invoice = await db.vendorInvoice.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    select: { id: true, status: true, lines: { select: { id: true, matches: { select: { id: true, quantity: true, receipt_line_id: true } } } } },
+  });
+  if (!invoice) throw new AppError('Vendor invoice not found', 404);
+  if (invoice.status === 'POSTED') {
+    throw new AppError(
+      'A posted vendor invoice cannot be cancelled. Reverse it with a credit note so the ledger ' +
+        'keeps both sides of the correction.',
+      409,
+      'INVOICE_ALREADY_POSTED',
+    );
+  }
+
+  // Releasing the matches matters: a receipt line held by a cancelled invoice
+  // would otherwise stay unavailable to the invoice that eventually replaces it.
+  await db.$transaction(async (tx) => {
+    for (const line of invoice.lines) {
+      for (const m of line.matches) {
+        await tx.productReceiptLine.update({
+          where: { id: m.receipt_line_id }, data: { matched_qty: { decrement: Number(m.quantity) } },
+        });
+      }
+    }
+    await tx.vendorInvoiceMatch.deleteMany({ where: { invoice_line_id: { in: invoice.lines.map(l => l.id) } } });
+    await tx.vendorInvoiceLine.updateMany({
+      where: { invoice_id: invoice.id }, data: { matched_receipt_qty: 0 },
+    });
+    await tx.vendorInvoice.update({ where: { id: invoice.id }, data: { status: 'CANCELLED' } });
+  });
+  return ok(c, null);
+});
+
+/**
+ * Receive and invoice in one action.
+ *
+ * The anchor customer's goods usually arrive WITH the factura, and making the
+ * owner post two documents in sequence for that is exactly the enterprise
+ * ceremony this product exists to avoid. The two documents are still raised, and
+ * the accounting is identical — the accrual is created and reversed within
+ * seconds of each other. Only the number of clicks differs.
+ *
+ * `PurchaseParameters.receipt_invoice_flow` records which way a tenant works;
+ * both routes stay available regardless, because suppliers differ.
+ */
+app.post('/orders/:id/receive-and-invoice', requireRole('admin', 'store_manager'), async (c) => {
+  const body = await c.req.json();
+  if (!body.invoice_number || !body.invoice_date) {
+    throw new AppError('invoice_number and invoice_date are required — this action posts the factura too.', 400);
+  }
+
+  const receipt = await createAndPostReceipt(c.get('tenantId'), c.get('user').id, {
+    purchase_order_id: c.req.param('id'),
+    packing_slip: body.packing_slip ?? body.invoice_number,
+    receipt_date: body.receipt_date ?? body.invoice_date,
+    location_id:  body.receive_location_id ?? null,
+    lines:        body.lines ?? undefined,
+  });
+
+  const invoice = await createInvoice(c.get('tenantId'), c.get('user').id, {
+    purchase_order_id:         c.req.param('id'),
+    invoice_number:            body.invoice_number,
+    invoice_date:              body.invoice_date,
+    posting_date:              body.posting_date ?? body.invoice_date,
+    due_date:                  body.due_date ?? null,
+    supplier_tax_id:           body.supplier_tax_id ?? null,
+    fiscal_authorization_code: body.fiscal_authorization_code ?? null,
+    fiscal_control_code:       body.fiscal_control_code ?? null,
+    notes:                     body.notes ?? null,
+    auto_match:                true,
+  });
+
+  const posted = await postInvoice(c.get('tenantId'), c.get('user').id, invoice.id);
+  return created(c, { receipt, invoice: posted });
 });
 
 export default app;

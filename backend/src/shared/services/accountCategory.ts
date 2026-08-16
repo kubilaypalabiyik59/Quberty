@@ -34,6 +34,13 @@ export const ACCOUNT_CATEGORIES = [
   'OTHER_ASSET',
   // Liabilities
   'ACCOUNTS_PAYABLE',
+  /// Goods received but not yet invoiced. **[OFFICIAL]** D365 calls the posting
+  /// type *Purchase, accrual* and describes it as a clearing account: the product
+  /// receipt credits it, the vendor invoice debits it back. Its balance is
+  /// therefore a real KPI — GRNI, goods received not invoiced — and it must net to
+  /// zero once an order is fully received and invoiced.
+  /// learn.microsoft.com/dynamics365/finance/general-ledger/purchase-order-posting
+  'ACCRUED_PURCHASES',
   'VAT_PAYABLE', // output VAT — IVA débito fiscal, Umsatzsteuer, hesaplanan KDV
   'TURNOVER_TAX_PAYABLE', // Bolivia IT; no equivalent in TR/DE, which is fine
   'WITHHOLDING_TAX_PAYABLE', // Turkish tevkifat, and reverse-charge liabilities
@@ -48,6 +55,17 @@ export const ACCOUNT_CATEGORIES = [
   'REVENUE',
   'SALES_DISCOUNT',
   'COGS',
+  /// Purchases that never become inventory. **[OFFICIAL]** *Purchase expenditure
+  /// for expense* is "used when posting a product receipt or invoice for a
+  /// purchase order where the items aren't stocked". Until this existed, a
+  /// not-stocked purchase was expensed to COGS because that was the closest
+  /// configured account — a wrong account by approximation.
+  'PURCHASE_EXPENDITURE',
+  /// The difference between the price a receipt was valued at and the price the
+  /// vendor actually invoiced. **[OFFICIAL]** D365's *Stock variation* account,
+  /// "used when there's a difference in the unit price between product receipt
+  /// and invoice".
+  'PRICE_VARIANCE',
   'TURNOVER_TAX_EXPENSE', // Bolivia IT is an expense, not a receivable
   'OPERATING_EXPENSE',
   'PAYROLL_EXPENSE',
@@ -78,6 +96,9 @@ export const POSTING_TYPE_BY_CATEGORY: Record<PostingType, AccountCategory> = {
   VAT_INPUT:            'VAT_RECEIVABLE',
   COGS:                 'COGS',
   INVENTORY:            'INVENTORY',
+  PURCHASE_ACCRUAL:     'ACCRUED_PURCHASES',
+  PURCHASE_EXPENSE:     'PURCHASE_EXPENDITURE',
+  PRICE_VARIANCE:       'PRICE_VARIANCE',
   TAX_TURNOVER_EXPENSE: 'TURNOVER_TAX_EXPENSE',
   TAX_TURNOVER_PAYABLE: 'TURNOVER_TAX_PAYABLE',
   CASH:                 'CASH',
@@ -91,7 +112,25 @@ export const POSTING_TYPE_BY_CATEGORY: Record<PostingType, AccountCategory> = {
  * Posting types a tenant must have configured before it can trade.
  * TURNOVER_* are absent on purpose: Bolivia's IT has no counterpart in Turkey or
  * Germany, so requiring it would block onboarding in those markets.
+ *
+ * PURCHASE_ACCRUAL, PURCHASE_EXPENSE and PRICE_VARIANCE are absent for a
+ * different reason: they are only reachable once a tenant has switched on the
+ * separate receipt/invoice posting. Requiring them here would block every
+ * existing tenant from trading the moment this file shipped. They are required
+ * *conditionally* instead — see `postingTypesRequiredForPurchaseFlow`.
  */
 export const POSTING_TYPES_REQUIRED_TO_TRADE: PostingType[] = [
   'AR', 'AP', 'REVENUE', 'VAT_OUTPUT', 'VAT_INPUT', 'COGS', 'INVENTORY',
 ];
+
+/**
+ * What a tenant additionally needs once it posts receipts and invoices as two
+ * events. Called by the purchase flow rather than by provisioning, so that a
+ * tenant still on the single-voucher behaviour is never blocked by accounts it
+ * has no use for.
+ */
+export function postingTypesRequiredForPurchaseFlow(opts: {
+  postReceiptInLedger: boolean;
+}): PostingType[] {
+  return opts.postReceiptInLedger ? ['PURCHASE_ACCRUAL'] : [];
+}

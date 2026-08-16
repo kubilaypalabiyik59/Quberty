@@ -138,6 +138,14 @@
       "category": "ACCOUNTS_PAYABLE"
     },
     {
+      "code": "2106",
+      "name": "Compras por Facturar (mercadería recibida sin factura)",
+      "type": "LIABILITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "2100",
+      "category": "ACCRUED_PURCHASES"
+    },
+    {
       "code": "2104",
       "name": "IT por Pagar",
       "type": "LIABILITY",
@@ -240,6 +248,22 @@
       "normal_balance": "DEBIT",
       "parent_code": "5000",
       "category": "OPERATING_EXPENSE"
+    },
+    {
+      "code": "5302",
+      "name": "Compras No Inventariables",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PURCHASE_EXPENDITURE"
+    },
+    {
+      "code": "5304",
+      "name": "Variación de Precio de Compra",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "PRICE_VARIANCE"
     }
   ]
 }

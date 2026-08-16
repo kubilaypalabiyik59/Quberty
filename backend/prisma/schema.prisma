@@ -105,7 +105,7 @@ model Warehouse {
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())
 
-  site                Site                @relation(fields: [site_id], references: [id])
+  site                Site                  @relation(fields: [site_id], references: [id])
   zones               WarehouseZone[]
   purchase_orders     PurchaseOrder[]
   sales_orders        SalesOrder[]
@@ -117,6 +117,7 @@ model Warehouse {
   wave_templates      WaveTemplate[]
   quotations          SalesQuotation[]
   requisitions        PurchaseRequisition[]
+  product_receipts    ProductReceipt[]
   rfq_cases           RfqCase[]
 
   @@unique([tenant_id, code])
@@ -223,18 +224,18 @@ model Product {
   item_model_group_id String? @db.Uuid
   item_group_id       String? @db.Uuid
 
-  images            String[]
-  video_urls        String[]
-  is_active         Boolean  @default(true)
-  is_published      Boolean  @default(false)
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
+  images       String[]
+  video_urls   String[]
+  is_active    Boolean  @default(true)
+  is_published Boolean  @default(false)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
-  category               ProductCategory?       @relation(fields: [category_id], references: [id])
-  uom                    UnitOfMeasure?         @relation(fields: [uom_id], references: [id])
-  item_tax_group         ItemTaxGroup?          @relation(fields: [item_tax_group_id], references: [id])
-  item_model_group       ItemModelGroup?        @relation(fields: [item_model_group_id], references: [id])
-  item_group             ItemGroup?             @relation(fields: [item_group_id], references: [id])
+  category               ProductCategory?          @relation(fields: [category_id], references: [id])
+  uom                    UnitOfMeasure?            @relation(fields: [uom_id], references: [id])
+  item_tax_group         ItemTaxGroup?             @relation(fields: [item_tax_group_id], references: [id])
+  item_model_group       ItemModelGroup?           @relation(fields: [item_model_group_id], references: [id])
+  item_group             ItemGroup?                @relation(fields: [item_group_id], references: [id])
   variants               ProductVariant[]
   inventory_stock        InventoryStock[]
   inventory_transactions InventoryTransaction[]
@@ -247,6 +248,8 @@ model Product {
   requisition_lines      PurchaseRequisitionLine[]
   rfq_case_lines         RfqCaseLine[]
   rfq_request_lines      RfqRequestLine[]
+  receipt_lines          ProductReceiptLine[]
+  vendor_invoice_lines   VendorInvoiceLine[]
 
   @@unique([tenant_id, sku])
   @@map("products")
@@ -568,10 +571,12 @@ model Supplier {
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
-  purchase_orders   PurchaseOrder[]
-  tax_group         TaxGroup?                 @relation(fields: [tax_group_id], references: [id])
-  rfq_requests      RfqRequest[]
-  preferred_on_req  PurchaseRequisitionLine[] @relation("preferred_supplier")
+  purchase_orders  PurchaseOrder[]
+  tax_group        TaxGroup?                 @relation(fields: [tax_group_id], references: [id])
+  rfq_requests     RfqRequest[]
+  preferred_on_req PurchaseRequisitionLine[] @relation("preferred_supplier")
+  product_receipts ProductReceipt[]
+  vendor_invoices  VendorInvoice[]
 
   @@unique([tenant_id, code])
   @@map("suppliers")
@@ -620,6 +625,8 @@ model PurchaseOrder {
   warehouse        Warehouse           @relation(fields: [warehouse_id], references: [id])
   lines            PurchaseOrderLine[]
   arrival_journals ArrivalJournal[]
+  product_receipts ProductReceipt[]
+  vendor_invoices  VendorInvoice[]
 
   @@index([tenant_id, source_document_type, source_document_id])
   @@map("purchase_orders")
@@ -657,17 +664,388 @@ model PurchaseOrderLine {
   /// Points at `rfq_request_lines.id` or `purchase_requisition_lines.id`, per the
   /// header's `source_document_type`. Not an FK for the same reason the header
   /// pair is not.
-  source_line_id    String?  @db.Uuid
+  source_line_id    String? @db.Uuid
   /// Hook only — purchase agreements are deferred (SCOPE_AND_HOOKS.md §2), and
   /// the documented requirement is that consumption against a commitment must be
   /// traceable at line level or agreement fulfilment cannot be computed from
   /// history. Nothing reads it yet.
-  agreement_line_id String?  @db.Uuid
+  agreement_line_id String? @db.Uuid
 
-  purchase_order PurchaseOrder @relation(fields: [po_id], references: [id], onDelete: Cascade)
-  product        Product       @relation(fields: [product_id], references: [id])
+  /// How much of this line a posted vendor invoice has already claimed.
+  /// **[OFFICIAL]** the purchase order becomes *Invoiced* only when both the
+  /// invoice remainder and the deliver remainder reach zero, so the two
+  /// accumulators must be tracked separately — `received_qty` above cannot stand
+  /// in for this one.
+  invoiced_qty Decimal @default(0) @db.Decimal(12, 2)
+
+  /// Per-line override of the matching policy. **[OFFICIAL]** the legal-entity
+  /// policy "can be overridden for a specific vendor, item, or vendor and item
+  /// combination", and for a specific purchase order line, when the parameters
+  /// page permits it. NULL means "inherit from the resolved policy".
+  /// NONE | TWO_WAY | THREE_WAY
+  matching_policy String?
+
+  purchase_order PurchaseOrder        @relation(fields: [po_id], references: [id], onDelete: Cascade)
+  product        Product              @relation(fields: [product_id], references: [id])
+  receipt_lines  ProductReceiptLine[]
+  invoice_lines  VendorInvoiceLine[]
 
   @@map("purchase_order_lines")
+}
+
+// =============================================================================
+// PRODUCT RECEIPT — the physical half of a purchase
+//
+// **[OFFICIAL]** "A vendor invoice completes the cycle from purchase order to
+// product receipt to vendor invoice."
+// learn.microsoft.com/dynamics365/finance/accounts-payable/vendor-invoices-overview
+//
+// Before this existed, "received" was a status and a timestamp on the order
+// header. That made three things impossible: several deliveries against one
+// order, knowing WHICH delivery brought what, and three-way matching — which is
+// not a comparison of two numbers but a question about specific receipt lines.
+// =============================================================================
+
+model ProductReceipt {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// Our own document number, from the PRODUCT_RECEIPT sequence.
+  receipt_number String
+
+  /// **[OFFICIAL]** "During product receipt, specify a product receipt identifier,
+  /// which is typically a reference to the packing slip from the supplier. This
+  /// identifier is required for accounting, because it enables checks or audits of
+  /// supplier packing slips against what is received."
+  /// Required, for exactly that reason — it is the audit anchor, not a note.
+  packing_slip String
+
+  purchase_order_id String  @db.Uuid
+  supplier_id       String  @db.Uuid
+  warehouse_id      String  @db.Uuid
+  location_id       String? @db.Uuid
+
+  /// DRAFT | POSTED | CANCELLED
+  status       String   @default("DRAFT")
+  receipt_date DateTime @default(now()) @db.Date
+
+  /// The voucher this receipt raised, when receipt posting is enabled.
+  /// Null when `PurchaseParameters.post_product_receipt_in_ledger` is false, or
+  /// when every line belongs to an item model group with post_physical_inventory
+  /// off — both are legitimate configurations, not failures.
+  journal_entry_id String? @db.Uuid
+
+  /// **[OFFICIAL]** "When correcting a product receipt, you can only reduce the
+  /// received quantity. To raise the quantity, you must post a new product receipt
+  /// journal." A correction is therefore a new document pointing at the original,
+  /// never an edit of it — which is also what keeps the ledger reproducible.
+  corrects_receipt_id String? @db.Uuid
+
+  notes      String?
+  created_by String?   @db.Uuid
+  posted_at  DateTime?
+  posted_by  String?   @db.Uuid
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  purchase_order PurchaseOrder        @relation(fields: [purchase_order_id], references: [id])
+  supplier       Supplier             @relation(fields: [supplier_id], references: [id])
+  warehouse      Warehouse            @relation(fields: [warehouse_id], references: [id])
+  corrects       ProductReceipt?      @relation("ReceiptCorrection", fields: [corrects_receipt_id], references: [id])
+  corrected_by   ProductReceipt[]     @relation("ReceiptCorrection")
+  lines          ProductReceiptLine[]
+
+  @@unique([tenant_id, receipt_number])
+  @@index([tenant_id, purchase_order_id])
+  @@index([tenant_id, supplier_id, status])
+  @@map("product_receipts")
+}
+
+model ProductReceiptLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  receipt_id String  @db.Uuid
+  po_line_id String? @db.Uuid
+  product_id String  @db.Uuid
+  variant_id String? @db.Uuid
+
+  quantity Decimal @db.Decimal(12, 2)
+
+  /// The agreed price as it appears on the order — gross, i.e. what the supplier
+  /// will invoice. Kept so price matching has something to compare against.
+  unit_cost Decimal @db.Decimal(12, 4)
+
+  /// What actually capitalises: the agreed price less recoverable tax. Stored per
+  /// line, at receipt time, because the split depends on the tax codes in force on
+  /// that date and must not be recomputed from today's configuration.
+  ///
+  /// This column is also the fix for a real divergence: inventory batches used to
+  /// be written at the GROSS unit cost while the receipt voucher capitalised the
+  /// NET, so the inventory subledger and the general ledger disagreed by the VAT
+  /// on every single receipt.
+  net_unit_cost   Decimal @db.Decimal(12, 4)
+  line_net_amount Decimal @db.Decimal(14, 2)
+
+  /// How much of this receipt line vendor invoices have consumed. Maintained from
+  /// VendorInvoiceMatch, so an over-matched receipt is detectable.
+  matched_qty Decimal @default(0) @db.Decimal(12, 2)
+
+  location_id String? @db.Uuid
+  sort_order  Int     @default(0)
+
+  receipt ProductReceipt       @relation(fields: [receipt_id], references: [id], onDelete: Cascade)
+  po_line PurchaseOrderLine?   @relation(fields: [po_line_id], references: [id])
+  product Product              @relation(fields: [product_id], references: [id])
+  matches VendorInvoiceMatch[]
+
+  @@index([receipt_id])
+  @@index([po_line_id])
+  @@map("product_receipt_lines")
+}
+
+// =============================================================================
+// VENDOR INVOICE — the financial half
+//
+// The supplier's document, not ours. It carries THEIR number, THEIR date, and in
+// Bolivia their NIT and factura authorisation, because those are what the IVA
+// purchase ledger is built from.
+//
+// **[OFFICIAL]** an invoice is not a projection of the order: "You can add a line
+// that wasn't on the purchase order… The line is included only in matching
+// policies for invoice totals." And an invoice need not reference an order at all
+// — a utility bill is a vendor invoice with no purchase order.
+// =============================================================================
+
+model VendorInvoice {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// The supplier's invoice/factura number. Unique per supplier per tenant, never
+  /// globally — two suppliers both numbering "0001" is normal. **[OFFICIAL]**
+  /// duplicate handling is itself a parameter ("Check the invoice number used →
+  /// Reject duplicate"), so this constraint is deliberately per-supplier.
+  invoice_number  String
+  /// Our internal handle, from the VENDOR_INVOICE sequence, so the document can be
+  /// referenced in the ledger without depending on the supplier's numbering.
+  internal_number String
+
+  supplier_id       String  @db.Uuid
+  purchase_order_id String? @db.Uuid
+
+  invoice_date DateTime  @db.Date
+  posting_date DateTime  @db.Date
+  due_date     DateTime? @db.Date
+
+  /// DRAFT | POSTED | CANCELLED
+  status String @default("DRAFT")
+
+  /// ── Fiscal document identity ─────────────────────────────────────────────
+  /// Bolivia: NIT del proveedor, código de autorización, código de control — the
+  /// three fields the IVA purchase ledger (Libro de Compras) is built from. Kept
+  /// nullable and generically named because Turkey (e-Fatura ETTN) and Germany
+  /// (Rechnungsnummer + USt-IdNr) fill the same slots with different content.
+  supplier_tax_id           String?
+  fiscal_authorization_code String?
+  fiscal_control_code       String?
+
+  currency String @default("BOB")
+
+  /// Money, split exactly as the purchase side already splits it: what
+  /// capitalises, what is reclaimable, what the supplier is owed.
+  subtotal            Decimal @default(0) @db.Decimal(14, 2)
+  tax_amount          Decimal @default(0) @db.Decimal(14, 2)
+  non_recoverable_tax Decimal @default(0) @db.Decimal(14, 2)
+  total_amount        Decimal @default(0) @db.Decimal(14, 2)
+
+  /// ── Matching state ───────────────────────────────────────────────────────
+  /// **[OFFICIAL]** the match status is a STORED, refreshable value in D365
+  /// ("Last match" status, "Automatically update invoice header match status"),
+  /// not something recomputed on read. History cannot be re-derived reliably once
+  /// tolerances or policies change, so the verdict is persisted with the document.
+  ///
+  /// PENDING | PASSED | FAILED | NOT_APPLICABLE
+  header_match_status String    @default("PENDING")
+  totals_match_status String    @default("NOT_APPLICABLE")
+  last_matched_at     DateTime?
+
+  /// **[OFFICIAL]** with "Post invoice with discrepancies = Require approval", the
+  /// "Approve posting with matching discrepancies" toggle must be set before the
+  /// invoice can post with price or quantity errors.
+  discrepancy_approved    Boolean   @default(false)
+  discrepancy_approved_by String?   @db.Uuid
+  discrepancy_approved_at DateTime?
+
+  journal_entry_id String? @db.Uuid
+
+  notes      String?
+  created_by String?   @db.Uuid
+  posted_at  DateTime?
+  posted_by  String?   @db.Uuid
+  paid_at    DateTime?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  supplier       Supplier            @relation(fields: [supplier_id], references: [id])
+  purchase_order PurchaseOrder?      @relation(fields: [purchase_order_id], references: [id])
+  lines          VendorInvoiceLine[]
+
+  @@unique([tenant_id, supplier_id, invoice_number])
+  @@unique([tenant_id, internal_number])
+  @@index([tenant_id, status, invoice_date])
+  @@index([tenant_id, purchase_order_id])
+  @@map("vendor_invoices")
+}
+
+model VendorInvoiceLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  invoice_id String  @db.Uuid
+  po_line_id String? @db.Uuid
+  product_id String? @db.Uuid
+  variant_id String? @db.Uuid
+
+  /// Free text for a line with no product — a service, a utility bill, or the
+  /// "line that wasn't on the purchase order" the documentation allows.
+  description String?
+
+  quantity   Decimal @db.Decimal(12, 2)
+  unit_price Decimal @db.Decimal(12, 4)
+
+  /// **[OFFICIAL]** net amount = (unit price x line quantity) + line charges
+  /// - line discounts; net unit price = net amount / quantity. Both matching
+  /// flavours are computed from these two, so they are stored, not derived.
+  charges_amount  Decimal @default(0) @db.Decimal(14, 2)
+  discount_amount Decimal @default(0) @db.Decimal(14, 2)
+  line_net_amount Decimal @db.Decimal(14, 2)
+
+  /// Per-line tax, same hook the order and quotation lines carry.
+  item_tax_group_id String?  @db.Uuid
+  tax_amount        Decimal? @db.Decimal(14, 2)
+  tax_base          Decimal? @db.Decimal(14, 2)
+
+  /// The policy and tolerance that were actually applied, resolved at entry and
+  /// frozen. Re-resolving them later against changed configuration would silently
+  /// rewrite the verdict on a posted document.
+  matching_policy     String  @default("NONE")
+  price_tolerance_pct Decimal @default(0) @db.Decimal(6, 4)
+
+  /// Accumulated from VendorInvoiceMatch. **[OFFICIAL]** three-way matching
+  /// compares this to `quantity`; an invoice line matched to no receipt at all
+  /// fails, which is the failure the official example is built around.
+  matched_receipt_qty Decimal @default(0) @db.Decimal(12, 2)
+
+  /// PENDING | PASSED | FAILED | NOT_APPLICABLE — one verdict per official
+  /// matching flavour, because they fail independently and for different reasons.
+  price_match_status       String @default("NOT_APPLICABLE")
+  price_total_match_status String @default("NOT_APPLICABLE")
+  receipt_qty_match_status String @default("NOT_APPLICABLE")
+
+  /// Signed, so an under-charge is distinguishable from an over-charge.
+  price_variance_pct Decimal? @db.Decimal(9, 4)
+
+  sort_order Int @default(0)
+
+  invoice VendorInvoice        @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  po_line PurchaseOrderLine?   @relation(fields: [po_line_id], references: [id])
+  product Product?             @relation(fields: [product_id], references: [id])
+  matches VendorInvoiceMatch[]
+
+  @@index([invoice_id])
+  @@index([po_line_id])
+  @@map("vendor_invoice_lines")
+}
+
+/// The join three-way matching actually requires.
+///
+/// **[OFFICIAL]** "if there are multiple product receipts for a single invoice
+/// line, you need to run the process multiple times to achieve the full quantity
+/// match", and an invoice may be built from "specific product receipt line items
+/// from multiple purchase orders". One invoice line therefore consumes several
+/// receipt lines, partially. A computed comparison cannot express that, and cannot
+/// be re-audited after posting; a match row can.
+model VendorInvoiceMatch {
+  id              String @id @default(uuid()) @db.Uuid
+  tenant_id       String @db.Uuid
+  invoice_line_id String @db.Uuid
+  receipt_line_id String @db.Uuid
+
+  /// The quantity of the receipt line consumed by this invoice line. May be less
+  /// than either side — partial matching is the documented normal case.
+  quantity Decimal @db.Decimal(12, 2)
+
+  created_at DateTime @default(now())
+  created_by String?  @db.Uuid
+
+  invoice_line VendorInvoiceLine  @relation(fields: [invoice_line_id], references: [id], onDelete: Cascade)
+  receipt_line ProductReceiptLine @relation(fields: [receipt_line_id], references: [id])
+
+  @@unique([tenant_id, invoice_line_id, receipt_line_id])
+  @@index([tenant_id, receipt_line_id])
+  @@map("vendor_invoice_matches")
+}
+
+/// Which matching policy applies to which purchase.
+///
+/// **[OFFICIAL]** the hierarchy is *Item and vendor → Item → Vendor → Legal
+/// entity*. Note that the most specific level is an INTERSECTION of two axes, so
+/// this table is deliberately two-axis — unlike `PostingProfile`, which is a
+/// single axis with flat precedence and therefore cannot express "this item from
+/// that vendor" at all. That asymmetry is a recorded decision, not an oversight:
+/// see docs/process/VENDOR_INVOICE.md §5.
+model MatchingPolicy {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// ALL | ITEM | ITEM_GROUP
+  item_scope     String  @default("ALL")
+  item_scope_id  String? @db.Uuid
+  /// ALL | PARTY | PARTY_GROUP
+  party_scope    String  @default("ALL")
+  party_scope_id String? @db.Uuid
+
+  /// NONE | TWO_WAY | THREE_WAY
+  policy String
+
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([tenant_id, legal_entity_id, item_scope, item_scope_id, party_scope, party_scope_id])
+  @@index([tenant_id, item_scope, party_scope])
+  @@map("matching_policies")
+}
+
+/// Allowed price variance, resolved on the same two axes.
+///
+/// **[OFFICIAL]** the search order is spelled out as nine cells —
+/// Table/Table, Table/Group, Table/All, Group/Table, Group/Group, Group/All,
+/// All/Table, All/Group, All/All — and "the default legal entity price tolerance
+/// is 0 percent… You can't delete the record for the default legal entity price
+/// tolerance." The undeletable All/All row is enforced in the service, not by the
+/// schema, so that a tenant can still be provisioned in one statement.
+model PriceTolerance {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  item_scope     String  @default("ALL")
+  item_scope_id  String? @db.Uuid
+  party_scope    String  @default("ALL")
+  party_scope_id String? @db.Uuid
+
+  /// **[OFFICIAL]** "you can't enter a negative number as the price tolerance
+  /// percentage… By default, negative price discrepancies are allowed." Whether a
+  /// negative variance is flagged is a separate switch on the parameters page.
+  tolerance_pct Decimal @default(0) @db.Decimal(6, 4)
+
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([tenant_id, legal_entity_id, item_scope, item_scope_id, party_scope, party_scope_id])
+  @@index([tenant_id, item_scope, party_scope])
+  @@map("price_tolerances")
 }
 
 // =====================
@@ -702,11 +1080,11 @@ model Customer {
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt
 
-  sales_orders    SalesOrder[]
-  tax_group       TaxGroup?       @relation(fields: [tax_group_id], references: [id])
-  converted_from  Lead[]          @relation("converted_customer")
-  opportunities   Opportunity[]
-  quotations      SalesQuotation[]
+  sales_orders   SalesOrder[]
+  tax_group      TaxGroup?        @relation(fields: [tax_group_id], references: [id])
+  converted_from Lead[]           @relation("converted_customer")
+  opportunities  Opportunity[]
+  quotations     SalesQuotation[]
 
   @@unique([tenant_id, code])
   @@map("customers")
@@ -1289,7 +1667,7 @@ model SalesParameters {
   ///
   /// Default validity window for a new quotation. Business Central expresses the
   /// same idea as "Quote Validity Calculation" on Sales & Receivables Setup.
-  quotation_validity_days          Int     @default(30)
+  quotation_validity_days           Int     @default(30)
   /// Force every quotation to hang off an opportunity. False by default —
   /// requiring it would make the simple "quote a walk-in customer" case
   /// two documents long.
@@ -1299,7 +1677,7 @@ model SalesParameters {
   /// step first; for an SME product the extra click buys nothing, but a tenant
   /// that wants master-data control can turn it off and be forced to convert
   /// deliberately.
-  auto_convert_lead_on_confirm     Boolean @default(true)
+  auto_convert_lead_on_confirm      Boolean @default(true)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1316,11 +1694,64 @@ model PurchaseParameters {
   tenant_id       String  @db.Uuid
   legal_entity_id String? @db.Uuid
 
-  /// NONE | TWO_WAY | THREE_WAY — mirrors the D365 line matching policy. NONE
-  /// today because the vendor invoice document does not exist yet; the column is
-  /// the hook so enabling matching later is configuration, not a migration.
+  /// NONE | TWO_WAY | THREE_WAY — **[OFFICIAL]** the legal-entity default line
+  /// matching policy. Still NONE by default so an existing tenant's behaviour is
+  /// unchanged until it opts in; the vendor invoice document now exists, so this
+  /// is a live switch rather than a hook.
   line_matching_policy String  @default("NONE")
+  /// The All/All tolerance row. **[OFFICIAL]** "The default legal entity price
+  /// tolerance is 0 percent… You can't delete the record for the default."
   price_tolerance_pct  Decimal @default(0) @db.Decimal(6, 4)
+
+  /// ── Invoice validation (AP parameters → Invoice validation tab) ──────────
+  ///
+  /// **[OFFICIAL]** whether the physical transaction reaches the ledger at all is
+  /// a parameter ("Post product receipt in ledger"), separate from the item model
+  /// group's post_physical_inventory. FALSE keeps the pre-existing behaviour, in
+  /// which one voucher at receipt did the physical and financial work together —
+  /// so no tenant's books change until this is deliberately turned on.
+  post_product_receipt_in_ledger Boolean @default(false)
+
+  /// SEPARATE | COMBINED | EITHER — how the two documents reach the user.
+  /// SEPARATE: the warehouse posts a receipt, the office posts the invoice later.
+  /// COMBINED: one action raises both, for goods that arrive with their factura.
+  /// EITHER: both paths available, which is the anchor customer's reality.
+  /// This is presentation and defaulting only — the documents and the postings are
+  /// identical in all three cases.
+  receipt_invoice_flow String @default("EITHER")
+
+  /// **[OFFICIAL]** "Select if approval is required before an invoice that
+  /// contains discrepancies for invoice matching can be posted."
+  /// ALLOW_WITH_WARNING | REQUIRE_APPROVAL
+  post_invoice_with_discrepancies String @default("ALLOW_WITH_WARNING")
+
+  /// **[OFFICIAL]** whether a more specific policy than the legal-entity default
+  /// may be applied per vendor, item, combination, or purchase order line.
+  allow_matching_policy_override Boolean @default(true)
+
+  /// **[OFFICIAL]** invoice totals matching compares six totals on the invoice
+  /// against totals expected from the order's prices and the invoice's quantities.
+  match_invoice_totals         Boolean @default(false)
+  invoice_totals_tolerance_pct Decimal @default(0) @db.Decimal(6, 4)
+
+  /// **[OFFICIAL]** price totals matching — "useful when the vendor sends multiple
+  /// invoices for the same purchase order line", comparing the accumulated invoiced
+  /// net amount for an order line against the order's net amount. A not-to-exceed
+  /// control, by percentage, amount, or both.
+  /// NONE | PERCENTAGE | AMOUNT | PERCENTAGE_AND_AMOUNT
+  match_price_totals           String   @default("NONE")
+  price_total_tolerance_pct    Decimal  @default(0) @db.Decimal(6, 4)
+  price_total_tolerance_amount Decimal? @db.Decimal(14, 2)
+
+  /// **[OFFICIAL]** "By default, the system takes the quantities from the product
+  /// receipt", with five documented options.
+  /// PRODUCT_RECEIPT | ORDERED | RECEIVE_NOW | REGISTERED
+  default_invoice_quantity String @default("PRODUCT_RECEIPT")
+
+  /// **[OFFICIAL]** "Display unit price match icon … If greater than or less than
+  /// tolerance" — whether a negative variance (the vendor undercharged) is flagged
+  /// too. Negative discrepancies are allowed by default.
+  flag_negative_price_variance Boolean @default(false)
 
   /// Whether input IVA is recognised at product receipt or at the vendor factura.
   /// Skarpine recognises at receipt today; whether Bolivian law permits that is an
@@ -1336,7 +1767,7 @@ model PurchaseParameters {
   /// owner decides and buys, and forcing an internal requisition on a
   /// three-store retailer is exactly the enterprise ceremony this product is
   /// meant to avoid.
-  require_requisition_for_po Boolean @default(false)
+  require_requisition_for_po     Boolean  @default(false)
   /// Whether an approval step exists at all. When false, a submitted
   /// requisition is approved immediately — the D365 "automatically approve"
   /// workflow configuration, expressed as a parameter rather than a workflow
@@ -1348,7 +1779,7 @@ model PurchaseParameters {
   requisition_approval_threshold Decimal? @db.Decimal(14, 2)
   /// Default number of days a vendor has to respond to an RFQ. Presentation of
   /// the deadline only — nothing expires automatically.
-  rfq_response_days Int @default(7)
+  rfq_response_days              Int      @default(7)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1890,13 +2321,13 @@ model Lead {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  converted_customer  Customer?        @relation("converted_customer", fields: [converted_customer_id], references: [id])
+  converted_customer Customer?        @relation("converted_customer", fields: [converted_customer_id], references: [id])
   /// Opportunities still ADDRESSED to this lead (not yet qualified).
-  opportunities       Opportunity[]    @relation("opportunity_party")
+  opportunities      Opportunity[]    @relation("opportunity_party")
   /// Opportunities that CAME FROM this lead, whoever they are addressed to now.
   /// This is the one that survives qualification.
-  originated          Opportunity[]    @relation("opportunity_origin")
-  quotations          SalesQuotation[]
+  originated         Opportunity[]    @relation("opportunity_origin")
+  quotations         SalesQuotation[]
 
   @@unique([tenant_id, lead_number])
   @@index([tenant_id, status])
@@ -2022,7 +2453,7 @@ model SalesQuotation {
   notes        String?
 
   /// Revision chain. `revision` is 0 for the original.
-  revision       Int     @default(0)
+  revision        Int     @default(0)
   revised_from_id String? @db.Uuid
 
   /// Set on CONFIRMED. The reverse direction (`SalesOrder.source_document_id`)

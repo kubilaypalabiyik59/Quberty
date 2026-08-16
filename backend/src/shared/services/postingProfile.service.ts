@@ -30,6 +30,13 @@ export type PostingType =
   | 'VAT_INPUT'
   | 'COGS'
   | 'INVENTORY'
+  /// Goods received not invoiced — the clearing liability a product receipt
+  /// credits and a vendor invoice debits back. **[OFFICIAL]** *Purchase, accrual*.
+  | 'PURCHASE_ACCRUAL'
+  /// Not-stocked purchases. **[OFFICIAL]** *Purchase expenditure for expense*.
+  | 'PURCHASE_EXPENSE'
+  /// Receipt price vs invoice price. **[OFFICIAL]** *Stock variation*.
+  | 'PRICE_VARIANCE'
   | 'TAX_TURNOVER_EXPENSE'
   | 'TAX_TURNOVER_PAYABLE'
   | 'CASH'
