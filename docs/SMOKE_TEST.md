@@ -7,6 +7,49 @@ Start with §1 — it is the bug you actually hit.
 
 ---
 
+## 0. Executed via Playwright — results
+
+Run at Kubi's request rather than left as instructions. Every assertion below was driven through the
+real browser against the running app.
+
+| § | Check | Result |
+|---|---|---|
+| 1 | Blocking reason, nothing filled | ✅ "Choose a warehouse." · submit disabled |
+| 1 | …warehouse chosen | ✅ "Add at least one product line." |
+| 1 | …product chosen | ✅ reason clears, submit enables |
+| 1 | …quantity set to 0 | ✅ "Every product line needs a quantity greater than zero." |
+| 1 | Server rejects the POST | ✅ error renders **inside** the dialog (`role="alert"`), dialog stays open |
+| 1 | Happy path | ✅ PR-2026-00016 created, DRAFT |
+| 2 | Quotation QT-2026-00026, gross 14 990,00 | ✅ IVA **1 948,70** = exactly 13% · net 13 041,30 · total unchanged at 14 990,00 |
+| 2 | Effective burden on the net | ✅ 14,9425% |
+| 2 | PO-2026-00027 (raised after the fix) | ✅ tax **325,00** = 13,00% · total **2 500,00** · inventory 2 175,00 |
+| 3 | Coverage endpoint | ✅ 4 of 8 products unassigned (Kubi assigned four during the run) |
+| 3 | Guard on a product with transactions | ✅ `PUT 409` → confirm → `PUT 200`, four times, from a real user |
+| 5 | Quotation chain strip | ✅ Lead *not used* → OPP-2026-00013 → QT-2026-00026 → SO-2026-00060 |
+| 5 | RFQ chain strip | ✅ PR-2026-00014 → RFQ-2026-00013 → Purchase order *awarded* |
+| 5 | Cheapest marker survives the award | ✅ on AIR-MAX it stays on the **rejected** vendor's 90,00, not the winner's 95,00 |
+
+### Two things the run surfaced
+
+**Old purchase orders still carry the old arithmetic — this is intended.**
+
+```
+PO-2026-00027  RFQ     tax 325,00   total 2 500,00   effective 13,00%   ← after the fix
+PO-2026-00023  RFQ     tax 287,61   total 2 787,61   effective 11,50%   ← before
+PO-2026-00014  DIRECT  tax  28,76   total   278,76   effective 11,50%   ← before
+```
+
+Posted documents were deliberately not restated (§5 of BOLIVIA_TAX_BASIS.md), so the list holds two
+arithmetics side by side until the historical correction is decided. Expected, not a defect.
+
+**My verification script was littering.** Each `--keep` run minted a new `Proveedor Rival` supplier;
+three accumulated. Fixed — it now reuses one `E2E-RIVAL` fixture. The three existing strays each hold
+a purchase order from an earlier run, so `scripts/cleanupE2EFixtures.ts` correctly refuses to delete
+them; run it with `--apply` after removing those POs if you want them gone. **Do not delete
+PO-2026-00027** — it is the evidence that the tax fix works.
+
+---
+
 ## 1. The requisition dialog (the thing that did not work)
 
 **`/procurement/requisitions` → "New requisition"**

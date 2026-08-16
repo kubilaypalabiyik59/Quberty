@@ -299,16 +299,27 @@ function heading(s: string) {
   note('RFQ number', rfq.rfq_number);
 
   // Two vendors. The tenant has one supplier, so a second is created for the run.
-  const existingSupplier = await db.supplier.findFirst({ where: { tenant_id: tenant.id }, select: { id: true, code: true, name: true } });
-  const rival = await db.supplier.create({
-    data: {
-      tenant_id: tenant.id,
-      code: `E2E-${Date.now().toString().slice(-6)}`,
-      name: `Proveedor Rival ${MARK}`,
-      country: 'BO',
-      currency: 'BOB',
-    },
+  const existingSupplier = await db.supplier.findFirst({
+    where: { tenant_id: tenant.id, code: { not: { startsWith: 'E2E-' } } },
+    select: { id: true, code: true, name: true },
   });
+  if (!existingSupplier) throw new Error('need at least one real supplier');
+
+  // ONE rival, reused across runs. An earlier version minted a new supplier every
+  // time, so each `--keep` run left another "Proveedor Rival" behind and the
+  // supplier list slowly filled with test data.
+  const RIVAL_CODE = 'E2E-RIVAL';
+  const rival =
+    (await db.supplier.findFirst({ where: { tenant_id: tenant.id, code: RIVAL_CODE } })) ??
+    (await db.supplier.create({
+      data: {
+        tenant_id: tenant.id,
+        code: RIVAL_CODE,
+        name: 'Proveedor Rival (verification fixture)',
+        country: 'BO',
+        currency: 'BOB',
+      },
+    }));
   const supplierIds = [existingSupplier!.id, rival.id];
 
   await inviteVendors(tenant.id, rfq.id, supplierIds);
@@ -473,7 +484,10 @@ function heading(s: string) {
     await db.purchaseOrder.deleteMany({ where: { id: { in: created.poIds } } });
     await db.rfqCase.deleteMany({ where: { id: { in: created.rfqIds } } });
     await db.purchaseRequisition.deleteMany({ where: { id: { in: created.requisitionIds } } });
-    await db.supplier.deleteMany({ where: { id: rival.id } });
+    // Only if nothing else references it — the fixture is reused across runs and
+    // a `--keep` run may have left a purchase order pointing at it.
+    const rivalPos = await db.purchaseOrder.count({ where: { supplier_id: rival.id } });
+    if (rivalPos === 0) await db.supplier.deleteMany({ where: { id: rival.id } });
 
     // Scoped to THIS run's ids, not to global counts. A previous `--keep` run
     // leaves documents behind on purpose, and a global "must be zero" assertion
