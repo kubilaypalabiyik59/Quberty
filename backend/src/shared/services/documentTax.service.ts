@@ -110,14 +110,25 @@ export interface PurchaseDocumentMoney {
   source: 'ENGINE' | 'LEGACY';
 }
 
-export async function computePurchaseMoney(
-  tenantId: string,
-  /** The amount agreed with the supplier, as it appears on their invoice. */
-  amount: number,
-  ctx: Omit<DocumentTaxContext, 'side'> = {},
-): Promise<PurchaseDocumentMoney> {
-  const tax = await computeDocumentTax(tenantId, amount, { ...ctx, side: 'PURCHASE' });
-
+/**
+ * The pure half — split a tax result into the three figures a purchase document
+ * posts. Extracted from `computePurchaseMoney` so it can be tested against
+ * several jurisdictions without a database.
+ *
+ * There is **no jurisdiction branch here, and there must never be one.** The
+ * three figures fall out of what the engine already returned:
+ *
+ *   Bolivia, IVA por dentro (inclusive, GROSS)
+ *     agreed 2 500 → total 2 500 · recoverable 325 · net 2 175
+ *     the tax was already inside the agreed price, so AP owes exactly it
+ *
+ *   Turkey / Germany / Bolivia post-Ley-1733 (exclusive, NET)
+ *     agreed 2 500 → total 2 825 · recoverable 325 · net 2 500
+ *     the tax is added, so AP owes more than the agreed price
+ *
+ * Same code, opposite arithmetic, decided entirely by TaxCode rows.
+ */
+export function splitPurchaseMoney(tax: DocumentTaxResult): PurchaseDocumentMoney {
   const recoverable = tax.lines
     .filter((l) => l.is_recoverable)
     .reduce((s, l) => s + l.amount, 0);
@@ -136,6 +147,17 @@ export async function computePurchaseMoney(
     total: Number(tax.total.toFixed(2)),
     source: tax.source,
   };
+}
+
+export async function computePurchaseMoney(
+  tenantId: string,
+  /** The amount agreed with the supplier, as it appears on their invoice. */
+  amount: number,
+  ctx: Omit<DocumentTaxContext, 'side'> = {},
+): Promise<PurchaseDocumentMoney> {
+  return splitPurchaseMoney(
+    await computeDocumentTax(tenantId, amount, { ...ctx, side: 'PURCHASE' }),
+  );
 }
 
 export async function computeDocumentTax(

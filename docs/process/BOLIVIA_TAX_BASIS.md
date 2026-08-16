@@ -130,6 +130,45 @@ All three purchase paths — direct PO, requisition → PO, RFQ award → PO —
 
 ---
 
+## 4b. Does this break the parametric configuration? — Kubi's question, answered by test
+
+The fair worry: teaching the engine an arithmetic almost nobody else uses could smuggle Bolivia back
+into the code that the configuration foundation exists to keep country-independent.
+
+**Audited.** `grep -rE "0\.13|1\.13|0\.03"` over `src/`, excluding tests, returns **one comment line**
+and `config/tax.ts`. There is no hardcoded rate in the tax engine, in `documentTax.service.ts`, or in
+any posting path. `base_kind` is a column read at runtime, not a branch.
+
+**Proven, not asserted.** `src/__tests__/jurisdictionPortability.test.ts` runs **one code path** over
+four configurations that differ only in `TaxCode` rows:
+
+| Same input: 1 000 | Sales total | Purchase, agreed 2 500 → AP owes | recoverable |
+|---|---:|---:|---:|
+| Bolivia today (inclusive, GROSS) | 1 000 | 2 500 | 325 |
+| Bolivia post-1733 (exclusive, NET) | 1 130 | 2 825 | 325 |
+| Turkey KDV 20% | 1 200 | 3 000 | 500 |
+| Germany USt 19% | 1 190 | 2 975 | 475 |
+
+Four different, each-correct answers, no jurisdiction branch. The suite also invents a country that
+was never coded for — 5% on the gross — and gets the right answer, which is the actual test of
+"adding a jurisdiction is adding rows".
+
+The pure derivation was extracted as `splitPurchaseMoney` precisely so this could be tested without a
+database.
+
+### The two honest holes
+
+1. **`config/tax.ts` is hardcoded Bolivia *and* still contains the old, wrong formula.** It is the
+   legacy fallback for a tenant with no tax setup, and `documentTax.service.ts` logs a warning
+   whenever it fires. It should be deleted once every tenant is provisioned — that was already true
+   before this change; it is now also *wrong*, not merely inflexible.
+2. **`reportTaxBasisImpact.ts` originally hardcoded 13% and 3%.** Fixed in the same pass: it now runs
+   the real engine over the tenant's own codes and produces the identical Bs 637,47, which is what
+   demonstrates the generalisation is behaviour-preserving. The only jurisdiction-shaped thing left
+   in it is a currency→reason lookup table, stated on screen before anything is written.
+
+---
+
 ## 5. What was deliberately NOT done
 
 **No posted document was restated.** The 27 issued facturas keep the amounts they were issued with.
