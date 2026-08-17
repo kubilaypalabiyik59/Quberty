@@ -30,7 +30,8 @@
         "posting_type_payable": "TAX_TURNOVER_PAYABLE",
         "posting_type_receivable": "TAX_TURNOVER_EXPENSE",
         "base_kind": "GROSS",
-        "note": "Ley 843 art. 74: the base is 'los ingresos brutos devengados ... el valor o monto total ... devengados en concepto de venta de bienes' - the invoiced amount, not the amount left after IVA. Hence base_kind = GROSS."
+        "applies_to": "SALES",
+        "note": "Ley 843 art. 74: the base is 'los ingresos brutos devengados ... el valor o monto total ... devengados en concepto de venta de bienes' - the invoiced amount, not the amount left after IVA. Hence base_kind = GROSS. The same sentence is why applies_to = SALES: IT is a tax on gross INCOME, and a purchase is the supplier's income rather than ours - they owe their own IT on it and have priced it in. Before migration 020 this code was evaluated on vendor invoices too."
       }
     ],
     "tax_groups": [

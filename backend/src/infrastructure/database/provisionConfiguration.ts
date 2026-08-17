@@ -515,6 +515,10 @@ async function provisionTax(
         rate: c.rate,
         is_inclusive: c.is_inclusive,
         base_kind: c.base_kind ?? 'NET',
+        // BOTH is the right default: VAT genuinely applies to both sides. Only a
+        // one-sided tax narrows it, and the template says so with its citation —
+        // Bolivia's IT is SALES, per Ley 843 art. 74.
+        applies_to: c.applies_to ?? 'BOTH',
         is_recoverable: c.is_recoverable,
         region_type: c.region_type,
         reverse_charge: c.reverse_charge ?? false,

@@ -2473,6 +2473,24 @@ model TaxCode {
   /// non-recoverable tax that must never appear in a VAT netting report.
   tax_type String @default("VAT")
 
+  /// SALES | PURCHASE | BOTH — which side of a transaction this code applies to
+  /// (migration 020).
+  ///
+  /// Without it the engine resolved every code through TaxGroup ∩ ItemTaxGroup and
+  /// nothing else, so a vendor invoice evaluated Bolivia's IT and reported Bs 75 of
+  /// non-recoverable tax on a Bs 2 500 purchase. **[OFFICIAL]** Ley 843 art. 74
+  /// bases IT on "los ingresos brutos devengados … en concepto de venta de bienes"
+  /// — gross INCOME. A purchase is the supplier's income, not the buyer's, and the
+  /// supplier has already priced their own IT into it.
+  ///
+  /// A column rather than a branch on `tax_type`: filtering TURNOVER out of
+  /// purchases would work for Bolivia and be wrong for any jurisdiction with a
+  /// purchase-side turnover tax. The side a tax applies to is a property of the tax.
+  ///
+  /// BOTH is the default and is correct for IVA — output VAT on sales, recoverable
+  /// input VAT on purchases.
+  applies_to String @default("BOTH")
+
   rate Decimal @db.Decimal(9, 6)
 
   /// Does the quoted price already contain this tax? Bolivia's IVA is quoted

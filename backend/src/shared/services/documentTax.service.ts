@@ -186,7 +186,10 @@ export async function computeDocumentTax(
   const taxGroupId = party?.tax_group_id ?? params?.default_tax_group_id ?? null;
   const itemTaxGroupId = product?.item_tax_group_id ?? params?.default_item_tax_group_id ?? null;
 
-  const codes = await resolveApplicableTaxCodes(tenantId, taxGroupId, itemTaxGroupId, new Date(), client);
+  // `side` is passed, so a purchase never evaluates a sales-only code. Before
+  // migration 020 this argument did not exist and Bolivia's IT was computed on
+  // vendor invoices — see the note on `TaxCode.applies_to`.
+  const codes = await resolveApplicableTaxCodes(tenantId, taxGroupId, itemTaxGroupId, new Date(), client, side);
 
   if (codes.length === 0) {
     const legacy = resolveTax(ctx.legacyConfig ?? undefined);

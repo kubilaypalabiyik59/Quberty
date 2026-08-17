@@ -42,6 +42,13 @@ export interface CoaTaxCode {
    * TaxCode.base_kind and docs/process/BOLIVIA_TAX_BASIS.md.
    */
   base_kind?: string;
+  /**
+   * SALES | PURCHASE | BOTH — which side of a transaction the code applies to.
+   * Optional; the schema default is BOTH, which is correct for VAT. Narrow it only
+   * for a genuinely one-sided tax, and cite the law in `note` when you do —
+   * Bolivia's IT is SALES per Ley 843 art. 74.
+   */
+  applies_to?: string;
   is_recoverable: boolean;
   region_type: string;
   reverse_charge?: boolean;

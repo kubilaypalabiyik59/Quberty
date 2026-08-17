@@ -104,6 +104,17 @@ export async function resolveApplicableTaxCodes(
   itemTaxGroupId: string | null,
   on: Date = new Date(),
   client: Client = db,
+  /**
+   * Which side of the transaction is being taxed. Omitting it resolves codes for
+   * BOTH sides, which is the pre-migration-020 behaviour and is only correct for a
+   * caller that genuinely does not know — no production caller is in that position.
+   *
+   * **[OFFICIAL]** Ley 843 art. 74 bases Bolivia's IT on gross INCOME ("ingresos
+   * brutos devengados … en concepto de venta de bienes"). A purchase is the
+   * supplier's income, not ours, so `IT3` must not be evaluated on a vendor
+   * invoice — which is what it was doing.
+   */
+  side?: 'SALES' | 'PURCHASE',
 ): Promise<TaxCodeSpec[]> {
   if (!taxGroupId || !itemTaxGroupId) return [];
 
@@ -115,6 +126,7 @@ export async function resolveApplicableTaxCodes(
       OR: [{ valid_to: null }, { valid_to: { gte: on } }],
       tax_group_codes: { some: { tax_group_id: taxGroupId } },
       item_tax_group_codes: { some: { item_tax_group_id: itemTaxGroupId } },
+      ...(side ? { applies_to: { in: [side, 'BOTH'] } } : {}),
     },
     select: {
       id: true, code: true, name: true, tax_type: true, rate: true,
