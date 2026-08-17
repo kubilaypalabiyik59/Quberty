@@ -96,24 +96,57 @@ export class WarehouseService {
     if (zoneId) {
       switch (strategy) {
         case 'CONSOLIDATE': {
+          // **[OFFICIAL]** *Consolidate*: "The item is placed in a location where
+          // similar items are already available."
+          //
+          // This used to FALL THROUGH into EMPTY_LOCATION, which collapsed D365's
+          // two directive actions into one. That made the setup lie: a warehouse
+          // manager reading two lines — consolidate, then empty — would believe
+          // they were independently ordered and independently removable, while the
+          // code ran the second one regardless. **[OFFICIAL]** the documented shape
+          // is two actions in sequence:
+          //   "the first action in the sequence must use the Consolidate strategy,
+          //    and the second should use the Empty location with no incoming work
+          //    strategy."
+          //   learn.microsoft.com/dynamics365/supply-chain/warehousing/create-location-directive
+          // The caller already iterates lines in sequence, so returning null here
+          // lets the next line try — which is what makes the sequence real.
           const existing = await db.inventoryStock.findFirst({
             where: {
               tenant_id: tenantId,
               product_id: productId,
               location: { zone_id: zoneId, is_active: true },
             },
-            include: { location: true },
+            select: { location_id: true },
           });
-          if (existing) return existing.location_id;
-          // Fall through to EMPTY_LOCATION
+          return existing?.location_id ?? null;
         }
         case 'EMPTY_LOCATION': {
+          // **[OFFICIAL]** *Empty location with no incoming work*: "the item is
+          // placed in the first empty location that's found. A location is
+          // considered to be empty if it has no physical inventory and no expected
+          // incoming work."
+          //
+          // Two things this gets right that the previous version did not:
+          //
+          //   1. A stock row that has fallen to ZERO is not occupancy. Filtering on
+          //      the row existing meant a location that once held something was
+          //      never empty again, so a warehouse silently ran out of destinations.
+          //   2. "no expected INCOMING WORK" is half the definition and was missing
+          //      entirely. Without it two receipts processed before either is put
+          //      away are both directed to the same empty location — the second one
+          //      then consolidates onto goods it was told were not there.
           const emptyLoc = await db.warehouseLocation.findFirst({
             where: {
               zone_id: zoneId,
               is_active: true,
-              inventory_stock: { none: {} },
+              inventory_stock: { none: { quantity: { gt: 0 } } },
+              put_work_lines: {
+                none: { work: { status: { in: ['OPEN', 'IN_PROGRESS'] } } },
+              },
             },
+            orderBy: { code: 'asc' },
+            select: { id: true },
           });
           return emptyLoc?.id ?? null;
         }
