@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForSalesOrder } from '../../shared/services/dimension.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
@@ -318,6 +319,10 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
         description:  `POS Sale: ${orderNumber} — Factura #${String(facturaNumber).padStart(6, '0')}`,
         source:       { module: 'POS_SALE', id: order.id },
         userId,
+        // The register session's warehouse, derived to a site by migration 011 when
+        // the order was created a few lines above. This is the store axis on a POS
+        // sale, which for this business is most of the revenue.
+        dimensions:   await contextForSalesOrder(tenantId, order.id, tx),
         lines: [
               { accountId: acc.AR,      debit:  totalAmount, description: `CxC — ${orderNumber}` },
               { accountId: acc.REVENUE, credit: subtotal,    description: `Ventas — ${orderNumber}` },
@@ -344,6 +349,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
         description: `COGS: ${orderNumber}`,
         source:      { module: 'POS_COGS', id: order.id },
         userId,
+        dimensions:  await contextForSalesOrder(tenantId, order.id, tx),
         lines: [
           { accountId: acc.COGS,      debit:  cogsTotal, description: `COGS — ${orderNumber}` },
           { accountId: acc.INVENTORY, credit: cogsTotal, description: `Inventario — ${orderNumber}` },
@@ -496,6 +502,7 @@ app.post('/sales/:orderId/void', async (c) => {
           description: `VOID: ${order.order_number}`,
           source:      { module: 'POS_VOID', id: orderId },
           userId,
+          dimensions:  await contextForSalesOrder(tenantId, orderId, tx),
           lines: [
             { accountId: vAcc.REVENUE,    debit:  subtotal,    description: `Reverse Ventas — ${order.order_number}` },
             { accountId: vAcc.VAT_OUTPUT, debit:  ivaAmount,   description: `Reverse IVA Débito — ${order.order_number}` },
@@ -512,6 +519,7 @@ app.post('/sales/:orderId/void', async (c) => {
           description: `VOID COGS: ${order.order_number}`,
           source:      { module: 'POS_VOID', id: orderId },
           userId,
+          dimensions:  await contextForSalesOrder(tenantId, orderId, tx),
           lines: [
             { accountId: vAcc.INVENTORY, debit:  cogsTotal, description: `Restore Inventario — ${order.order_number}` },
             { accountId: vAcc.COGS,      credit: cogsTotal, description: `Reverse COGS — ${order.order_number}` },

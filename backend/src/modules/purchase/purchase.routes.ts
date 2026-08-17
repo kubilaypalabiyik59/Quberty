@@ -10,6 +10,7 @@ import { CreatePurchaseOrderSchema } from '../../shared/schemas';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForPurchaseOrder } from '../../shared/services/dimension.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { createAndPostReceipt } from './productReceipt.service';
@@ -386,6 +387,7 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
         description: `AP Payment: ${po.po_number}${notes ? ' — ' + notes : ''}`,
         source:      { module: 'PURCHASE_PAYMENT', id: po.id },
         userId:      c.get('user').id,
+        dimensions:  await contextForPurchaseOrder(c.get('tenantId'), po.id),
         lines: [
           { accountId: acc.AP,         debit:  totalAmount, description: `Clear CxP — ${po.po_number}` },
           { accountId: bankAccount.id, credit: totalAmount, description: `Payment to supplier (${account_code})` },

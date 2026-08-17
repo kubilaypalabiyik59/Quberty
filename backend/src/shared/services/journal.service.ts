@@ -4,6 +4,13 @@ import { logger } from '../logger';
 import { AppError } from '../errors/AppError';
 import { nextJournalVoucher } from './numberSequence.service';
 import { resolvePostingAccount } from './postingProfile.service';
+import {
+  resolveDimensions,
+  assertRequiredDimensions,
+  EMPTY_SLOTS,
+  type DimensionContext,
+  type ResolvedSlots,
+} from './dimension.service';
 
 /**
  * The single writer for general-ledger vouchers.
@@ -63,6 +70,23 @@ export interface JournalLineInput {
   debit?: number;
   credit?: number;
   description?: string | null;
+  /**
+   * Per-line dimension override. Rare — the voucher-level `dimensions` context is
+   * the normal path. Use it where one voucher genuinely spans two axes values, e.g.
+   * a transfer between two stores.
+   */
+  dimensions?: DimensionContext;
+  /**
+   * Dimension values already known as IDs, bypassing resolution entirely.
+   *
+   * Exists for ONE caller: `reverseJournal`, which copies the original voucher's
+   * coding. A reversal that re-resolved would be coded by today's master data
+   * rather than by what the original actually carried, and the two would not net
+   * to zero in a P&L by store — which is the entire point of reversing.
+   *
+   * Takes precedence over `dimensions`. Do not use it to hand-code a posting.
+   */
+  rawSlots?: Partial<ResolvedSlots>;
 }
 
 export interface PostJournalOptions {
@@ -73,6 +97,16 @@ export interface PostJournalOptions {
   /** What produced this voucher. Mandatory — see the One voucher note above. */
   source: { module: string; id?: string | null };
   lines: JournalLineInput[];
+  /**
+   * What the caller knows about the transaction, for financial dimension coding.
+   * Resolution happens here and nowhere else — see dimension.service.ts.
+   *
+   * Omitting it is legitimate and means "I know nothing to code this by". It is not
+   * silently safe, though: if a `DimensionRule` marks an axis REQUIRED for one of
+   * the accounts on the voucher, the posting is refused under
+   * `require_balanced_posting`, exactly as an unresolved posting profile is.
+   */
+  dimensions?: DimensionContext;
   userId?: string | null;
   /** DRAFT leaves it unposted; POSTED stamps `posted_at`. Defaults to POSTED. */
   status?: 'DRAFT' | 'POSTED';
@@ -202,6 +236,8 @@ export async function postJournal(opts: PostJournalOptions) {
     debit: number;
     credit: number;
     description: string | null;
+    dimensions?: DimensionContext;
+    rawSlots?: Partial<ResolvedSlots>;
   }
   const lines: NormalisedLine[] = [];
 
@@ -235,6 +271,8 @@ export async function postJournal(opts: PostJournalOptions) {
       debit,
       credit,
       description: l.description ?? null,
+      dimensions: l.dimensions,
+      rawSlots: l.rawSlots,
     });
   }
 
@@ -294,6 +332,30 @@ export async function postJournal(opts: PostJournalOptions) {
     );
   }
 
+  // ── Financial dimensions ─────────────────────────────────────────────────
+  // After balancing, so the ROUNDING line is coded too — an uncoded rounding line
+  // would sit in the "(unassigned)" bucket of every P&L by store for no reason.
+  //
+  // The voucher-level context is resolved once. A line that carries its own context
+  // is resolved separately, which is what makes a two-store transfer expressible.
+  const voucherSlots: ResolvedSlots = opts.dimensions
+    ? await resolveDimensions(tenantId, legalEntityId, opts.dimensions, client)
+    : { ...EMPTY_SLOTS };
+
+  const coded: Array<NormalisedLine & ResolvedSlots> = [];
+  for (const l of lines) {
+    if (l.rawSlots) {
+      coded.push({ ...l, ...EMPTY_SLOTS, ...l.rawSlots });
+      continue;
+    }
+    const slots = l.dimensions
+      ? await resolveDimensions(tenantId, legalEntityId, l.dimensions, client)
+      : voucherSlots;
+    coded.push({ ...l, ...slots });
+  }
+
+  await assertRequiredDimensions(tenantId, legalEntityId, document, coded, client);
+
   // ── Write ────────────────────────────────────────────────────────────────
   const corrects = opts.corrects;
   if (corrects && !corrects.reason?.trim()) {
@@ -321,7 +383,7 @@ export async function postJournal(opts: PostJournalOptions) {
       correction_reason: corrects?.reason ?? null,
       is_correction: !!corrects,
       lines: {
-        create: lines.map(l => ({
+        create: coded.map(l => ({
           account_id: l.accountId,
           debit_amount: l.debit,
           credit_amount: l.credit,
@@ -330,6 +392,10 @@ export async function postJournal(opts: PostJournalOptions) {
           // in the original column is otherwise indistinguishable from a genuinely
           // negative posting. Under REVERSE the flag is informational.
           is_correction: !!corrects,
+          dimension_1_id: l.dimension_1_id,
+          dimension_2_id: l.dimension_2_id,
+          dimension_3_id: l.dimension_3_id,
+          dimension_4_id: l.dimension_4_id,
         })),
       },
     },
@@ -416,12 +482,23 @@ export async function reverseJournal(opts: {
     const debit = Number(l.debit_amount);
     const credit = Number(l.credit_amount);
 
+    // The original's dimension coding is COPIED, never re-resolved. Re-resolving
+    // would code the reversal by today's master data rather than by what the
+    // original carried, so the pair would not net to zero in a P&L by store — and
+    // netting to zero is the whole purpose of a reversal.
+    const rawSlots = {
+      dimension_1_id: l.dimension_1_id,
+      dimension_2_id: l.dimension_2_id,
+      dimension_3_id: l.dimension_3_id,
+      dimension_4_id: l.dimension_4_id,
+    };
+
     return params.correctionMethod === 'STORNO'
       ? // Same columns, sign flipped — the original is zeroed out and turnover
         // stays truthful.
-        { accountId: l.account_id, debit: -debit, credit: -credit, description: l.description }
+        { accountId: l.account_id, debit: -debit, credit: -credit, description: l.description, rawSlots }
       : // Mirrored — balance is right, but both turnovers carry the round trip.
-        { accountId: l.account_id, debit: credit, credit: debit, description: l.description };
+        { accountId: l.account_id, debit: credit, credit: debit, description: l.description, rawSlots };
   });
 
   logger.info(

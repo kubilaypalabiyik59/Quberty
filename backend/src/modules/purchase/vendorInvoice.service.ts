@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForPurchaseOrder } from '../../shared/services/dimension.service';
 import { resolveItemPolicies, groupByItemGroup, ItemPolicy } from '../../shared/services/itemPolicy.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
@@ -794,6 +795,11 @@ async function postInvoiceVoucher(
     description:   `Vendor invoice: ${invoice.invoice_number} (${invoice.internal_number})`,
     source:        { module: 'VENDOR_INVOICE', id: invoice.id },
     userId:        ctx.userId,
+    // A standalone invoice with no purchase order has no site to code from, and
+    // inventing one would put a cost in a store it did not happen in.
+    dimensions:    invoice.purchase_order_id
+      ? await contextForPurchaseOrder(ctx.tenantId, invoice.purchase_order_id, tx)
+      : undefined,
     lines: [
       ...debits
         .filter(d => d.debit_amount > 0 || d.credit_amount > 0)

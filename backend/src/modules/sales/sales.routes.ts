@@ -10,6 +10,7 @@ import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema } from '../.
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForSalesOrder } from '../../shared/services/dimension.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
@@ -320,6 +321,7 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
         description: `Sales Invoice: ${order.order_number} — Factura #${String(f.factura_number).padStart(6, '0')}`,
         source:      { module: 'SALES_INVOICE', id: f.id },
         userId:      c.get('user').id,
+        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
         lines: [
           { accountId: acc.AR,                   debit:  total,               description: `AR — ${customerName}` },
           { accountId: acc.TAX_TURNOVER_EXPENSE, debit:  Number(f.it_amount), description: `Turnover tax expense` },
@@ -383,6 +385,7 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
         description: `AR Payment: ${order.order_number}${notes ? ' — ' + notes : ''}`,
         source:      { module: 'SALES_PAYMENT', id: order.id },
         userId:      c.get('user').id,
+        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
         lines: [
           { accountId: bankAccount.id, debit:  totalAmount, description: `Cash receipt — ${order.order_number}` },
           { accountId: payAcc.AR,      credit: totalAmount, description: `Clear AR — ${order.order_number}` },
@@ -626,6 +629,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
         description: `Return — Reverse Invoice: ${order.order_number}`,
         source:      { module: 'SALES_RETURN', id: order.id },
         userId:      c.get('user').id,
+        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
         lines: [
           { accountId: retAcc.REVENUE,              debit:  subtotal,  description: `Return revenue reversal` },
           { accountId: retAcc.VAT_OUTPUT,           debit:  ivaAmount, description: `Return IVA Débito reversal` },
@@ -654,6 +658,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
           description: `Return — Reverse COGS: ${order.order_number}`,
           source:      { module: 'SALES_RETURN', id: order.id },
           userId:      c.get('user').id,
+          dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
           lines: [
             { accountId: retAcc.INVENTORY, debit:  cogsAmount, description: `Return inventory in` },
             { accountId: retAcc.COGS,      credit: cogsAmount, description: `Return COGS reversal` },
@@ -670,6 +675,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
         description: `Return — Refund: ${order.order_number}`,
         source:      { module: 'SALES_RETURN', id: order.id },
         userId:      c.get('user').id,
+        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
         lines: [
           { accountId: retAcc.AR,   debit:  total, description: `Return CxC refund` },
           { accountId: retAcc.BANK, credit: total, description: `Return refund from Bancos` },

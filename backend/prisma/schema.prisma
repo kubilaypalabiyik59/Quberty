@@ -1522,7 +1522,17 @@ model Employee {
   tenant_id        String    @db.Uuid
   user_id          String?   @db.Uuid
   employee_code    String
+  /// @deprecated migration 018 — superseded by `department_id`. Kept, not dropped,
+  /// on the same reasoning as `ProductVariant.size`: nothing is lost and the two
+  /// representations stay comparable. Dropping it is a separate decision.
   department       String?
+  /// The organisational department, as an operating unit.
+  /// **[OFFICIAL]** D365 has no department table — a department is an operating
+  /// unit of type *Department*. See `OperatingUnit`.
+  department_id    String?   @db.Uuid
+  /// Free text. D365 reaches the department THROUGH the position ("A position
+  /// exists in a department"); we attach the employee directly and cut the
+  /// job/position master — see the note on `OperatingUnit`.
   position         String?
   hire_date        DateTime? @db.Date
   salary           Decimal?  @db.Decimal(12, 2)
@@ -1534,11 +1544,82 @@ model Employee {
   created_at       DateTime  @default(now())
   updated_at       DateTime  @updatedAt
 
-  user          User? @relation(fields: [user_id], references: [id])
-  assigned_site Site? @relation(fields: [assigned_site_id], references: [id])
+  user          User?          @relation(fields: [user_id], references: [id])
+  assigned_site Site?          @relation(fields: [assigned_site_id], references: [id])
+  dept          OperatingUnit? @relation("employee_department", fields: [department_id], references: [id])
+  manages       OperatingUnit[] @relation("operating_unit_manager")
 
   @@unique([tenant_id, employee_code])
+  @@index([department_id], map: "employees_department_idx")
   @@map("employees")
+}
+
+/// The organisational master behind the department financial dimension.
+///
+/// **[OFFICIAL]** D365 does not have a `departments` table. A department is an
+/// **operating unit** whose type is *Department*:
+///
+/// > "Department — An operating unit that represents a category or functional part
+/// > of an organization that performs a specific task, such as sales or accounting.
+/// > Used to report on functional areas. A department might have profit and loss
+/// > responsibility, and might consist of a group of cost centers."
+///
+/// The five types are Cost center, Business unit, Value stream, Department and
+/// Retail channel.
+/// learn.microsoft.com/dynamics365/fin-ops-core/fin-ops/organization-administration/organizations-organizational-hierarchies#organizations
+///
+/// **[OFFICIAL]** and this is why the table sits here rather than in HR: operating
+/// units "are commonly used as **financial dimensions**".
+/// learn.microsoft.com/dynamics365/guidance/organizational-strategy/define-organizational-strategy
+///
+/// One table with a discriminator is therefore not generality for its own sake —
+/// it is D365's own shape, and it turns FINANCIAL_DIMENSIONS.md §6.1's *guess* that
+/// slots 3 and 4 would be "cost centre and channel" into two more rows of this
+/// table rather than two more tables.
+///
+/// ── Deliberately CUT ───────────────────────────────────────────────────────
+/// D365 models the tree as a separate *organization hierarchy* carrying an assigned
+/// PURPOSE, draft/publish versioning and effective dates. That is five setup
+/// screens before a shoe shop can tag a payroll line "Sales". The hook kept is
+/// `parent_id` — a tree needs one nullable self-FK. Multiple hierarchies over the
+/// same units are an additive edge table later.
+///
+/// Jobs and positions are cut too. **[OFFICIAL]** "A position exists in a
+/// department", so D365 reaches the department through the position. If a position
+/// master ever arrives, `Employee.department_id` becomes derived and the column
+/// survives unchanged.
+model OperatingUnit {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// D365's "Department number". **[OFFICIAL]** unique across ALL operating units
+  /// regardless of type — "can't be the same as any other operating unit" — which
+  /// is why the constraint is `(tenant_id, code)` and not per type.
+  code        String
+  name        String
+  /// D365's "Search name" — the acronym staff actually type.
+  search_name String?
+  memo        String?
+
+  unit_type String
+
+  parent_id           String? @db.Uuid
+  manager_employee_id String? @db.Uuid
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  parent   OperatingUnit?  @relation("operating_unit_tree", fields: [parent_id], references: [id])
+  children OperatingUnit[] @relation("operating_unit_tree")
+  manager  Employee?       @relation("operating_unit_manager", fields: [manager_employee_id], references: [id])
+  staff    Employee[]      @relation("employee_department")
+
+  @@unique([tenant_id, code], map: "operating_units_tenant_code_key")
+  @@index([tenant_id, unit_type], map: "operating_units_tenant_type_idx")
+  @@index([parent_id], map: "operating_units_parent_idx")
+  @@map("operating_units")
 }
 
 // =====================
@@ -1651,6 +1732,7 @@ model Account {
   children         Account[]        @relation("AccountHierarchy")
   journal_lines    JournalLine[]
   posting_profiles PostingProfile[]
+  dimension_rules  DimensionRule[]
 
   @@unique([tenant_id, code])
   @@map("accounts")
@@ -1702,10 +1784,175 @@ model JournalLine {
   /// negative posting. Under REVERSE it is informational.
   is_correction    Boolean @default(false)
 
+  /// ── Financial dimensions (migration 018) ────────────────────────────────
+  /// Four fixed slots, not EAV and not two hardcoded FKs — see
+  /// docs/architecture/FINANCIAL_DIMENSIONS.md §6.1. Which axis occupies which slot
+  /// is `DimensionAttribute.slot`, so a P&L by store is `GROUP BY dimension_1_id`
+  /// over one index rather than a join and a pivot.
+  ///
+  /// NULL means **not coded**, and every report shows it as an explicit
+  /// "(unassigned)" bucket. **[OFFICIAL]** Microsoft concedes the framework
+  /// "can't determine whether a blank dimension value was intentionally left blank,
+  /// or whether the default entry wasn't made" and suggests inventing a value named
+  /// `Blank`. We do not: a P&L that silently attributes unattributed revenue is
+  /// wrong AND looks right.
+  dimension_1_id String? @db.Uuid
+  dimension_2_id String? @db.Uuid
+  dimension_3_id String? @db.Uuid
+  dimension_4_id String? @db.Uuid
+
   journal_entry JournalEntry @relation(fields: [journal_entry_id], references: [id], onDelete: Cascade)
   account       Account      @relation(fields: [account_id], references: [id])
 
+  dimension_1 DimensionValue? @relation("jl_dim1", fields: [dimension_1_id], references: [id])
+  dimension_2 DimensionValue? @relation("jl_dim2", fields: [dimension_2_id], references: [id])
+  dimension_3 DimensionValue? @relation("jl_dim3", fields: [dimension_3_id], references: [id])
+  dimension_4 DimensionValue? @relation("jl_dim4", fields: [dimension_4_id], references: [id])
+
+  @@index([dimension_1_id], map: "journal_lines_dimension_1_idx")
+  @@index([dimension_2_id], map: "journal_lines_dimension_2_idx")
   @@map("journal_lines")
+}
+
+// =====================
+// FINANCIAL DIMENSIONS (migration 018)
+//
+// Design and the Learn grounding: docs/architecture/FINANCIAL_DIMENSIONS.md.
+// =====================
+
+/// One accounting axis. **[OFFICIAL]** D365 has two dimension types — *custom*,
+/// whose values are maintained by hand, and *entity-backed*, whose values come from
+/// an existing table picked in "Use values from". `value_source` is that choice.
+/// learn.microsoft.com/dynamics365/finance/general-ledger/financial-dimensions#financial-dimension-types
+model DimensionAttribute {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  code String /// STORE, DEPT
+  name String
+
+  /// Which `JournalLine.dimension_N_id` column carries this axis. 1..4.
+  slot Int
+
+  /// CUSTOM | SITE | WAREHOUSE | OPERATING_UNIT | EMPLOYEE | PRODUCT_CATEGORY
+  value_source String @default("CUSTOM")
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  values     DimensionValue[]
+  rules      DimensionRule[]
+  defaults   DefaultDimensionAssignment[]
+
+  @@unique([tenant_id, legal_entity_id, code], map: "dimension_attributes_tenant_code_key")
+  @@unique([tenant_id, legal_entity_id, slot], map: "dimension_attributes_tenant_slot_key")
+  @@map("dimension_attributes")
+}
+
+/// One value on one axis. **[OFFICIAL]** entity-backed values are not a mirror of
+/// the backing table: a value exists once it is *used*, and renaming happens on the
+/// source entity, never on the value list.
+model DimensionValue {
+  id           String @id @default(uuid()) @db.Uuid
+  tenant_id    String @db.Uuid
+  attribute_id String @db.Uuid
+
+  /// **[OFFICIAL]** max 30 characters. The same page also restricts the character
+  /// set to letters/digits/underscores so a value cannot contain the chart-of-
+  /// accounts delimiter — we deliberately do not enforce that half, because
+  /// FINANCIAL_DIMENSIONS §5 cut segmented entry so there is no delimiter, and this
+  /// tenant's site codes (SITE-WH-001) already contain hyphens.
+  /// **If segmented entry is ever added, its delimiter must not be `-`.**
+  code String
+  name String
+
+  /// The backing row for an entity-backed axis. Not a foreign key: the target table
+  /// varies by `value_source` and a polymorphic FK is not expressible.
+  source_id String? @db.Uuid
+
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  attribute DimensionAttribute @relation(fields: [attribute_id], references: [id], onDelete: Cascade)
+
+  jl_dim1 JournalLine[] @relation("jl_dim1")
+  jl_dim2 JournalLine[] @relation("jl_dim2")
+  jl_dim3 JournalLine[] @relation("jl_dim3")
+  jl_dim4 JournalLine[] @relation("jl_dim4")
+
+  fixed_on DimensionRule[]              @relation("rule_fixed_value")
+  defaults DefaultDimensionAssignment[]
+
+  @@unique([tenant_id, attribute_id, code], map: "dimension_values_attr_code_key")
+  @@index([tenant_id, attribute_id, source_id], map: "dimension_values_source_idx")
+  @@map("dimension_values")
+}
+
+/// Whether an axis is required on a line, keyed on the account's **category** —
+/// the country-independent classification from migration 003 — rather than on a
+/// per-main-account structure tree. FINANCIAL_DIMENSIONS §5 cut the tree and kept
+/// its degenerate case, so "revenue and COGS must carry a store" survives a change
+/// of chart of accounts and a change of country.
+model DimensionRule {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  attribute_id    String  @db.Uuid
+
+  /// Exactly one of these is set — enforced by a CHECK. Category is the broad rule,
+  /// account is the specific override.
+  account_category String?
+  account_id       String? @db.Uuid
+
+  requirement String @default("OPTIONAL") /// OPTIONAL | REQUIRED
+
+  /// **[OFFICIAL]** D365's *fixed dimension*: at posting the fixed value replaces
+  /// whatever is on the line, including a value the user typed. Declared as the
+  /// documented hook — **nothing reads it yet**, and the resolver says so.
+  fixed_value_id String? @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  attribute   DimensionAttribute @relation(fields: [attribute_id], references: [id], onDelete: Cascade)
+  account     Account?           @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  fixed_value DimensionValue?    @relation("rule_fixed_value", fields: [fixed_value_id], references: [id])
+
+  // ⚠ The two uniqueness constraints on this table are PARTIAL indexes and live in
+  // migration 019, not here — Prisma cannot express `WHERE account_category IS NOT
+  // NULL`. They must be partial: `account_category` and `account_id` are mutually
+  // exclusive by CHECK, so a plain NULLS NOT DISTINCT index on one of them collides
+  // with every rule keyed on the other. Migration 018 made exactly that mistake.
+  //
+  // Consequence: **`prisma db push` would drop them.** This repo applies reviewed
+  // SQL by hand; do not reconcile this table with db push.
+  @@index([tenant_id, attribute_id])
+  @@map("dimension_rules")
+}
+
+/// **[OFFICIAL]** step 2 of D365's defaulting order fills blanks from the customer,
+/// vendor, bank, fixed asset, project or ledger defaults.
+/// learn.microsoft.com/dynamics365/finance/general-ledger/dimensions-default-values
+///
+/// Polymorphic on purpose — the alternative is four near-identical tables.
+model DefaultDimensionAssignment {
+  id           String @id @default(uuid()) @db.Uuid
+  tenant_id    String @db.Uuid
+  entity_type  String /// CUSTOMER | SUPPLIER | PRODUCT | EMPLOYEE
+  entity_id    String @db.Uuid
+  attribute_id String @db.Uuid
+  value_id     String @db.Uuid
+
+  created_at DateTime @default(now())
+
+  attribute DimensionAttribute @relation(fields: [attribute_id], references: [id], onDelete: Cascade)
+  value     DimensionValue     @relation(fields: [value_id], references: [id], onDelete: Cascade)
+
+  @@unique([tenant_id, entity_type, entity_id, attribute_id], map: "default_dimension_assignments_key")
+  @@map("default_dimension_assignments")
 }
 
 model Factura {

@@ -153,6 +153,68 @@ app.post('/payroll', requireRole('admin'), async (c) => {
   );
   if (!acc) throw new AppError(`Payroll for ${periodKey} cannot be posted: payroll posting profiles are not configured.`, 500);
 
+  // ── Salary expense, split by department ──────────────────────────────────
+  //
+  // This is what the department axis exists for. **[OFFICIAL]** a department is an
+  // operating unit that "might have profit and loss responsibility" and is "used to
+  // report on functional areas" — a single aggregated salary debit cannot answer
+  // that question, and no report can recover the split afterwards.
+  //
+  // Deliberately only the EXPENSE leg is split. The two credits are liabilities:
+  // one net sum owed to employees on payday, one to the state on a filing deadline.
+  // Neither is a functional-area cost and splitting them would imply a per-department
+  // liability the business does not actually settle separately.
+  //
+  // An employee with no department produces an uncoded bucket, which is the honest
+  // answer — the alternative is attributing their salary to whichever department
+  // happens to be first.
+  const employeeIds = [
+    ...new Set(lines.map((l: any) => l.employee_id).filter((id: any): id is string => !!id)),
+  ];
+  const employees = employeeIds.length
+    ? await db.employee.findMany({
+        where: { id: { in: employeeIds }, tenant_id: tenantId },
+        select: { id: true, department_id: true, assigned_site_id: true, employee_code: true },
+      })
+    : [];
+  const empById = new Map(employees.map(e => [e.id, e]));
+
+  interface Bucket {
+    amount: number;
+    departmentId: string | null;
+    siteId: string | null;
+    label: string;
+  }
+  const buckets = new Map<string, Bucket>();
+
+  for (const l of lines as any[]) {
+    const emp = l.employee_id ? empById.get(l.employee_id) : undefined;
+    const departmentId = emp?.department_id ?? null;
+    const siteId = emp?.assigned_site_id ?? null;
+    const key = `${departmentId ?? '-'}|${siteId ?? '-'}`;
+
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.amount = Number((existing.amount + Number(l.gross_salary)).toFixed(2));
+    } else {
+      buckets.set(key, {
+        amount: Number(Number(l.gross_salary).toFixed(2)),
+        departmentId,
+        siteId,
+        label: departmentId ? '' : ' (sin departamento)',
+      });
+    }
+  }
+
+  const expenseLines = [...buckets.values()].map(b => ({
+    accountId:   acc.PAYROLL_EXPENSE,
+    debit:       b.amount,
+    description: `Sueldos brutos ${periodKey}${b.label}`,
+    // Per-line context, because one payroll voucher legitimately spans several
+    // departments. The voucher-level context could not express that.
+    dimensions:  { operatingUnitId: b.departmentId, siteId: b.siteId },
+  }));
+
   const je = await postJournal({
     tenantId,
     date:        new Date(Number(year), Number(month) - 1, 28),
@@ -160,7 +222,7 @@ app.post('/payroll', requireRole('admin'), async (c) => {
     source:      { module: 'PAYROLL' },
     userId:      c.get('user').id,
     lines: [
-      { accountId: acc.PAYROLL_EXPENSE, debit:  totalGross, description: `Sueldos brutos ${periodKey}` },
+      ...expenseLines,
       { accountId: acc.PAYROLL_PAYABLE, credit: totalNet,   description: `Sueldos netos por pagar ${periodKey}` },
       ...(totalDeductions > 0
         ? [{

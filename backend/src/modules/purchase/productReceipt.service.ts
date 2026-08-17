@@ -5,6 +5,7 @@ import { logger } from '../../shared/logger';
 import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForPurchaseOrder } from '../../shared/services/dimension.service';
 import { resolveItemPolicies, groupByItemGroup, ItemPolicy } from '../../shared/services/itemPolicy.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
@@ -447,7 +448,7 @@ export async function createAndPostReceipt(
         // to a tenant's books the day the code shipped.
         journalId = await postLegacyCombinedVoucher(tx, {
           tenantId, legalEntityId, userId, receiptId: receipt.id,
-          receiptNumber: receipt.receipt_number, poNumber: po.po_number,
+          receiptNumber: receipt.receipt_number, poNumber: po.po_number, purchaseOrderId: po.id,
           supplierId: po.supplier_id, priced,
         });
         note =
@@ -462,7 +463,7 @@ export async function createAndPostReceipt(
       } else {
         journalId = await postReceiptVoucher(tx, {
           tenantId, legalEntityId, userId, receiptId: receipt.id,
-          receiptNumber: receipt.receipt_number, poNumber: po.po_number,
+          receiptNumber: receipt.receipt_number, poNumber: po.po_number, purchaseOrderId: po.id,
           supplierId: po.supplier_id, priced, accrued,
         });
         note = journalId
@@ -502,6 +503,7 @@ async function postReceiptVoucher(
     receiptId: string;
     receiptNumber: string;
     poNumber: string;
+    purchaseOrderId: string;
     supplierId: string;
     priced: { productId: string; lineNet: number; policy: ItemPolicy | undefined }[];
     accrued: number;
@@ -573,6 +575,7 @@ async function postReceiptVoucher(
     description:   `Product receipt: ${ctx.receiptNumber} (${ctx.poNumber})`,
     source:        { module: 'PRODUCT_RECEIPT', id: ctx.receiptId },
     userId:        ctx.userId,
+    dimensions:    await contextForPurchaseOrder(ctx.tenantId, ctx.purchaseOrderId, tx),
     lines: [
       ...debits.map(d => ({
         accountId:   d.account_id,
@@ -615,6 +618,7 @@ async function postLegacyCombinedVoucher(
     receiptId: string;
     receiptNumber: string;
     poNumber: string;
+    purchaseOrderId: string;
     supplierId: string;
     priced: { productId: string; lineNet: number; unitCost: number; qty: number; policy: ItemPolicy | undefined }[];
   },
@@ -682,6 +686,7 @@ async function postLegacyCombinedVoucher(
     description:   `PO Receipt: ${ctx.poNumber}`,
     source:        { module: 'PURCHASE', id: ctx.receiptId },
     userId:        ctx.userId,
+    dimensions:    await contextForPurchaseOrder(ctx.tenantId, ctx.purchaseOrderId, tx),
     lines: [
       ...debits.map(d => ({
         accountId:   d.account_id,

@@ -5,6 +5,7 @@ import { logger } from '../../shared/logger';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
+import { contextForSalesOrder } from '../../shared/services/dimension.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
@@ -261,6 +262,7 @@ export class SalesService {
             description: `COGS: ${order.order_number}`,
             source: { module: 'SALES_COGS', id: orderId },
             userId,
+            dimensions: await contextForSalesOrder(tenantId, orderId),
             lines: resolved.flatMap(({ bucket, acc }) => {
               const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
               return [

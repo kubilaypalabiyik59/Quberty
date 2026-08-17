@@ -238,6 +238,16 @@ app.post('/journal-entries', requireRole('admin', 'store_manager'), validate(Cre
       debit:       Number(l.debit_amount ?? 0),
       credit:      Number(l.credit_amount ?? 0),
       description: l.description || null,
+      // A manual entry has no source document to code from, so the dimensions have
+      // to be stated. `dimensions` is `{ ATTRIBUTE_CODE: dimension_value_id }`, e.g.
+      // `{ STORE: "…" }`.
+      //
+      // ⚠ THE UI DOES NOT SEND THIS YET. A manual entry touching an account whose
+      // category carries a REQUIRED dimension rule will be refused until the
+      // journal form grows a dimension picker. That refusal is correct — an
+      // accountant posting revenue by hand does have to say which store — but it is
+      // a real frontend gap, recorded in HANDOVER §4h rather than left to be found.
+      dimensions:  l.dimensions ? { explicit: l.dimensions } : undefined,
     })),
   });
 
