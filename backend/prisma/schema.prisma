@@ -484,6 +484,7 @@ model Product {
   rfq_request_lines      RfqRequestLine[]
   receipt_lines          ProductReceiptLine[]
   vendor_invoice_lines   VendorInvoiceLine[]
+  trade_agreements TradeAgreement[]
 
   @@unique([tenant_id, sku])
   @@map("products")
@@ -538,6 +539,7 @@ model ProductVariant {
   /// The variant's value on each axis of its product's dimension group.
   values ProductVariantValue[]
   rfq_request_lines RfqRequestLine[]
+  trade_agreements TradeAgreement[]
 
   @@unique([tenant_id, sku_variant])
   @@map("product_variants")
@@ -869,6 +871,7 @@ model Supplier {
   preferred_on_req PurchaseRequisitionLine[] @relation("preferred_supplier")
   product_receipts ProductReceipt[]
   vendor_invoices  VendorInvoice[]
+  trade_agreements TradeAgreement[]
 
   @@unique([tenant_id, code])
   @@map("suppliers")
@@ -1387,6 +1390,7 @@ model Customer {
   converted_from Lead[]           @relation("converted_customer")
   opportunities  Opportunity[]
   quotations     SalesQuotation[]
+  trade_agreements TradeAgreement[]
 
   @@unique([tenant_id, code])
   @@map("customers")
@@ -2806,6 +2810,7 @@ model ItemGroup {
   updated_at DateTime @updatedAt
 
   products Product[]
+  trade_agreements TradeAgreement[]
 
   @@unique([tenant_id, legal_entity_id, code])
   @@map("item_groups")
@@ -3451,4 +3456,91 @@ model GeoPoint {
   @@unique([tenant_id, query_key])
   @@index([tenant_id, source])
   @@map("geo_points")
+}
+
+// =====================
+// TRADE AGREEMENTS (migration 021)
+//
+// Vendor and customer price lists. Design and the Learn grounding are in the
+// migration file; the short version is that this is D365's trade agreement matrix
+// with its journal/validate/post ceremony cut and its date-effectivity kept.
+// =====================
+
+/// One negotiated price or line discount, valid for a party ∩ product ∩ quantity
+/// break over a date range.
+///
+/// **[OFFICIAL]** the two axes and their three scopes are D365's *Party code type*
+/// and *Product code type* — Table, Group, All.
+/// learn.microsoft.com/dynamics365/supply-chain/sales-marketing/tasks/create-new-trade-agreement
+///
+/// The scope vocabulary deliberately matches `PostingProfile.scope_kind`: it is the
+/// same most-specific-first matrix, and a second vocabulary for the same idea is
+/// how two resolvers end up disagreeing.
+model TradeAgreement {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// SALES | PURCHASE
+  side String
+  /// PRICE | LINE_DISCOUNT
+  agreement_type String @default("PRICE")
+
+  /// PARTY | PARTY_GROUP | ALL
+  party_scope String  @default("ALL")
+  customer_id String? @db.Uuid
+  supplier_id String? @db.Uuid
+  /// Hook only. Customer/vendor groups have no master yet (S2P_O2C_STATUS §4), and
+  /// the resolver REFUSES this scope rather than silently never matching.
+  party_group_id String? @db.Uuid
+
+  /// PRODUCT | ITEM_GROUP | ALL
+  product_scope String  @default("PRODUCT")
+  product_id    String? @db.Uuid
+  /// The stocking unit for a shoe retailer is the variant, so an agreement can name
+  /// one. D365 carries product dimensions on the agreement line for the same reason.
+  variant_id    String? @db.Uuid
+  item_group_id String? @db.Uuid
+
+  /// **[OFFICIAL]** From / To quantity — the quantity break.
+  quantity_from Decimal  @default(0) @db.Decimal(12, 2)
+  quantity_to   Decimal? @db.Decimal(12, 2)
+
+  /// A PRICE row uses `amount`; a LINE_DISCOUNT row uses `discount_percent`.
+  /// **[OFFICIAL]** a PRICE row must name a specific product, "because a price is an
+  /// absolute value and can't be the same for all products or a group of products" —
+  /// enforced by a CHECK, not by the UI.
+  amount           Decimal? @db.Decimal(14, 4)
+  discount_percent Decimal? @db.Decimal(7, 4)
+  currency         String?
+  /// **[OFFICIAL]** D365's `PriceUnit`: the amount is per N units, so a price quoted
+  /// per dozen needs no fabricated per-unit figure.
+  price_unit       Decimal  @default(1) @db.Decimal(12, 2)
+
+  valid_from DateTime  @default(now()) @db.Date
+  valid_to   DateTime? @db.Date
+
+  /// **[OFFICIAL]** D365's *Find next*: keep searching for a lower price. Default
+  /// FALSE, which is deliberately NOT best-price-wins — the resolver returns the
+  /// most SPECIFIC match, as posting profiles do, so a price negotiated for one
+  /// customer is not silently undercut by a general one.
+  find_next Boolean @default(false)
+
+  is_active  Boolean  @default(true)
+  note       String?
+  created_by String?  @db.Uuid
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  customer   Customer?       @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  supplier   Supplier?       @relation(fields: [supplier_id], references: [id], onDelete: Cascade)
+  product    Product?        @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  variant    ProductVariant? @relation(fields: [variant_id], references: [id], onDelete: Cascade)
+  item_group ItemGroup?      @relation(fields: [item_group_id], references: [id], onDelete: Cascade)
+
+  @@index([tenant_id, side, is_active, valid_from], map: "trade_agreements_lookup_idx")
+  @@index([tenant_id, product_id], map: "trade_agreements_product_idx")
+  @@index([tenant_id, supplier_id], map: "trade_agreements_supplier_idx")
+  @@index([tenant_id, customer_id], map: "trade_agreements_customer_idx")
+  @@map("trade_agreements")
 }

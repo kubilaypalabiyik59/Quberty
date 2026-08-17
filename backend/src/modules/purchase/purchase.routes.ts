@@ -11,6 +11,8 @@ import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
 import { contextForPurchaseOrder } from '../../shared/services/dimension.service';
+import { purchasePriceFor } from '../../shared/services/tradeAgreement.service';
+
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { createAndPostReceipt } from './productReceipt.service';
@@ -18,6 +20,22 @@ import { createInvoice, postInvoice, runMatching, autoMatch } from './vendorInvo
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
+
+/**
+ * A product's item group, for the ITEM_GROUP scope of a trade agreement.
+ *
+ * Small and uncached on purpose: a purchase order has a handful of lines, and the
+ * alternative — threading the group through every caller — is how the posting-profile
+ * context came to be passed inconsistently before `itemPolicy.service.ts` centralised it.
+ */
+async function itemGroupOf(tenantId: string, productId: string): Promise<string | null> {
+  if (!productId) return null;
+  const p = await db.product.findFirst({
+    where: { id: productId, tenant_id: tenantId },
+    select: { item_group_id: true },
+  });
+  return p?.item_group_id ?? null;
+}
 
 // ── Suppliers ─────────────────────────────────────────────────────────────────
 
@@ -158,20 +176,31 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
   if (lines !== undefined) {
     await db.purchaseOrderLine.deleteMany({ where: { po_id: po.id } });
 
+    // Same precedence as the create path, through the same resolver — see there.
     let subtotal = 0;
-    const newLines = (lines ?? []).map((l: any, i: number) => {
-      const lineTotal = Number(l.quantity) * Number(l.unit_cost);
+    const newLines: any[] = [];
+    for (const [i, l] of ((lines ?? []) as any[]).entries()) {
+      const priced = await purchasePriceFor(c.get('tenantId'), {
+        supplierId: supplier_id ?? po.supplier_id,
+        productId:  l.product_id,
+        variantId:  l.variant_id || null,
+        itemGroupId: await itemGroupOf(c.get('tenantId'), l.product_id),
+        quantity:   Number(l.quantity),
+        explicitCost: l.unit_cost === undefined ? null : Number(l.unit_cost),
+      });
+
+      const lineTotal = Number(l.quantity) * priced.unitCost;
       subtotal += lineTotal;
-      return {
+      newLines.push({
         po_id:      po.id,
         product_id: l.product_id,
         variant_id: l.variant_id || null,
         quantity:   Number(l.quantity),
-        unit_cost:  Number(l.unit_cost),
+        unit_cost:  priced.unitCost,
         line_total: lineTotal,
         sort_order: i,
-      };
-    });
+      });
+    }
 
   // The agreed amount IS the supplier's invoiced figure. `computePurchaseMoney`
   // splits it into what we owe (AP), the recoverable input tax (VAT_INPUT) and
@@ -218,19 +247,36 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
   const body = c.get('body') as any;
   const poNumber = await nextPurchaseOrderNumber(c.get('tenantId'));
 
+  // Each line's cost comes from the trade agreement when one covers it, and from
+  // the typed figure otherwise. `purchasePriceFor` owns that precedence —
+  // agreement → explicit → product cost — so the two purchase paths (create and
+  // update) cannot drift apart on it.
+  //
+  // A tenant with no agreements resolves EXPLICIT every time, which is exactly the
+  // behaviour before migration 021.
   let subtotal = 0;
-  const lines = (body.lines ?? []).map((l: any, i: number) => {
-    const lineTotal = Number(l.quantity) * Number(l.unit_cost);
+  const lines: any[] = [];
+  for (const [i, l] of ((body.lines ?? []) as any[]).entries()) {
+    const priced = await purchasePriceFor(c.get('tenantId'), {
+      supplierId: body.supplier_id,
+      productId:  l.product_id,
+      variantId:  l.variant_id || null,
+      itemGroupId: await itemGroupOf(c.get('tenantId'), l.product_id),
+      quantity:   Number(l.quantity),
+      explicitCost: l.unit_cost === undefined ? null : Number(l.unit_cost),
+    });
+
+    const lineTotal = Number(l.quantity) * priced.unitCost;
     subtotal += lineTotal;
-    return {
+    lines.push({
       product_id: l.product_id,
       variant_id: l.variant_id || null,
       quantity:   Number(l.quantity),
-      unit_cost:  Number(l.unit_cost),
+      unit_cost:  priced.unitCost,
       line_total: lineTotal,
       sort_order: i,
-    };
-  });
+    });
+  }
 
   // The agreed amount IS the supplier's invoiced figure. `computePurchaseMoney`
   // splits it into what we owe (AP), the recoverable input tax (VAT_INPUT) and
@@ -568,6 +614,100 @@ app.post('/orders/:id/receive-and-invoice', requireRole('admin', 'store_manager'
 
   const posted = await postInvoice(c.get('tenantId'), c.get('user').id, invoice.id);
   return created(c, { receipt, invoice: posted });
+});
+
+// ── Trade agreements (vendor price lists) — setup ─────────────────────────────
+//
+// Module-scoped, per the standing rule: these live under Procurement because
+// Procurement owns vendor pricing. The sales side reads the same table with
+// `side = 'SALES'` and gets its own routes under Sales.
+
+app.get('/setup/trade-agreements', requireRole('admin', 'store_manager'), async (c) => {
+  const rows = await db.tradeAgreement.findMany({
+    where: { tenant_id: c.get('tenantId'), side: 'PURCHASE' },
+    include: {
+      supplier:   { select: { code: true, name: true } },
+      product:    { select: { sku: true, name: true } },
+      variant:    { select: { sku_variant: true } },
+      item_group: { select: { code: true, name: true } },
+    },
+    orderBy: [{ is_active: 'desc' }, { valid_from: 'desc' }],
+  });
+  return ok(c, rows);
+});
+
+app.post('/setup/trade-agreements', requireRole('admin', 'store_manager'), async (c) => {
+  const b = await c.req.json();
+
+  // The database enforces the shape (see migration 021's CHECKs, including the
+  // official rule that a PRICE must name a specific product). This route does not
+  // duplicate those rules — it translates the constraint violation into a message a
+  // person can act on, so the two can never disagree.
+  try {
+    const row = await db.tradeAgreement.create({
+      data: {
+        tenant_id:        c.get('tenantId'),
+        side:             'PURCHASE',
+        agreement_type:   b.agreement_type ?? 'PRICE',
+        party_scope:      b.party_scope ?? (b.supplier_id ? 'PARTY' : 'ALL'),
+        supplier_id:      b.supplier_id ?? null,
+        party_group_id:   b.party_group_id ?? null,
+        product_scope:    b.product_scope ?? (b.product_id ? 'PRODUCT' : 'ALL'),
+        product_id:       b.product_id ?? null,
+        variant_id:       b.variant_id ?? null,
+        item_group_id:    b.item_group_id ?? null,
+        quantity_from:    b.quantity_from ?? 0,
+        quantity_to:      b.quantity_to ?? null,
+        amount:           b.amount ?? null,
+        discount_percent: b.discount_percent ?? null,
+        currency:         b.currency ?? null,
+        price_unit:       b.price_unit ?? 1,
+        valid_from:       b.valid_from ? new Date(b.valid_from) : new Date(),
+        valid_to:         b.valid_to ? new Date(b.valid_to) : null,
+        find_next:        b.find_next ?? false,
+        note:             b.note ?? null,
+        created_by:       c.get('user').id,
+      },
+    });
+    return created(c, row);
+  } catch (e: any) {
+    if (typeof e?.message === 'string' && e.message.includes('trade_agreements_price_needs_product_check')) {
+      throw new AppError(
+        'A price agreement must name one specific product. A price is an absolute amount, so it cannot ' +
+          'apply to a product group or to all products — use a line discount for that.',
+        400,
+        'TRADE_AGREEMENT_PRICE_NEEDS_PRODUCT',
+      );
+    }
+    if (typeof e?.message === 'string' && e.message.includes('trade_agreements_party_target_check')) {
+      throw new AppError(
+        'The party on this agreement does not match its scope and side. A purchase agreement scoped to a ' +
+          'party must name a supplier.',
+        400,
+        'TRADE_AGREEMENT_PARTY_MISMATCH',
+      );
+    }
+    throw e;
+  }
+});
+
+// Superseding a price CLOSES the old row rather than editing it. That is what keeps
+// the history of what a vendor charged us and when — the reason D365 posts trade
+// agreement journals rather than editing the price table in place.
+app.post('/setup/trade-agreements/:id/close', requireRole('admin', 'store_manager'), async (c) => {
+  const row = await db.tradeAgreement.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+  });
+  if (!row) throw new AppError('Trade agreement not found', 404);
+
+  const { valid_to } = await c.req.json().catch(() => ({ valid_to: null }));
+  const end = valid_to ? new Date(valid_to) : new Date();
+
+  const updated = await db.tradeAgreement.update({
+    where: { id: row.id },
+    data: { valid_to: end, is_active: false },
+  });
+  return ok(c, updated);
 });
 
 export default app;
