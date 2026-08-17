@@ -11,6 +11,7 @@ import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
 import { contextForSalesOrder } from '../../shared/services/dimension.service';
+import { writeFacturaLines, linesFromSalesOrder, markInvoiced } from '../../shared/services/facturaLine.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
@@ -250,6 +251,24 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
         created_by:     c.get('user').id,
       },
     });
+
+    // The factura now says WHAT it invoiced, not only how much. Until migration 022
+    // this document was header-only, which made partial invoicing, per-line tax and
+    // a credit note that names what it credits all impossible.
+    const facturaLines = await linesFromSalesOrder(c.get('tenantId'), order.id, {
+      client: tx,
+      // Everything not yet invoiced. On a first invoice that is the whole order,
+      // which is why this changes nothing for the existing flow.
+      onlyUninvoiced: true,
+    });
+    await writeFacturaLines(
+      c.get('tenantId'),
+      f.id,
+      facturaLines,
+      { subtotal, ivaAmount, itAmount, totalAmount: total },
+      { customerId: order.customer_id ?? null, client: tx },
+    );
+    await markInvoiced(f.id, tx);
 
     await tx.salesOrder.update({ where: { id: order.id }, data: { invoice_id: f.id } });
 

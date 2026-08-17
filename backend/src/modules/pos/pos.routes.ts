@@ -5,6 +5,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { postJournal } from '../../shared/services/journal.service';
 import { contextForSalesOrder } from '../../shared/services/dimension.service';
+import { writeFacturaLines, linesFromSalesOrder, markInvoiced } from '../../shared/services/facturaLine.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
@@ -295,6 +296,18 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
         created_by:     userId,
       },
     });
+
+    // Lines, so a POS factura says what was sold. For a retailer whose revenue is
+    // overwhelmingly POS this is where the line detail actually matters.
+    const posLines = await linesFromSalesOrder(tenantId, order.id, { client: tx, onlyUninvoiced: true });
+    await writeFacturaLines(
+      tenantId,
+      factura.id,
+      posLines,
+      { subtotal, ivaAmount, itAmount, totalAmount },
+      { customerId: order.customer_id ?? null, client: tx },
+    );
+    await markInvoiced(factura.id, tx);
 
     // Link factura back to order
     await tx.salesOrder.update({ where: { id: order.id }, data: { invoice_id: factura.id } });
