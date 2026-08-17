@@ -24,7 +24,11 @@
 > The registry of what each module owns, what is built and what is missing:
 > [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
 
-**Last updated**: 2026-08-16 — **vendor invoice, product receipt and three-way matching built**
+**Last updated**: 2026-08-17 — **seven setup tasks: financial dimensions + department master,
+WH-MAIN putaway, the IT tax side, the correction journals POSTED, trade agreements, factura
+lines** (§4h — read §4h.8, one switch is deliberately off).
+
+Earlier: **vendor invoice, product receipt and three-way matching built**
 (see [docs/process/VENDOR_INVOICE.md](docs/process/VENDOR_INVOICE.md)); earlier the same day: process
 chain, Bolivian tax basis, item groups wired into posting
 
@@ -1462,6 +1466,239 @@ receive and a pick location. That absence is itself a setup finding.
 
 **Also still true:** `require_pick_work` is declared and **nothing reads it** — outbound work is
 Phase 2/3 of the roadmap. Stated here rather than left to be discovered.
+
+---
+
+## 4h. Seven setup tasks — BUILT 2026-08-17 (migrations 018-022)
+
+Kubi handed over seven items in one instruction. All seven were done; two of them
+corrected what this document previously said, and one is deliberately left switched
+off pending his decision. Read §4h.8 before assuming anything here is live.
+
+### 1. Department master + financial dimensions — migrations 018, 019
+
+**A department is not a table.** **[OFFICIAL]** D365 has no `departments`; a
+department is an **operating unit** whose type is *Department*, and operating units
+"are commonly used as financial dimensions"
+([Organizations and organizational hierarchies](https://learn.microsoft.com/dynamics365/fin-ops-core/fin-ops/organization-administration/organizations-organizational-hierarchies#organizations),
+[Define the organizational structure](https://learn.microsoft.com/dynamics365/guidance/organizational-strategy/define-organizational-strategy)).
+
+So `operating_units` carries a `unit_type` discriminator — which also turns
+FINANCIAL_DIMENSIONS §6.1's *guess* that slots 3 and 4 would be "cost centre and
+channel" into two more rows of the same table rather than two more tables.
+
+Cut, with the hook named: D365's organization-hierarchy framework (purposes,
+draft/publish, effective dates) is five screens before a shoe shop can tag a payroll
+line "Sales". `parent_id` is the tree. Jobs and positions are cut too —
+**[OFFICIAL]** D365 reaches the department *through* the position; we attach the
+employee directly, and if a position master arrives `Employee.department_id` becomes
+derived and survives.
+
+Then the dimensions: 4 fixed slots + a registry, one value table for every axis,
+requirement rules keyed on `Account.category`. Resolution happens in exactly one
+place because `postJournal()` already made that possible.
+
+| Artefact | What |
+|---|---|
+| [018](backend/prisma/sql/018_operating_units_and_financial_dimensions.sql) | **Applied.** `operating_units`, `employees.department_id`, `dimension_attributes`, `dimension_values`, `dimension_rules`, `default_dimension_assignments`, 4 slots on `journal_lines` |
+| [019](backend/prisma/sql/019_dimension_rule_partial_indexes.sql) | **Applied.** Fixes a bug 018 shipped — see below |
+| `shared/services/dimension.service.ts` | The resolver, the document context helpers, and the requirement enforcement |
+| `scripts/provisionFinancialDimensions.ts` | Dry-run by default. Provisioned STORE (slot 1, entity-backed on Site) and DEPT (slot 2, on OperatingUnit) |
+| `scripts/verifyFinancialDimensions.ts` | **25/25** against the real database |
+
+**Payroll now splits its salary expense by department** — the point of the axis.
+**[OFFICIAL]** a department "might have profit and loss responsibility", and no
+report can recover a split that was never posted. The two credits stay aggregated:
+they are liabilities owed to the employee and to the state, not functional-area costs.
+
+**A bug 018 shipped, found by running it.** Both uniqueness indexes on
+`dimension_rules` were `NULLS NOT DISTINCT`, copied by reflex from migration 001.
+That is right for `legal_entity_id`, where NULL means "the tenant default". It is
+wrong for `account_category` / `account_id`, where NULL means "this rule is not of
+that kind" — and a CHECK guarantees exactly one of them is NULL, so the two indexes
+were guaranteed to collide. **One tenant could hold exactly one category rule.**
+They are partial indexes now, which Prisma cannot express, so the constraint lives
+in SQL only and the model carries the warning: **`prisma db push` would drop them.**
+
+A reversal **copies** the original's dimension coding rather than re-resolving it,
+or the pair would not net to zero in a P&L by store.
+
+### 2. WH-MAIN directed putaway — switched ON
+
+**This document was wrong.** §4g said WH-MAIN had "RCV-001 and nothing to put away
+into". It has an STG zone with five pick locations. What it actually lacked — and so
+did every other warehouse — was a **location directive**: zero rows in the table the
+whole engine reads.
+
+**[OFFICIAL]** for exactly our scenario Microsoft prescribes **two** actions:
+Consolidate first, then Empty location with no incoming work
+([Work with location directives](https://learn.microsoft.com/dynamics365/supply-chain/warehousing/create-location-directive#example-using-location-directives)).
+That exposed a bug: `CONSOLIDATE` fell through to `EMPTY_LOCATION` in the same
+switch, collapsing two documented actions into one and making a two-line setup a
+lie. Each strategy now does only its own job.
+
+Two further defects in `EMPTY_LOCATION`, both from the same definition: a stock row
+at **zero** counted as occupancy (so a location that once held something was never
+empty again), and **"no expected incoming work"** was missing entirely (so two
+receipts processed before either was put away were both sent to the same location).
+
+`WH-MAIN` now: `require_putaway = true`, `availability_counts = PICK_LOCATIONS_ONLY`,
+`default_receive_location = RCV-001`, directive `PUTAWAY-WH-MAIN` with two lines.
+
+**The switch would have been a trap without one more step.** The 15 units on RCV-001
+arrived before putaway existed, so no work referenced them; switching on would have
+made them invisible to sales with no action in the product able to move them.
+`scripts/setupWarehousePutaway.ts` creates putaway work for stock already standing
+on non-pick locations. **That work is OPEN and waiting in the UI** — completing it
+asserts goods physically moved, which is a warehouse worker's claim, not a script's.
+
+⚠ **`WH-001` is a setup defect in the same family.** Its only location, `A-01-01`, is
+a *receive* location holding 90 units, and it has no pick location at all. It is also
+the tenant's **default sales warehouse**. Do not enable `PICK_LOCATIONS_ONLY` there
+until it has pick locations.
+
+### 3. Default warehouse — it was never empty
+
+This document's "⚠ NEEDS KUBI — the default warehouse is deliberately unset" is
+**stale**. Live data: `default_warehouse_id = WH-001`, `require_warehouse_on_sales_order
+= true`. Kubi's remembered decision ("WHS-001") is `WH-001`, Warehouse Bolivia / La Paz,
+and it is in force. Nothing to do.
+
+### 4. IT is no longer charged on purchases — migration 020
+
+Ley 843 art. 74 bases IT on "los **ingresos brutos** devengados … en concepto de
+**venta de bienes**". IT taxes the gross INCOME of the party carrying out the
+activity. A purchase is the *supplier's* income, not ours; they owe their own IT and
+have priced it in. Charging it again taxes one transaction twice.
+
+`TaxCode.applies_to` (SALES | PURCHASE | BOTH), **not** a branch on `tax_type` —
+filtering TURNOVER out of purchases would work for Bolivia and be wrong for any
+jurisdiction with a purchase-side turnover tax, which is the mistake migration 002
+existed to undo. The Bolivian template carries the value with its citation, so new
+tenants are provisioned correctly rather than depending on one UPDATE.
+
+It never reached the ledger, so this corrects the vendor-invoice **screen**, not the
+books. `scripts/verifyTaxSide.ts` **11/11** — the half that matters is that the
+SALES side is unchanged: Bs 1 299,00 still yields IVA 168,87 and IT 38,97.
+
+### 5. The correction journals are POSTED
+
+Nine vouchers, **Bs 8 109,68**. Every amount re-derived from the database;
+GAP_ANALYSIS.md is the finding, the database is the fact.
+
+```
+1201 Activo Fijo    6 897,00 -> 0,00      D-6 cleared
+2105 IVA Debito       793,45 -> 0,00      the second output-VAT account is closed
+2103 IVA Debito     3 488,14 -> 4 308,04  +819,90
+2104 IT por Pagar     804,94 ->   994,17  +189,23 — exactly the D-3 figure
+4101 Ventas        32 545,41 -> 32 748,96 +203,55 the POS revenue never recorded
+trial balance       dr = cr · 0 unbalanced vouchers
+```
+
+**Writing the detection query taught the lesson.** The first version matched revenue
+to COGS on `source_id` and reported 21 orphans / Bs 44 000 — nearly every COGS entry
+in the tenant. A COGS voucher is keyed on the *order*, a revenue voucher on the
+*factura*; they never match. Trusted, it would have driven Bs 44 000 of corrections
+against Bs 3 250 of real damage.
+
+The ten it wrongly flagged are a different condition and were **not** corrected:
+shipped, COGS posted, never invoiced — the documented O2C gap, not a posting defect.
+
+Two things deliberately left alone: the five D-2 vouchers are posted **as their
+facturas state them**, not recomputed (restating the Bs 637,47 of historically
+understated tax is a filing decision for the co-founder), and a residual gap
+survives — IT 15,28 and IVA 66,16 on the two oldest facturas of 2026-04-01,
+different vintage, **not diagnosed**.
+
+### 6. Trade agreements — migration 021
+
+**[OFFICIAL]** a trade agreement line is a PARTY axis and a PRODUCT axis, each Table
+/ Group / All, plus a quantity break and a date range — the same most-specific-first
+matrix the posting profile resolver already implements, so the vocabulary is reused.
+
+One official rule is enforced by the **database**: **[OFFICIAL]** "a price is an
+absolute value and can't be the same for all products or a group of products", so a
+PRICE row must name a specific product. A percentage discount may not.
+
+Precedence is **most specific wins, not cheapest** — the opposite of D365's default,
+deliberately: a price negotiated with one supplier must not be silently undercut by
+a general row. **[OFFICIAL]** *Find next* is available per row.
+
+Both purchase paths price through one resolver (agreement -> typed cost -> product
+cost). `scripts/verifyTradeAgreements.ts` **18/18**. An empty price list resolves
+nothing, so applying 021 changed no behaviour.
+
+### 7. Factura lines — migration 022
+
+**⚠ READ THIS BEFORE TREATING IT AS COMPLIANCE.** Whether Bolivian law *requires*
+line detail on the printed factura is **still the open question in §7** and is NOT
+answered. It needs the SIN's own normativa; the research scope for this workstream
+is Learn + repo (CLAUDE.md §5). Migration 022, the model and the service each say so
+in place. **Nothing there is a compliance claim.**
+
+What is established and sufficient on its own: partial invoicing is impossible
+without lines; per-line tax is required before Turkey or Germany; a credit note must
+say what it credits.
+
+**[OFFICIAL — Ley 843 art. 5]** a Bolivian factura LINE is gross-inclusive exactly as
+the header is, so tax is computed FROM `line_total`, not added to it. The regime
+lives in `TaxCode.base_kind`.
+
+The governing rule: **lines explain the header, they never restate it.** The four
+header totals are not dropped and not derived — a factura STATES a total.
+`writeFacturaLines` **refuses** a line set that does not sum to the document, and
+absorbs the sub-cent residue of taxing lines separately into the largest line.
+
+`invoiced_qty` and `delivered_qty` join the sales order line, backfilled from facts
+already recorded. Both invoicing paths write lines, ERP and POS.
+
+`scripts/verifyFacturaLines.ts` **14/14**. **Not done:** no UI, no PDF change, the
+printed factura still renders from the header, and the credit-note path still writes
+a negative-total factura with no lines.
+
+### 8. ⚠ ONE SWITCH IS DELIBERATELY OFF — needs Kubi
+
+Kubi's decision was **store dimension REQUIRED on revenue and COGS from day one**.
+It is currently **OPTIONAL**, because running it produced information the decision
+was made without:
+
+**14 sales orders that can still be invoiced have no site, and no warehouse to
+derive one from.** Migration 011 already backfilled everything derivable, so they
+cannot be filled without inventing data.
+
+```
+SO-2026-00001 DRAFT      SO-2026-00016 DRAFT      SO-2026-00017 CONFIRMED
+SO-2026-00018 CONFIRMED  SO-2026-00019 SHIPPED    SO-2026-00022 SHIPPED
+SO-2026-00023 DRAFT      SO-2026-00026 SHIPPED    SO-2026-00028 CONFIRMED
+SO-2026-00031 SHIPPED    SO-2026-00033 CONFIRMED  SO-2026-00036 SHIPPED
+SO-2026-00041 CONFIRMED  SO-2026-00044 SHIPPED
+```
+
+Making STORE required today makes all fourteen **un-invoiceable**. New orders are
+unaffected — `require_warehouse_on_sales_order` is already on.
+
+Two ways forward, Kubi's call:
+1. assign a warehouse to those 14 (they are test data, so this is cheap), then flip;
+2. flip now and let them fail until somebody fixes each one.
+
+The switch is one command:
+
+```bash
+cd backend && npx tsx scripts/provisionFinancialDimensions.ts --apply --require-store
+```
+
+### 9. Also still true
+
+- **The manual journal UI cannot enter dimensions.** The API accepts them
+  (`lines[].dimensions` = `{ ATTRIBUTE_CODE: value_id }`); the form does not send
+  them. Once STORE is REQUIRED, a manual entry touching revenue or COGS will be
+  refused until the journal form grows a dimension picker. The refusal is correct;
+  the missing picker is a real frontend gap.
+- **3 of 5 employees have no department** and were left unassigned — inventing one
+  would put their salary in a functional area they do not work in.
+- `DimensionRule.fixed_value_id` is declared and **nothing reads it**.
+- `TradeAgreement.party_scope = 'PARTY_GROUP'` is declared and the resolver **skips
+  it with a WARN**, because customer/vendor groups still have no master.
 
 ---
 
