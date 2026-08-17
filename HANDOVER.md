@@ -5,11 +5,24 @@
 > **Smoke-testing the 2026-08-16 session? Start at [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)** —
 > what to click, what to expect, and the four things that need Kubi rather than me.
 >
-> **Two standing rules were set this session and they bind all future work:**
+> **Standing rules. They bind all future work.**
 > 1. Everything built is **parametric and configurable** unless Kubi says otherwise.
 > 2. For anything he asks: **research the official process first** (the real Learn parameter screens,
 >    not overview pages) **and record what we are NOT building**, so future scope is visible.
 >    The artefact is [docs/architecture/ERP_SETUP_CHECKLIST.md](docs/architecture/ERP_SETUP_CHECKLIST.md).
+>
+> **Added 2026-08-17:**
+> 3. **Setup is module-scoped.** Every setting lives under the module that owns it — one module, one
+>    Setup area, one Parameters record. Never a global settings page. Where two modules need the same
+>    value, one owns it and the other reads it through a **stated fallback**, the way D365 inherits the
+>    reservation default from Accounts receivable parameters.
+> 4. **Everything must stay enhanceable.** A setting added today must not block the richer version of
+>    itself — a boolean that will later want three values is an enum from the start.
+> 5. **Verify everything through Microsoft.** Cite the Learn page. Where none exists, label it
+>    **[REC]** and say so.
+>
+> The registry of what each module owns, what is built and what is missing:
+> [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
 
 **Last updated**: 2026-08-16 — **vendor invoice, product receipt and three-way matching built**
 (see [docs/process/VENDOR_INVOICE.md](docs/process/VENDOR_INVOICE.md)); earlier the same day: process
@@ -1023,6 +1036,432 @@ owner asks.
 generic key/value table — the axis a retailer actually has, every query a plain join, no commitment
 to account structures. **Not implemented; needs the Finance co-founder**, because which axes deserve
 a column is an accounting decision.
+
+---
+
+## 4c. Financial dimensions — design done, and the prerequisite BUILT 2026-08-17
+
+Kubi: *"bırak mağazayı, kocaman bir mağazanın içerisindeki departmanlar bazında bile finansal takip
+isteyebilirler."* Store level is not the requirement; store **and** department is, and the axis list
+has to stay open.
+
+**Design doc: [docs/architecture/FINANCIAL_DIMENSIONS.md](docs/architecture/FINANCIAL_DIMENSIONS.md).**
+Read it before building any of this. It records the Learn model, what we take, what we cut, and the
+defaulting order.
+
+### The three findings from Learn that shaped it
+
+1. **[OFFICIAL]** *"Don't create financial dimensions that have values that are not reusable"* — with
+   an explicit forbidden list: documents, sales orders, purchase orders, transactions, checks,
+   serials. Non-reusable values explode the chart of accounts and the damage lands at year-end close
+   and consolidation. Those belong in **financial tags**, a separate mechanism.
+   The usable test: *if changing it after posting would change a financial statement it is a
+   dimension; if it would not, it is a tag.*
+2. **[OFFICIAL]** the defaulting order is strict, and Microsoft concedes the framework *"can't
+   determine whether a blank dimension value was intentionally left blank, or whether the default
+   entry wasn't made"* — their workaround is a dimension value literally named `Blank`. We do not
+   take that. NULL means not coded, and every report shows `(unassigned)` explicitly.
+3. **[OFFICIAL]** *"the more dimensions that are created and used in a dimension set, the slower
+   transaction entry, import, and processes become."* Axis count is a budget, not a free parameter.
+
+### Shape chosen: 4 fixed slots + a registry
+
+Not two hardcoded FKs (answers today's question, blocks Kubi's actual one) and not EAV (the shape
+CLAUDE.md §3 names as the thing not to copy). `DimensionAttribute` + one `DimensionValue` table for
+every axis + `JournalLine.dimension_1..4_id`. A P&L by store is `GROUP BY dimension_1_id` on one
+index. Slot 5 is a nullable `ADD COLUMN`, which rewrites nothing in PostgreSQL 11+.
+
+**Kubi's decisions, 2026-08-17:** store dimension **REQUIRED on revenue and COGS from day one**
+(not optional-then-tighten); second axis is the **organisational** department, not the merchandising
+one — which means it is blocked on a real `Department` master, because `Employee.department` is free
+text today ([schema.prisma:1237](backend/prisma/schema.prisma#L1237)).
+
+### Step 0 — `postJournal()`, BUILT and verified
+
+Kubi's condition: *"bu yapı parametrik ve konfigüre edilebilir olmalı ve davranışın Learn'de
+anlatıldığı gibi olması gerekmekte, aksi takdirde büyük sıçarız."*
+
+There were **16 `journalEntry.create` call sites across 8 files**, each hand-building its lines. That
+is why this had to come first: adding dimensions meant editing 16 arrays, and a missed one is
+invisible — the entry still posts and still balances, it is merely uncoded.
+
+**Three things were found by counting those sites, none of which was the dimension question:**
+
+| Finding | Evidence |
+|---|---|
+| **Debits = credits was asserted for exactly ONE writer** — the manual journal route. The other 15, every machine-generated posting in the product, wrote whatever they were given | `finance.routes.ts:231` was the only check |
+| **The closed-period check was in that same one route.** A POS sale, a product receipt or a payroll run posted into a closed period with nothing noticing | same |
+| **`allow_posting_to_closed_period` and `rounding_tolerance` were declared in migration 001 and read by NOTHING** | `grep` returned only the schema and the DDL |
+
+`shared/services/journal.service.ts` is now the single writer. Everything in it reads
+`FinanceParameters` — no rule is baked into code.
+
+**[OFFICIAL]** grounding for the one-voucher-per-call shape: *"Vouchers always represent individual
+transactions, never a group of transactions"*
+([One voucher](https://learn.microsoft.com/dynamics365/finance/general-ledger/one-voucher)). D365
+gates grouping behind *Allow multiple transactions within one voucher* and documents it as breaking
+settlement, tax calculation, reversal and inquiry. We do not offer it.
+
+**Two real defects surfaced while wiring, both invisible before:**
+
+- **Payroll did not balance when there were deductions.** It debited gross and credited **net** — the
+  withheld amount was credited to nothing at all. New posting type `PAYROLL_DEDUCTION_PAYABLE` and a
+  matching account category; deliberately NOT the employee payable, because one is owed to the
+  employee on payday and the other to the state on a filing deadline. A zero-deduction payroll posts
+  exactly the two lines it always did. **⚠ A payroll WITH deductions now needs that one account
+  configured, or it fails loudly.**
+- **POS numbered its vouchers from a different source.** `nextJournalEntryNumber` off
+  `order_counters` (`JE-000001`) while every other module used the configured `NumberSequence`
+  (`JE-2026-00081`) — two independent series numbering one ledger, only one of them configurable.
+  Now one series.
+
+**Found and deliberately NOT fixed** (it belongs with the correction journals, not a refactor): the
+**POS void reverses only three of the five lines** the sale posted. It leaves the IT expense and IT
+payable standing against a sale that no longer exists. It balances, so `postJournal` cannot catch it.
+Marked in place at `pos.routes.ts`.
+
+**Verified by running, not reading:**
+
+```
+scripts/verifyJournalPosting.ts     14/14 against the real database, self-cleaning
+                                    (balance, two-sided line, empty voucher, zero-line drop,
+                                     rounding refusal, closed period, and the parameter
+                                     genuinely governing it — period state restored in a finally)
+scripts/verifyProcessChain.ts       ALL CHECKS PASSED, counts back to baseline
+scripts/verifyItemPolicy.ts         ALL CHECKS PASSED — real COGS posted through the new writer,
+                                    item-group split intact (5101 dr 200 / 5201 dr 30), journals
+                                    back to baseline 85
+npx jest                            119 passing — the same 4 pre-existing suites fail
+npx tsc --noEmit                    clean outside those 3 pre-existing test files
+```
+
+Database state checked first, which is why enabling the new checks was safe: **0 accounting periods
+exist** (period closing has never been used) and **all 85 existing vouchers balance exactly**.
+
+**⚠ New failure mode to know about:** with no `ROUNDING` posting profile configured, a voucher out by
+a cent is now **refused** rather than posted unbalanced. Configuring `ROUNDING` is the fix and it
+needs an `OTHER_INCOME` account, which this tenant still does not have.
+
+**Not done, awaiting approval:** migration 013 (the dimension tables and the four slots), the
+resolver, the P&L-by-store report, and the backfill. Sequencing table in the design doc §7.
+
+---
+
+## 4d. Corrections and reversals — researched and BUILT 2026-08-17
+
+Kubi: waiting for the Finance co-founder could take a long time, so research the regulation and the
+correct structure and build to that. Then, mid-work: **"olayı Bolivia olarak sınırlama, unutma bu bir
+generic ERP olacak"** — which is why every jurisdiction rule below is configuration, not code.
+
+**Design doc: [docs/architecture/CORRECTIONS.md](docs/architecture/CORRECTIONS.md)**, with sources.
+
+### What the research settled
+
+1. **[OFFICIAL]** two methods exist and **D365 makes the choice a parameter** (*General ledger
+   parameters → Transaction reversal → Correction*). **Reverse** mirrors debit/credit and inflates
+   turnover on both sides; **storno** negates in the original column and zeroes turnover out.
+   Selection rule, quoted: *"Use the reverse entry in countries or regions where turnover is rarely
+   used. Other countries or regions use Storno accounting."*
+2. **[OFFICIAL]** Business Central: *"An entry can only be reversed one time"* and *"After you
+   reverse an entry, you must make the correct entry."* Both taken verbatim.
+3. **[LAW]** Ley 2492 art. 78 — a rectification **increasing** the balance in favour of the treasury
+   may be filed on the taxpayer's own initiative, with no stated deadline. One **favouring the
+   taxpayer** is once per tax/form/period, within **one year**, and **only after verification** by
+   the administration. **Every known tax defect here is in the free direction** (we declared too
+   little), so there is no deadline to race and no prior verification to wait for.
+4. **[LAW]** a factura may be annulled only while its period is open; afterwards it is corrected by a
+   **nota de crédito-débito** that adjusts without deleting, within twelve months. Generic shape: a
+   **void window** then a **correction-document window**, both jurisdiction configuration. Nothing in
+   the code enforces either window today.
+
+### The finding that made the method choice non-stylistic
+
+**[REPO]** the IVA report summed **one column per side** and ignored the other. Under REVERSE a
+correction to output tax posts a *debit*, so **the correction was invisible to the declaration** —
+books right, filing wrong. It also still hardcoded `2103` / `2105` / `1105`, the last place in the
+finance module naming a chart of accounts in code, and Bolivian ones at that: a Turkish or German
+tenant would have reported **zero output tax with no error**.
+
+Both fixed. Accounts resolve by `Account.category`, and an uncategorised chart now **throws** rather
+than returning a reassuring 0.00. The response also names which accounts produced the figure.
+
+**Proved with real numbers rather than asserted** — reversing Bs 13 of output tax:
+
+```
+one-column sum (OLD): 404.96 → 417.96     the reversal never lands
+netted        (NEW): 404.96 → 404.96     correct
+```
+
+**The D-7 regression this could have caused was checked first:** switching from literals to category
+would silently drop any uncategorised tax account. Verified that `2103` **and** `2105` both carry
+`VAT_PAYABLE`, so the category lookup finds everything the literals did.
+
+### Built
+
+| Artefact | What |
+|---|---|
+| [013_corrections.sql](backend/prisma/sql/013_corrections.sql) | **Applied.** `journal_entries.corrects_entry_id / correction_reason / is_correction`, `journal_lines.is_correction`, `finance_parameters.correction_method` + CHECK. Additive; a partial unique index enforces "reversed only once" in the database |
+| `journal.service.ts` → `reverseJournal()` | Derives the lines from the original — never retyped — and applies the tenant's method. Refuses a second reversal, a reversal of a reversal, a DRAFT entry, and a correction with no reason |
+| `postJournal({ corrects })` | Sets the provenance and flags; requires a non-empty reason |
+| `finance.routes.ts` IVA report | Nets both columns, resolves by category, reports which accounts it read |
+
+**One deliberate deviation from BC:** it reuses the original posting date; we post on today's date
+instead, because backdating into a closed period is what the rest of this service exists to prevent.
+The original date stays reachable through `corrects_entry_id`.
+
+**Verified:** `scripts/verifyCorrections.ts` **21/21**, including the turnover difference measured on
+a real account (REVERSE dr 100 / cr 100; STORNO dr 0 / cr 0; same net balance).
+`verifyJournalPosting.ts` 14/14, `npx jest` 119 passing with the same 4 pre-existing suites,
+`tsc --noEmit` clean.
+
+### Still open
+
+- The **windows** (§3.1 of the design) are not built — nothing stops a factura being cancelled a year
+  late. This is the piece that makes it a generic ERP rather than a Bolivian one.
+- Whether *nota de crédito-débito* is a separate legal numbering series is **still unresolved**;
+  `SequenceReference` already distinguishes `CREDIT_NOTE` from `FACTURA`, so the hook exists.
+- The RND deadlines above come from Bolivian tax commentary, **not** from the SIN's own publication.
+  Confirm against the issuing authority before encoding them as configuration values.
+- **No amounts have been corrected.** The machinery exists; which figures get corrected is still the
+  co-founder's call — but that is now one item (the tax-basis understatement, which changes filed
+  figures), not the whole backlog.
+
+---
+
+## 4e. PIM setup module — BUILT 2026-08-17 (migration 014)
+
+First item of the order in [MODULE_FIT_ANALYSIS §7](docs/architecture/MODULE_FIT_ANALYSIS.md), and the
+first module built under the new module-scoped setup rule.
+
+### What the data actually looked like
+
+Checked before writing anything, and it was worse than the analysis assumed:
+
+```
+150 product variants
+  product_variants.size   IS NULL on ALL 150
+  product_variants.color  IS NULL on ALL 150
+  146 of them carry the size in `attributes` as {"Sizes": "42"}
+```
+
+So the variant's identity lived in a **free-form JSON key**. Nothing stopped the next writer using
+`"Size"`, or `"Beden"`, or storing 42 as a number. Sizes sorted as text, so EU 10 sorted before EU 9.
+And the two typed columns were a trap: the first person to write to them would have put half the
+catalogue in one place and half in the other.
+
+### Built
+
+**[OFFICIAL]** D365 separates three things and the separation is the point — the **dimension** (axis),
+the **value**, and the **dimension group** (which axes *this* product varies by)
+([Product dimensions](https://learn.microsoft.com/dynamics365/supply-chain/pim/product-dimensions)).
+Without the group, "varies by size" and "varies by size and colour" are indistinguishable.
+
+| Table | What |
+|---|---|
+| `ProductDimension` | the axis. Rows, not an enum — a footwear tenant that also sells by *width* adds a row |
+| `ProductDimensionValue` | the value, with `sort_order` — this is why 32…47 now sorts numerically |
+| `ProductDimensionValueGroup` + members | D365's size/colour/style group, so the next shoe inherits EU 36–46 instead of somebody retyping it |
+| `ProductDimensionGroup` + lines | which axes a product varies by |
+| `ProductVariantValue` | the variant's value per axis — **this replaced the JSON** |
+| `ProductParameters` | PIM's module parameters record; it had none |
+| `Product.dimension_group_id`, `Product.tracking_policy` | the group, and the honest hook for selling batch/serial later |
+| FKs on `sales_order_lines.variant_id` and `purchase_order_lines.variant_id` | the known defect, closed |
+
+`ProductVariant.size` / `.color` / `.attributes` are **kept and marked deprecated**, not dropped: they
+are empty, nothing is lost, and keeping `attributes` is what lets the old and new representations be
+compared. Dropping columns is a separate decision.
+
+### Verified — `scripts/verifyPimSetup.ts`, 16/16 against the live database
+
+The assertion that matters is the lossless one: every variant that carried a JSON size resolves to
+**the same** size through the typed structure. 146 of 146 agree, 0 unmapped, 0 mismatched.
+
+```
+sizes, in sort order: 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47
+every product WITH variants has a dimension group        PASS
+every product WITHOUT variants has none                  PASS   (NULL is a real answer)
+the database now REFUSES a variant_id pointing at nothing PASS   (tested in a rolled-back transaction)
+```
+
+That last check is deliberately run inside a transaction that always rolls back. The naive version
+would, if the constraint were missing, write a bogus `variant_id` onto a real order line and leave it
+there — a verification script that corrupts what it verifies.
+
+Regression: `verifyProcessChain` and `verifyItemPolicy` ALL CHECKS PASSED, `verifyJournalPosting`
+14/14, `npx jest` 119 passing with the same 4 pre-existing suites, `tsc --noEmit` clean.
+
+### Two things this deliberately did NOT do
+
+- **The 37 dead units are still dead.** `SAMBA-OG-001` has 37 units on a NULL variant in
+  `WH-IST-01/A-01-01` for a product that varies by size. Which size they are is a fact nobody
+  recorded; assigning one would be inventing data. **It needs a physical count.** What changed is that
+  the condition is now detectable in one query instead of being invisible.
+- **4 of the 150 variants carry no size at all.** They are exactly what
+  `ProductParameters.require_complete_variants` exists to reject — left `false` so nothing breaks, to
+  be turned on once the data is clean.
+
+---
+
+## 4f. Cost layer rename + inventory transaction status — BUILT 2026-08-17 (migrations 015, 016)
+
+Items 3 and 4 of the [MODULE_FIT_ANALYSIS §7](docs/architecture/MODULE_FIT_ANALYSIS.md) order.
+
+### 015 — `InventoryBatch` → `InventoryCostLayer`
+
+The table never held a batch. It holds `unit_cost`, `received_at`, `source_po_id` and a remaining
+`quantity` — a FIFO cost layer, with no batch number, no expiry date and no customer-facing identity.
+**[OFFICIAL]** a *batch* is a tracking dimension in the reservation hierarchy beside serial number.
+
+Since batch tracking is to be sold as an option later, the name had to be freed **before** it arrives,
+or the codebase ends up with two unrelated concepts called "batch" — one financial, one physical,
+joined to the same tables. Pure rename: table, pkey and index; eleven call sites; no row touched.
+
+### 016 — `InventoryTransaction` receipt/issue status
+
+**[OFFICIAL]** two ladders, and a transaction is on exactly one of them
+([Inventory posting profiles](https://learn.microsoft.com/dynamics365/finance/general-ledger/inventory-posting-profiles)):
+
+```
+receipt: ORDERED → REGISTERED → RECEIVED → PURCHASED
+issue:   ON_ORDER → RESERVED_ORDERED → RESERVED_PHYSICAL → PICKED → DEDUCTED → SOLD
+```
+
+Hence **two nullable columns with a CHECK forbidding the pair**, quoting *"Each inventory transaction
+has a status that's displayed in EITHER the Receipt OR the Issue field"* — not one column mixing two
+ladders. Plus `physical_date` and `financial_date`, the two dates D365 keeps apart, which are what
+make *received but not invoiced* answerable from the subledger rather than by joining documents.
+
+This is also what finally gives migration 009's `post_physical_inventory` / `post_financial_inventory`
+something to mean.
+
+`shared/services/inventoryTransactionStatus.ts` is the single mapping, wired into **all 12** creation
+sites — the `postJournal` lesson applied again, because a mapping repeated at twelve sites diverges
+and a divergent subledger status is invisible until a report is wrong.
+
+**PICKED is defined and deliberately unwritten.** **[OFFICIAL]** *"the inventory has been picked from
+the warehouse … still physically in the warehouse, hasn't been removed, but isn't available for other
+orders"* — that is the state warehouse Phase 1 needs, and the type carries it so the next step fills
+it in rather than inventing a vocabulary.
+
+### The judgement calls in the backfill
+
+```
+OUTBOUND          → issue DEDUCTED     32 rows
+PURCHASE_RECEIPT  → receipt RECEIVED   23 rows
+RETURN            → receipt RECEIVED    5 rows
+ADJUSTMENT        → left UNCODED        1 row
+```
+
+*Received* and *Deducted* are the physical rungs and are safe to assert. **Whether the vendor invoice
+later posted — which would make a receipt *Purchased* — is not recoverable per transaction, so it is
+not guessed.** `ADJUSTMENT` is left uncoded because quantities are stored **unsigned**, so its
+direction is genuinely unknowable from the row, and **[OFFICIAL]** a positive counting journal is a
+receipt (*Purchased*) while a negative one is an issue (*Sold*). One row. Inventing a direction to
+make a column look complete would put a fabrication in the subledger.
+
+Going forward both adjustment paths *do* know their sign (`qty`, `diff`), so new rows are coded
+correctly — and **[OFFICIAL]** a counting journal is physically and financially updated in one
+posting, so they land on `PURCHASED`/`SOLD` directly with both dates set.
+
+**Verified:** `scripts/verifyInventoryTxStatus.ts` **16/16** — including that the database rejects a
+status outside its ladder, a receipt status in the issue column, and a row on both ladders at once,
+each tested inside a transaction that always rolls back. An unknown transaction type maps to
+*uncoded*, so a new type cannot silently inherit the wrong ladder.
+
+Regression after both: `verifyItemPolicy`, `verifyProcessChain`, `verifyPurchaseCycle` all passed,
+`verifyPimSetup` 16/16, `npx jest` 119 passing with the same 4 pre-existing suites, `tsc` clean.
+
+### A self-inflicted incident worth recording
+
+The rename was applied with a PowerShell `Get-Content | Set-Content` pass. **Windows PowerShell 5.1
+reads as ANSI and writes as UTF-8**, which double-encoded every non-ASCII character in six files —
+733 mojibake markers in `schema.prisma` alone. Caught immediately, reversed losslessly (decode UTF-8 →
+re-encode Windows-1252 → write raw bytes, with a round-trip equality check before writing), and
+verified back to 0 markers with box-drawing characters intact.
+
+**Rule for anything after this: never bulk-edit source with `Get-Content`/`Set-Content` on this
+machine.** Use `[System.IO.File]::ReadAllText/WriteAllText` with an explicit `UTF8Encoding($false)`,
+which is what the later edits in this session used.
+
+---
+
+## 4g. Warehouse Phase 1 — BUILT 2026-08-17 (migration 017)
+
+This is the real fix for the `SO-2026-00081` / `RCV-001` problem.
+
+### The defect underneath it
+
+`WarehouseService.completeWorkLine` set `quantity_done` and a status **and moved no stock at all.**
+So putaway work could be created, shown to a worker and completed while the goods stayed exactly
+where they were — work that reports success and changes nothing. That is why stock received into a
+receiving location never became pickable no matter what anybody did in the UI. The arrival-journal
+putaway path that already existed was decorative for the same reason.
+
+### Built
+
+| Artefact | What |
+|---|---|
+| [017_warehouse_parameters.sql](backend/prisma/sql/017_warehouse_parameters.sql) | **Applied.** `warehouse_parameters`, **per warehouse**: `require_putaway`, `require_pick_work`, `availability_counts`, `default_receive_location_id`. One row seeded per existing warehouse at the defaults |
+| `shared/services/warehouseParameters.service.ts` | The resolver, plus `availabilityLocationFilter` — the one place that decides what counts as sellable |
+| `inventory.service.ts` | `getAvailableStock` **and** `reserveStock` both apply the filter. Both, deliberately: if they diverge, an order passes its check and then reserves stock the check excluded |
+| `warehouse.service.ts` | `completeWorkLine` now **moves the inventory**, inside a transaction, with the FIFO cost layers following the goods and a TRANSFER_OUT/TRANSFER_IN pair on the subledger |
+| `productReceipt.service.ts` | Creates putaway work when the warehouse requires it, source = the receiving location, destination = the **existing** `LocationDirective` engine — the first thing that has ever read those tables |
+
+### Verified against Learn, not assumed
+
+- **[OFFICIAL]** *"the receipt is posted first to record the increase of inventory … The warehouse
+  worker then registers the put-away to make the items available to pick"* — so the putaway is the
+  step that makes stock available, which is why it has to be the step that moves it.
+- **[OFFICIAL]** *"during purchase registration, the first pick is always from the location where the
+  registration occurs"* — the source is recorded on the work, never directive-resolved. Only the
+  destination is.
+- **[OFFICIAL]** for a purchase-order location directive, *"Put is the only supported value"*.
+- **[OFFICIAL]** a work policy's **Work creation method** can be *Never*, which *"prevents warehouse
+  work from being created"* — so modelling "no putaway" as a setting rather than a code path is
+  D365's own shape.
+- **[OFFICIAL]** warehouse behaviour belongs on the individual warehouse (*Default inventory status
+  ID* sits on the Warehouse FastTab), which is why these parameters are per warehouse and not per
+  tenant.
+
+**And the one thing deliberately NOT copied:** D365 gates this behind `Use warehouse management
+processes` on the storage dimension group, which cannot be changed after saving and forces a new
+warehouse plus a manual inventory move to adopt later. `InventoryStock` here is keyed on
+`location_id` for every warehouse already, so a warehouse can be switched either way at any time.
+
+### Verified by running — `scripts/verifyPutaway.ts`, 14/14
+
+The RCV-001 scenario end to end, self-cleaning, parameters restored in a `finally`:
+
+```
+under ALL_LOCATIONS, stock on the receiving dock counts          PASS
+under PICK_LOCATIONS_ONLY, the same stock does NOT count         PASS  ← the case you hit
+the receiving location was emptied                               PASS
+the pick location received the goods                             PASS
+and NOW it counts as available                                   PASS
+the FIFO cost layer moved with the goods, and kept its cost       PASS
+the move is on the subledger as a transfer pair, both with status PASS
+completing the same line twice is refused                        PASS
+```
+
+Full regression, all green: `verifyItemPolicy`, `verifyProcessChain`, `verifyPurchaseCycle` passed;
+`verifyJournalPosting` 14/14, `verifyCorrections` 21/21, `verifyPimSetup` 16/16,
+`verifyInventoryTxStatus` 16/16, `verifySalesDimensionsLive` 9/9; `npx jest` 119 passing with the same
+4 pre-existing suites; `tsc --noEmit` clean.
+
+### ⚠ Nothing is switched on
+
+Every warehouse is still `require_putaway = false`, `availability_counts = ALL_LOCATIONS`. **Applying
+migration 017 changed no behaviour.** To fix the actual `SO-2026-00081` situation, `WH-MAIN` needs:
+
+1. a **pick location** — it has `RCV-001` (receive) and nothing to put away *into*;
+2. a **putaway location directive** for the warehouse;
+3. then `require_putaway = true` and `availability_counts = PICK_LOCATIONS_ONLY`.
+
+`verifyPutaway.ts` had to run against `WH-IST-01` because it is the only warehouse with both a
+receive and a pick location. That absence is itself a setup finding.
+
+**Also still true:** `require_pick_work` is declared and **nothing reads it** — outbound work is
+Phase 2/3 of the roadmap. Stated here rather than left to be discovered.
 
 ---
 

@@ -2,7 +2,8 @@ import { Prisma } from '@prisma/client';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
-import { allocateNumber, nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { allocateNumber } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { resolveItemPolicies, groupByItemGroup, ItemPolicy } from '../../shared/services/itemPolicy.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
@@ -785,30 +786,29 @@ async function postInvoiceVoucher(
     });
   }
 
-  const entryNumber = await nextJournalVoucher(ctx.tenantId, tx, ctx.legalEntityId);
-  const entry = await tx.journalEntry.create({
-    data: {
-      tenant_id:     ctx.tenantId,
-      entry_number:  entryNumber,
-      entry_date:    invoice.posting_date,
-      description:   `Vendor invoice: ${invoice.invoice_number} (${invoice.internal_number})`,
-      source_module: 'VENDOR_INVOICE',
-      source_id:     invoice.id,
-      status:        'POSTED',
-      posted_at:     new Date(),
-      created_by:    ctx.userId,
-      lines: {
-        create: [
-          ...debits.filter(d => d.debit_amount > 0 || d.credit_amount > 0),
-          {
-            account_id: acc.AP,
-            debit_amount: 0,
-            credit_amount: total,
-            description: `AP — ${invoice.invoice_number}`,
-          },
-        ],
+  const entry = await postJournal({
+    tenantId:      ctx.tenantId,
+    legalEntityId: ctx.legalEntityId,
+    tx,
+    date:          invoice.posting_date,
+    description:   `Vendor invoice: ${invoice.invoice_number} (${invoice.internal_number})`,
+    source:        { module: 'VENDOR_INVOICE', id: invoice.id },
+    userId:        ctx.userId,
+    lines: [
+      ...debits
+        .filter(d => d.debit_amount > 0 || d.credit_amount > 0)
+        .map(d => ({
+          accountId:   d.account_id,
+          debit:       d.debit_amount,
+          credit:      d.credit_amount,
+          description: d.description,
+        })),
+      {
+        accountId:   acc.AP,
+        credit:      total,
+        description: `AP — ${invoice.invoice_number}`,
       },
-    },
+    ],
   });
 
   return {

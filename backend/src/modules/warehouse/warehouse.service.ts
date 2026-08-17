@@ -1,5 +1,6 @@
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 
 /**
  * Warehouse Management Service
@@ -395,6 +396,27 @@ export class WarehouseService {
   // WORK EXECUTION — workers complete tasks
   // =========================================================
 
+  /**
+   * Complete one line of warehouse work — and actually move the inventory.
+   *
+   * ── What was wrong ────────────────────────────────────────────────────────
+   * This method used to set `quantity_done` and a status and stop there. It moved
+   * NO stock. So a putaway could be created, shown to a worker, and completed,
+   * while the goods stayed exactly where they were — work that reports success and
+   * changes nothing. That is why stock received into `RCV-001` never became
+   * pickable no matter what anybody did in the UI.
+   *
+   * ── **[OFFICIAL]** what completing a PUT means ────────────────────────────
+   * "the receipt is posted first to record the increase of inventory … The
+   * warehouse worker then registers the put-away to make the items available to
+   * pick" — the putaway is the step that makes stock available, so it has to be the
+   * step that moves it.
+   *   learn.microsoft.com/dynamics365/business-central/design-details-inbound-warehouse-flow
+   *
+   * A movement is recorded as an inventory transaction pair on the subledger
+   * (TRANSFER_OUT / TRANSFER_IN) so the move is auditable, rather than stock rows
+   * silently changing value.
+   */
   async completeWorkLine(
     tenantId: string,
     workId: string,
@@ -402,41 +424,236 @@ export class WarehouseService {
     quantityDone: number,
     userId: string
   ) {
-    const work = await db.warehouseWork.findFirst({
-      where: { id: workId, tenant_id: tenantId },
-      include: { lines: { orderBy: { sequence: 'asc' } } },
+    return db.$transaction(async (tx) => {
+      const work = await tx.warehouseWork.findFirst({
+        where: { id: workId, tenant_id: tenantId },
+        include: { lines: { orderBy: { sequence: 'asc' } } },
+      });
+
+      if (!work) throw new AppError('Work task not found', 404);
+
+      const line = work.lines.find((l: any) => l.id === lineId);
+      if (!line) throw new AppError('Work line not found', 404);
+      if (line.status === 'DONE') {
+        throw new AppError(
+          `Work line ${line.sequence} of ${work.work_id_code} is already complete. ` +
+            `Completing it twice would move the stock twice.`,
+          409,
+          'WORK_LINE_ALREADY_DONE',
+        );
+      }
+      if (quantityDone <= 0) {
+        throw new AppError('A completed work line must move a positive quantity.', 400);
+      }
+      if (quantityDone > Number(line.quantity)) {
+        throw new AppError(
+          `Cannot complete ${quantityDone} on a work line for ${line.quantity}. ` +
+            `Over-picking is a different decision and is not supported here.`,
+          400,
+          'WORK_LINE_OVER_COMPLETION',
+        );
+      }
+
+      // ── The movement ──────────────────────────────────────────────────────
+      // A PUT line carries the destination; the source is the line's own
+      // `from_location_id`, or — for putaway — the PICK line that precedes it.
+      // **[OFFICIAL]** "during purchase registration, the first pick is always from
+      // the location where the registration occurs", which is why the source is
+      // recorded on the work rather than resolved by a directive.
+      if (line.line_type === 'PUT' && line.to_location_id) {
+        const source =
+          line.from_location_id ??
+          work.lines.find((l: any) => l.line_type === 'PICK' && l.from_location_id)?.from_location_id ??
+          null;
+
+        if (!source) {
+          throw new AppError(
+            `Work ${work.work_id_code} has no source location, so its put cannot be completed. ` +
+              `Putaway work must record where the goods are being taken from.`,
+            409,
+            'WORK_SOURCE_LOCATION_MISSING',
+          );
+        }
+
+        await this.moveStock(tx, {
+          tenantId,
+          productId: line.product_id,
+          variantId: line.variant_id ?? null,
+          fromLocationId: source,
+          toLocationId: line.to_location_id,
+          quantity: quantityDone,
+          userId,
+          reference: work.work_id_code,
+          workType: work.work_type,
+        });
+      }
+
+      await tx.warehouseWorkLine.update({
+        where: { id: lineId },
+        data: {
+          quantity_done: quantityDone,
+          status: quantityDone >= Number(line.quantity) ? 'DONE' : 'SHORT',
+          completed_at: new Date(),
+        },
+      });
+
+      const allDone = work.lines
+        .filter((l: any) => l.id !== lineId)
+        .every((l: any) => l.status === 'DONE') && quantityDone >= Number(line.quantity);
+
+      if (allDone) {
+        await tx.warehouseWork.update({
+          where: { id: workId },
+          data: { status: 'COMPLETED', completed_at: new Date() },
+        });
+
+        if (work.work_type === 'PICK' && work.reference_type === 'sales_order') {
+          await tx.salesOrder.update({
+            where: { id: work.reference_id! },
+            data: { status: 'PICKING' },
+          });
+        }
+      }
+
+      return { moved: line.line_type === 'PUT' ? quantityDone : 0, work_completed: allDone };
     });
+  }
 
-    if (!work) throw new AppError('Work task not found', 404);
+  /**
+   * Move stock between two locations, with a subledger record of the move.
+   *
+   * Refuses rather than going negative: a move that cannot be sourced is a data
+   * problem, and letting it proceed would turn one wrong number into two.
+   */
+  private async moveStock(
+    tx: any,
+    m: {
+      tenantId: string;
+      productId: string;
+      variantId: string | null;
+      fromLocationId: string;
+      toLocationId: string;
+      quantity: number;
+      userId: string;
+      reference: string;
+      workType: string;
+    },
+  ) {
+    if (m.fromLocationId === m.toLocationId) return;
 
-    const line = work.lines.find((l: any) => l.id === lineId);
-    if (!line) throw new AppError('Work line not found', 404);
-
-    await db.warehouseWorkLine.update({
-      where: { id: lineId },
-      data: {
-        quantity_done: quantityDone,
-        status: quantityDone >= Number(line.quantity) ? 'DONE' : 'SHORT',
-        completed_at: new Date(),
+    const from = await tx.inventoryStock.findFirst({
+      where: {
+        tenant_id: m.tenantId,
+        product_id: m.productId,
+        variant_id: m.variantId,
+        location_id: m.fromLocationId,
       },
     });
 
-    const allDone = work.lines
-      .filter((l: any) => l.id !== lineId)
-      .every((l: any) => l.status === 'DONE');
+    const availableAtSource = from ? from.quantity - from.reserved_qty : 0;
+    if (availableAtSource < m.quantity) {
+      throw new AppError(
+        `Cannot move ${m.quantity}: only ${availableAtSource} is available at the source location. ` +
+          `The work was created against stock that has since moved or been reserved.`,
+        409,
+        'WORK_SOURCE_STOCK_INSUFFICIENT',
+      );
+    }
 
-    if (allDone) {
-      await db.warehouseWork.update({
-        where: { id: workId },
-        data: { status: 'COMPLETED', completed_at: new Date() },
+    await tx.inventoryStock.update({
+      where: { id: from!.id },
+      data: { quantity: { decrement: m.quantity } },
+    });
+
+    // Not an upsert: the compound unique includes the nullable `variant_id`, and
+    // Prisma refuses null in a compound-unique `where`. A product with no variants
+    // is the common case here, so the upsert form fails exactly where it is needed
+    // most.
+    const destination = await tx.inventoryStock.findFirst({
+      where: {
+        tenant_id: m.tenantId,
+        product_id: m.productId,
+        variant_id: m.variantId,
+        location_id: m.toLocationId,
+      },
+    });
+
+    if (destination) {
+      await tx.inventoryStock.update({
+        where: { id: destination.id },
+        data: { quantity: { increment: m.quantity } },
       });
+    } else {
+      await tx.inventoryStock.create({
+        data: {
+          tenant_id: m.tenantId,
+          product_id: m.productId,
+          variant_id: m.variantId,
+          location_id: m.toLocationId,
+          quantity: m.quantity,
+        },
+      });
+    }
 
-      if (work.work_type === 'PICK' && work.reference_type === 'sales_order') {
-        await db.salesOrder.update({
-          where: { id: work.reference_id! },
-          data: { status: 'PICKING' },
-        });
-      }
+    // The cost layers move with the goods, oldest first. Without this the FIFO
+    // layers keep pointing at the receiving dock while the stock is on the shelf,
+    // and the two subledgers disagree about where the same units are.
+    let remaining = m.quantity;
+    const layers = await tx.inventoryCostLayer.findMany({
+      where: {
+        tenant_id: m.tenantId,
+        product_id: m.productId,
+        variant_id: m.variantId,
+        location_id: m.fromLocationId,
+        quantity: { gt: 0 },
+      },
+      orderBy: { received_at: 'asc' },
+    });
+    for (const layer of layers) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, layer.quantity);
+      await tx.inventoryCostLayer.update({
+        where: { id: layer.id },
+        data: { quantity: { decrement: take } },
+      });
+      await tx.inventoryCostLayer.create({
+        data: {
+          tenant_id: m.tenantId,
+          product_id: m.productId,
+          variant_id: m.variantId,
+          location_id: m.toLocationId,
+          source_po_id: layer.source_po_id,
+          po_number: layer.po_number,
+          quantity: take,
+          unit_cost: layer.unit_cost,
+          received_at: layer.received_at, // keeps FIFO age; a move is not a receipt
+        },
+      });
+      remaining -= take;
+    }
+
+    // Two transactions, one out and one in — the shape D365 uses for a transfer,
+    // and what makes the move auditable instead of a stock row quietly changing.
+    for (const [type, from_location_id, to_location_id] of [
+      ['TRANSFER_OUT', m.fromLocationId, m.toLocationId],
+      ['TRANSFER_IN', m.fromLocationId, m.toLocationId],
+    ] as const) {
+      await tx.inventoryTransaction.create({
+        data: {
+          tenant_id: m.tenantId,
+          transaction_type: type,
+          ...physicalStatusFor(type),
+          reference_type: 'WAREHOUSE_WORK',
+          reference_number: m.reference,
+          product_id: m.productId,
+          variant_id: m.variantId,
+          from_location_id,
+          to_location_id,
+          quantity: m.quantity,
+          notes: `${m.workType} — ${m.reference}`,
+          performed_by: m.userId,
+        },
+      });
     }
   }
 }

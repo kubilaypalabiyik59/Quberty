@@ -2,8 +2,8 @@ import { Hono }    from 'hono';
 import * as bcrypt  from 'bcryptjs';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
@@ -130,38 +130,46 @@ app.post('/payroll', requireRole('admin'), async (c) => {
   });
   if (existing) throw new AppError(`Payroll for ${periodKey} already processed (JE ${existing.entry_number}).`, 409);
 
+  const totalGross      = lines.reduce((s: number, l: any) => s + Number(l.gross_salary), 0);
+  const totalDeductions = lines.reduce((s: number, l: any) => s + Number(l.deductions ?? 0), 0);
+  const totalNet        = totalGross - totalDeductions;
+
   // Payroll already failed loudly on a missing account rather than skipping, which
   // was correct — it just named Bolivian codes. The posting types carry the same
   // strictness without hardcoding a chart.
+  //
+  // PAYROLL_DEDUCTION_PAYABLE is resolved only when something was actually
+  // withheld. The entry used to debit gross and credit NET, which does not
+  // balance: the deductions were credited to nothing. They are owed to the state
+  // or the pension fund, not to the employee, so they cannot share the employee
+  // payable. A payroll with no deductions posts exactly the two lines it always did.
+  const types = totalDeductions > 0
+    ? (['PAYROLL_EXPENSE', 'PAYROLL_PAYABLE', 'PAYROLL_DEDUCTION_PAYABLE'] as const)
+    : (['PAYROLL_EXPENSE', 'PAYROLL_PAYABLE'] as const);
+
   const acc = await resolvePostingAccounts_orExplain(
-    tenantId, ['PAYROLL_EXPENSE', 'PAYROLL_PAYABLE'] as const,
+    tenantId, types,
     { document: `Payroll ${periodKey}` },
   );
   if (!acc) throw new AppError(`Payroll for ${periodKey} cannot be posted: payroll posting profiles are not configured.`, 500);
 
-  const totalGross      = lines.reduce((s: number, l: any) => s + Number(l.gross_salary), 0);
-  const totalDeductions = lines.reduce((s: number, l: any) => s + Number(l.deductions ?? 0), 0);
-  const totalNet        = totalGross - totalDeductions;
-  const entryNumber     = await nextJournalVoucher(tenantId);
-
-  const je = await db.journalEntry.create({
-    data: {
-      tenant_id:    tenantId,
-      entry_number: entryNumber,
-      entry_date:   new Date(Number(year), Number(month) - 1, 28),
-      description:  `Planilla de Sueldos ${periodKey}`,
-      source_module: 'PAYROLL',
-      status:       'POSTED',
-      posted_at:    new Date(),
-      created_by:   c.get('user').id,
-      lines: {
-        create: [
-          { account_id: acc.PAYROLL_EXPENSE, debit_amount: totalGross, credit_amount: 0,        description: `Sueldos brutos ${periodKey}` },
-          { account_id: acc.PAYROLL_PAYABLE, debit_amount: 0,          credit_amount: totalNet, description: `Sueldos netos por pagar ${periodKey}` },
-        ],
-      },
-    },
-    include: { lines: { include: { account: { select: { code: true, name: true } } } } },
+  const je = await postJournal({
+    tenantId,
+    date:        new Date(Number(year), Number(month) - 1, 28),
+    description: `Planilla de Sueldos ${periodKey}`,
+    source:      { module: 'PAYROLL' },
+    userId:      c.get('user').id,
+    lines: [
+      { accountId: acc.PAYROLL_EXPENSE, debit:  totalGross, description: `Sueldos brutos ${periodKey}` },
+      { accountId: acc.PAYROLL_PAYABLE, credit: totalNet,   description: `Sueldos netos por pagar ${periodKey}` },
+      ...(totalDeductions > 0
+        ? [{
+            accountId: (acc as Record<string, string>).PAYROLL_DEDUCTION_PAYABLE,
+            credit: totalDeductions,
+            description: `Retenciones y aportes ${periodKey}`,
+          }]
+        : []),
+    ],
   });
 
   return created(c, {

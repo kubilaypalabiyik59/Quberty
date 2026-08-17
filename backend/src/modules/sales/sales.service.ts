@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
-import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
@@ -132,8 +132,10 @@ export class SalesService {
       }
     }
 
-    // Reserve stock
-    await inventoryService.reserveStock(tenantId, order.lines, orderId);
+    // Reserve stock — in the SAME warehouse the availability check just used.
+    // Passing it is the whole point: without it, reservation and availability
+    // answered about different sets of stock.
+    await inventoryService.reserveStock(tenantId, order.lines, orderId, order.warehouse_id);
 
     const updated = await db.salesOrder.update({
       where: { id: orderId },
@@ -254,28 +256,18 @@ export class SalesService {
         }
 
         if (resolved.length > 0) {
-          const entryNumber = await nextJournalVoucher(tenantId);
-          await db.journalEntry.create({
-            data: {
-              tenant_id: tenantId,
-              entry_number: entryNumber,
-              entry_date: new Date(),
-              description: `COGS: ${order.order_number}`,
-              source_module: 'SALES_COGS',
-              source_id: orderId,
-              status: 'POSTED',
-              posted_at: new Date(),
-              created_by: userId,
-              lines: {
-                create: resolved.flatMap(({ bucket, acc }) => {
-                  const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
-                  return [
-                    { account_id: acc.COGS,      debit_amount: bucket.amount, credit_amount: 0,            description: `COGS${label} — ${order.order_number}` },
-                    { account_id: acc.INVENTORY, debit_amount: 0,             credit_amount: bucket.amount, description: `Inventory out${label} — ${order.order_number}` },
-                  ];
-                }),
-              },
-            },
+          await postJournal({
+            tenantId,
+            description: `COGS: ${order.order_number}`,
+            source: { module: 'SALES_COGS', id: orderId },
+            userId,
+            lines: resolved.flatMap(({ bucket, acc }) => {
+              const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
+              return [
+                { accountId: acc.COGS,      debit:  bucket.amount, description: `COGS${label} — ${order.order_number}` },
+                { accountId: acc.INVENTORY, credit: bucket.amount, description: `Inventory out${label} — ${order.order_number}` },
+              ];
+            }),
           });
         }
       }

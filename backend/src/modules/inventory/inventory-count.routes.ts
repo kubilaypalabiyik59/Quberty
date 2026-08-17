@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 
 const app = new Hono<AppEnv>();
 
@@ -121,6 +122,8 @@ app.post('/:id/finalize', requireRole('admin', 'store_manager'), async (c) => {
       data: {
         tenant_id:        c.get('tenantId'),
         transaction_type: 'ADJUSTMENT',
+        // `diff` carries the sign the stored quantity drops.
+        ...physicalStatusFor('ADJUSTMENT', { delta: diff }),
         reference_type:   'INVENTORY_COUNT',
         reference_id:     count.id,
         product_id:       line.product_id,

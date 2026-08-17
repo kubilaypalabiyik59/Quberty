@@ -9,7 +9,7 @@ import { validate } from '../../shared/middleware/validate';
 import { CreatePurchaseOrderSchema } from '../../shared/schemas';
 import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
-import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { createAndPostReceipt } from './productReceipt.service';
@@ -379,26 +379,17 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
 
     if (acc && bankAccount) {
       const totalAmount = Number(po.total_amount);
-      const entryNumber = await nextJournalVoucher(c.get('tenantId'));
 
-      await db.journalEntry.create({
-        data: {
-          tenant_id:    c.get('tenantId'),
-          entry_number: entryNumber,
-          entry_date:   paymentDate,
-          description:  `AP Payment: ${po.po_number}${notes ? ' — ' + notes : ''}`,
-          source_module: 'PURCHASE_PAYMENT',
-          source_id:    po.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   c.get('user').id,
-          lines: {
-            create: [
-              { account_id: acc.AP,         debit_amount: totalAmount, credit_amount: 0,           description: `Clear CxP — ${po.po_number}` },
-              { account_id: bankAccount.id, debit_amount: 0,           credit_amount: totalAmount, description: `Payment to supplier (${account_code})` },
-            ],
-          },
-        },
+      await postJournal({
+        tenantId:    c.get('tenantId'),
+        date:        paymentDate,
+        description: `AP Payment: ${po.po_number}${notes ? ' — ' + notes : ''}`,
+        source:      { module: 'PURCHASE_PAYMENT', id: po.id },
+        userId:      c.get('user').id,
+        lines: [
+          { accountId: acc.AP,         debit:  totalAmount, description: `Clear CxP — ${po.po_number}` },
+          { accountId: bankAccount.id, credit: totalAmount, description: `Payment to supplier (${account_code})` },
+        ],
       });
     }
   }

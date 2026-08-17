@@ -5,6 +5,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 
 const app = new Hono<AppEnv>();
 const inventoryService = new InventoryService();
@@ -113,6 +114,11 @@ app.post('/adjust', requireRole('admin', 'store_manager'), async (c) => {
     data: {
       tenant_id:        c.get('tenantId'),
       transaction_type: 'ADJUSTMENT',
+      // `qty` is signed here even though the stored quantity is not, so the
+      // direction IS known at this point. **[OFFICIAL]** a counting/adjustment
+      // journal is physically and financially updated in one posting, so this
+      // lands on PURCHASED or SOLD directly rather than on RECEIVED/DEDUCTED.
+      ...physicalStatusFor('ADJUSTMENT', { delta: qty }),
       product_id,
       variant_id:       variant_id ?? null,
       to_location_id:   qty > 0 ? location_id : null,

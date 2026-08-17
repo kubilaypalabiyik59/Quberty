@@ -2,12 +2,14 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 
-import { nextSalesOrderNumber, nextJournalEntryNumber } from '../../shared/utils/orderCounter';
+import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
 import { OpenSessionSchema, CloseSessionSchema, PosSaleSchema } from '../../shared/schemas';
 import { logger }   from '../../shared/logger';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
 import type { AppEnv } from '../../shared/context';
@@ -139,8 +141,13 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
   // Get counters BEFORE the transaction (atomic SQL — race-condition safe)
   const facturaNumber = await nextFacturaNumber(tenantId);
   const orderNumber   = await nextSalesOrderNumber(tenantId);
-  const je1Number     = await nextJournalEntryNumber(tenantId); // Sales JE
-  const je2Number     = await nextJournalEntryNumber(tenantId); // COGS JE
+
+  // Voucher numbers are no longer pre-allocated here. POS drew them from
+  // `order_counters` via nextJournalEntryNumber (format `JE-000001`) while every
+  // other module drew them from the configured NumberSequence (format
+  // `JE-2026-00081`) — two independent series numbering the same ledger, and only
+  // one of them a tenant can configure. postJournal allocates from the sequence,
+  // so there is one series again.
 
   const result = await db.$transaction(async (tx) => {
 
@@ -197,6 +204,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
           data: {
             tenant_id:        tenantId,
             transaction_type: 'OUTBOUND',
+            ...physicalStatusFor('OUTBOUND'),
             reference_type:   'POS_SALE',
             product_id:       line.product_id,
             variant_id:       variantId,
@@ -304,31 +312,23 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     );
 
     if (acc) {
-      await tx.journalEntry.create({
-        data: {
-          tenant_id:    tenantId,
-          entry_number: je1Number,
-          entry_date:   new Date(),
-          description:  `POS Sale: ${orderNumber} — Factura #${String(facturaNumber).padStart(6, '0')}`,
-          source_module: 'POS_SALE',
-          source_id:    order.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   userId,
-          lines: {
-            create: [
-              { account_id: acc.AR,      debit_amount: totalAmount, credit_amount: 0,         description: `CxC — ${orderNumber}` },
-              { account_id: acc.REVENUE, debit_amount: 0,           credit_amount: subtotal,  description: `Ventas — ${orderNumber}` },
-              { account_id: acc.VAT_OUTPUT, debit_amount: 0,        credit_amount: ivaAmount, description: `IVA Débito Fiscal — ${orderNumber}` },
+      await postJournal({
+        tenantId,
+        tx,
+        description:  `POS Sale: ${orderNumber} — Factura #${String(facturaNumber).padStart(6, '0')}`,
+        source:       { module: 'POS_SALE', id: order.id },
+        userId,
+        lines: [
+              { accountId: acc.AR,      debit:  totalAmount, description: `CxC — ${orderNumber}` },
+              { accountId: acc.REVENUE, credit: subtotal,    description: `Ventas — ${orderNumber}` },
+              { accountId: acc.VAT_OUTPUT, credit: ivaAmount, description: `IVA Débito Fiscal — ${orderNumber}` },
               // D-3: POS never accrued IT. Every POS sale under-declared the 3%
               // transaction tax, and for a retailer whose sales are overwhelmingly
               // POS that was most of the IT liability. Sales invoices always posted
               // these two lines; POS simply omitted them.
-              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: itAmount, credit_amount: 0,        description: `IT 3% expense — ${orderNumber}` },
-              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,        credit_amount: itAmount, description: `IT por Pagar 3% — ${orderNumber}` },
-            ],
-          },
-        },
+              { accountId: acc.TAX_TURNOVER_EXPENSE, debit:  itAmount, description: `IT 3% expense — ${orderNumber}` },
+              { accountId: acc.TAX_TURNOVER_PAYABLE, credit: itAmount, description: `IT por Pagar 3% — ${orderNumber}` },
+        ],
       });
     }
 
@@ -338,24 +338,16 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     // against no sale at all. That is the severe half of D-2. Either both post or
     // neither does.
     if (acc && cogsTotal > 0) {
-      await tx.journalEntry.create({
-        data: {
-          tenant_id:    tenantId,
-          entry_number: je2Number,
-          entry_date:   new Date(),
-          description:  `COGS: ${orderNumber}`,
-          source_module: 'POS_COGS',
-          source_id:    order.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   userId,
-          lines: {
-            create: [
-              { account_id: acc.COGS,      debit_amount: cogsTotal, credit_amount: 0,         description: `COGS — ${orderNumber}` },
-              { account_id: acc.INVENTORY, debit_amount: 0,         credit_amount: cogsTotal, description: `Inventario — ${orderNumber}` },
-            ],
-          },
-        },
+      await postJournal({
+        tenantId,
+        tx,
+        description: `COGS: ${orderNumber}`,
+        source:      { module: 'POS_COGS', id: order.id },
+        userId,
+        lines: [
+          { accountId: acc.COGS,      debit:  cogsTotal, description: `COGS — ${orderNumber}` },
+          { accountId: acc.INVENTORY, credit: cogsTotal, description: `Inventario — ${orderNumber}` },
+        ],
       });
     }
 
@@ -452,6 +444,7 @@ app.post('/sales/:orderId/void', async (c) => {
         data: {
           tenant_id:        tenantId,
           transaction_type: 'VOID_RETURN',
+            ...physicalStatusFor('VOID_RETURN'),
           reference_type:   'POS_VOID',
           reference_id:     orderId,
           product_id:       line.product_id,
@@ -481,10 +474,6 @@ app.post('/sales/:orderId/void', async (c) => {
         cogsTotal += Number(product?.cost_price ?? 0) * line.quantity;
       }
 
-      // Pre-allocate JE numbers atomically
-      const voidJe1 = await nextJournalEntryNumber(tenantId); // Sales reversal
-      const voidJe2 = cogsTotal > 0 ? await nextJournalEntryNumber(tenantId) : null; // COGS reversal
-
       // Same posting profiles as the forward sale, so a void can never reverse
       // into different accounts than the sale it is undoing.
       const vAcc = await resolvePostingAccounts_orExplain(
@@ -494,48 +483,39 @@ app.post('/sales/:orderId/void', async (c) => {
       );
 
       if (vAcc) {
-        await tx.journalEntry.create({
-          data: {
-            tenant_id:     tenantId,
-            entry_number:  voidJe1,
-            entry_date:    new Date(),
-            description:   `VOID: ${order.order_number}`,
-            source_module: 'POS_VOID',
-            source_id:     orderId,
-            status:        'POSTED',
-            posted_at:     new Date(),
-            created_by:    userId,
-            lines: {
-              create: [
-                { account_id: vAcc.REVENUE,    debit_amount: subtotal,     credit_amount: 0,           description: `Reverse Ventas — ${order.order_number}` },
-                { account_id: vAcc.VAT_OUTPUT, debit_amount: ivaAmount,    credit_amount: 0,           description: `Reverse IVA Débito — ${order.order_number}` },
-                { account_id: vAcc.AR,         debit_amount: 0,            credit_amount: totalAmount, description: `Reverse CxC — ${order.order_number}` },
-              ],
-            },
-          },
+        // NOTE — this reversal balances but is INCOMPLETE. The forward sale posts
+        // five lines including the IT expense and the IT payable (D-3 fix above);
+        // the void reverses only three. Voiding a POS sale therefore leaves the
+        // 3% turnover-tax liability standing against a sale that no longer exists.
+        // Left as-is here deliberately: it is an accounting correction, not a
+        // refactor, and it belongs with the other correction journals awaiting the
+        // Finance co-founder. postJournal cannot catch it because it balances.
+        await postJournal({
+          tenantId,
+          tx,
+          description: `VOID: ${order.order_number}`,
+          source:      { module: 'POS_VOID', id: orderId },
+          userId,
+          lines: [
+            { accountId: vAcc.REVENUE,    debit:  subtotal,    description: `Reverse Ventas — ${order.order_number}` },
+            { accountId: vAcc.VAT_OUTPUT, debit:  ivaAmount,   description: `Reverse IVA Débito — ${order.order_number}` },
+            { accountId: vAcc.AR,         credit: totalAmount, description: `Reverse CxC — ${order.order_number}` },
+          ],
         });
       }
 
       // COGS reversal — was missing before (Dr 1110 Inventario / Cr 5101 COGS)
-      if (voidJe2 && vAcc && cogsTotal > 0) {
-        await tx.journalEntry.create({
-          data: {
-            tenant_id:     tenantId,
-            entry_number:  voidJe2,
-            entry_date:    new Date(),
-            description:   `VOID COGS: ${order.order_number}`,
-            source_module: 'POS_VOID',
-            source_id:     orderId,
-            status:        'POSTED',
-            posted_at:     new Date(),
-            created_by:    userId,
-            lines: {
-              create: [
-                { account_id: vAcc.INVENTORY, debit_amount: cogsTotal, credit_amount: 0,         description: `Restore Inventario — ${order.order_number}` },
-                { account_id: vAcc.COGS,      debit_amount: 0,         credit_amount: cogsTotal, description: `Reverse COGS — ${order.order_number}` },
-              ],
-            },
-          },
+      if (vAcc && cogsTotal > 0) {
+        await postJournal({
+          tenantId,
+          tx,
+          description: `VOID COGS: ${order.order_number}`,
+          source:      { module: 'POS_VOID', id: orderId },
+          userId,
+          lines: [
+            { accountId: vAcc.INVENTORY, debit:  cogsTotal, description: `Restore Inventario — ${order.order_number}` },
+            { accountId: vAcc.COGS,      credit: cogsTotal, description: `Reverse COGS — ${order.order_number}` },
+          ],
         });
       }
     } catch (jeErr) {

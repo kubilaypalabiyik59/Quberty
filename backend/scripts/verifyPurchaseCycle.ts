@@ -193,7 +193,7 @@ async function voucherBalance(entryId: string) {
   check('order is PARTIALLY_RECEIVED', po1AfterR1?.status, 'PARTIALLY_RECEIVED');
 
   // The batch cost defect this work fixes
-  const batch = await db.inventoryBatch.findFirst({
+  const batch = await db.inventoryCostLayer.findFirst({
     where: { source_po_id: po1.id }, select: { unit_cost: true },
     orderBy: { received_at: 'desc' },
   });
@@ -351,7 +351,7 @@ async function voucherBalance(entryId: string) {
     await db.vendorInvoice.deleteMany({ where: { id: { in: invoiceIds } } });
     await db.productReceiptLine.deleteMany({ where: { receipt_id: { in: receiptIds } } });
     await db.productReceipt.deleteMany({ where: { id: { in: receiptIds } } });
-    await db.inventoryBatch.deleteMany({ where: { source_po_id: { in: createdPoIds } } });
+    await db.inventoryCostLayer.deleteMany({ where: { source_po_id: { in: createdPoIds } } });
     await db.inventoryTransaction.deleteMany({ where: { reference_id: { in: receiptIds } } });
     await db.purchaseOrderLine.deleteMany({ where: { po_id: { in: createdPoIds } } });
     await db.purchaseOrder.deleteMany({ where: { id: { in: createdPoIds } } });

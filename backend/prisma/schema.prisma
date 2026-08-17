@@ -128,9 +128,57 @@ model Warehouse {
   product_receipts    ProductReceipt[]
   rfq_cases           RfqCase[]
   default_for_sales   SalesParameters[]
+  parameters          WarehouseParameters?
 
   @@unique([tenant_id, code])
   @@map("warehouses")
+}
+
+/// Warehouse management's module parameters — **per warehouse**, not per tenant.
+///
+/// **[OFFICIAL]** D365 sets warehouse behaviour on the individual warehouse (e.g.
+/// *Default inventory status ID* lives on the Warehouse FastTab), and that is also
+/// what this business needs: "receive it and it is sellable" in the shops, directed
+/// putaway in the distribution warehouse, at the same time.
+///
+/// **Deliberately NOT a one-way door.** D365 gates advanced warehousing behind
+/// `Use warehouse management processes` on the storage dimension group, which
+/// cannot be changed after saving and forces a new warehouse plus a manual
+/// inventory move to adopt later. `InventoryStock` here is keyed on `location_id`
+/// for every warehouse already, so this is a behaviour switch that can go either
+/// way at any time. See docs/process/WAREHOUSE_ROADMAP.md §3.
+model WarehouseParameters {
+  id           String @id @default(uuid()) @db.Uuid
+  tenant_id    String @db.Uuid
+  warehouse_id String @unique @db.Uuid
+
+  /// Two-step receiving. **[OFFICIAL]** the difference between inbound method C and
+  /// method D: "the receipt is posted first … The warehouse worker then registers
+  /// the put-away to make the items available to pick."
+  require_putaway Boolean @default(false)
+
+  /// The outbound equivalent. **Nothing reads this yet** — Phase 2/3 of the roadmap.
+  /// Declared here because it belongs on the same record and the same screen; the
+  /// fact that it is inert is stated rather than left to be discovered.
+  require_pick_work Boolean @default(false)
+
+  /// ALL_LOCATIONS (today's behaviour) | PICK_LOCATIONS_ONLY (only stock that has
+  /// actually been put away counts as sellable).
+  availability_counts String @default("ALL_LOCATIONS")
+
+  /// Where receipts land by default, and where putaway takes them FROM.
+  /// **[OFFICIAL]** "during purchase registration, the first pick is always from the
+  /// location where the registration occurs" — the FROM is never directive-resolved.
+  default_receive_location_id String? @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  warehouse                Warehouse          @relation(fields: [warehouse_id], references: [id], onDelete: Cascade)
+  default_receive_location WarehouseLocation? @relation("default_receive_location", fields: [default_receive_location_id], references: [id])
+
+  @@index([tenant_id])
+  @@map("warehouse_parameters")
 }
 
 model WarehouseZone {
@@ -175,7 +223,8 @@ model WarehouseLocation {
   directive_lines   LocationDirectiveLine[]
   inv_tx_from       InventoryTransaction[]  @relation("inv_tx_from")
   inv_tx_to         InventoryTransaction[]  @relation("inv_tx_to")
-  inventory_batches InventoryBatch[]
+  cost_layers       InventoryCostLayer[]
+  default_receive_for WarehouseParameters[] @relation("default_receive_location")
 
   @@unique([zone_id, code])
   @@map("warehouse_locations")
@@ -184,6 +233,167 @@ model WarehouseLocation {
 // =====================
 // PRODUCTS
 // =====================
+
+// =====================
+// PRODUCT INFORMATION MANAGEMENT — SETUP (migration 014)
+//
+// **[OFFICIAL]** D365 separates three things and the separation is the point:
+// the DIMENSION (the axis), the VALUE on that axis, and the DIMENSION GROUP
+// (which axes a given product varies by).
+// learn.microsoft.com/dynamics365/supply-chain/pim/product-dimensions
+//
+// Without the group, "this shoe varies by size" and "this shoe varies by size and
+// colour" are indistinguishable — so no variant matrix and no completeness check.
+// =====================
+
+/// The axis. **[OFFICIAL]** D365 ships five (colour, configuration, size, style,
+/// version). Rows rather than an enum, so a footwear tenant that also sells by
+/// *width* adds a row instead of waiting for a release.
+model ProductDimension {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  code            String
+  name            String
+  sort_order      Int     @default(0)
+  is_active       Boolean @default(true)
+  created_at      DateTime @default(now())
+
+  values       ProductDimensionValue[]
+  group_lines  ProductDimensionGroupLine[]
+  value_groups ProductDimensionValueGroup[]
+  variant_values ProductVariantValue[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("product_dimensions")
+}
+
+/// A value on an axis. `sort_order` is not decoration: sizes are not text, and
+/// without it EU 10 sorts before EU 9 on every screen forever.
+model ProductDimensionValue {
+  id           String  @id @default(uuid()) @db.Uuid
+  tenant_id    String  @db.Uuid
+  dimension_id String  @db.Uuid
+  value        String
+  name         String?
+  sort_order   Int     @default(0)
+  is_active    Boolean @default(true)
+  created_at   DateTime @default(now())
+
+  dimension      ProductDimension                    @relation(fields: [dimension_id], references: [id])
+  group_members  ProductDimensionValueGroupMember[]
+  variant_values ProductVariantValue[]
+
+  @@unique([tenant_id, dimension_id, value])
+  @@map("product_dimension_values")
+}
+
+/// A named collection of values — D365's size / colour / style groups.
+/// **[OFFICIAL]** they exist so a new product inherits EU 36–46 instead of
+/// somebody retyping it. For a shoe retailer this is the largest daily-labour
+/// item in product setup.
+model ProductDimensionValueGroup {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenant_id    String   @db.Uuid
+  dimension_id String   @db.Uuid
+  code         String
+  name         String
+  created_at   DateTime @default(now())
+
+  dimension ProductDimension                   @relation(fields: [dimension_id], references: [id])
+  members   ProductDimensionValueGroupMember[]
+
+  @@unique([tenant_id, code])
+  @@map("product_dimension_value_groups")
+}
+
+model ProductDimensionValueGroupMember {
+  group_id String @db.Uuid
+  value_id String @db.Uuid
+
+  group ProductDimensionValueGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  value ProductDimensionValue      @relation(fields: [value_id], references: [id], onDelete: Cascade)
+
+  @@id([group_id, value_id])
+  @@map("product_dimension_value_group_members")
+}
+
+/// Which axes a product varies by.
+model ProductDimensionGroup {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String   @db.Uuid
+  legal_entity_id String?  @db.Uuid
+  code            String
+  name            String
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now())
+
+  lines      ProductDimensionGroupLine[]
+  products   Product[]
+  parameters ProductParameters[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@map("product_dimension_groups")
+}
+
+model ProductDimensionGroupLine {
+  id           String @id @default(uuid()) @db.Uuid
+  group_id     String @db.Uuid
+  dimension_id String @db.Uuid
+  sequence     Int    @default(0)
+
+  group     ProductDimensionGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  dimension ProductDimension      @relation(fields: [dimension_id], references: [id])
+
+  @@unique([group_id, dimension_id])
+  @@map("product_dimension_group_lines")
+}
+
+/// The variant's value on each axis. This is what replaced
+/// `ProductVariant.attributes` — a typed, ordered, referentially-sound answer to
+/// "which size is this variant".
+model ProductVariantValue {
+  variant_id   String @db.Uuid
+  dimension_id String @db.Uuid
+  value_id     String @db.Uuid
+
+  variant   ProductVariant        @relation(fields: [variant_id], references: [id], onDelete: Cascade)
+  dimension ProductDimension      @relation(fields: [dimension_id], references: [id])
+  value     ProductDimensionValue @relation(fields: [value_id], references: [id])
+
+  @@id([variant_id, dimension_id])
+  @@index([value_id])
+  @@map("product_variant_values")
+}
+
+/// PIM's module parameters record. Every other module has had one since
+/// migration 001; this module had none.
+model ProductParameters {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+
+  /// Offered when a product master is created and no group is chosen.
+  default_dimension_group_id String? @db.Uuid
+
+  /// **[OFFICIAL]** D365 assembles a variant number from segments (master number,
+  /// text constant, dimension values). A format string rather than a segment
+  /// table: one tenant, one convention, and the richer version is a table this
+  /// column later points at.
+  variant_number_format String @default("{SKU}-{VALUES}")
+
+  /// Refuse a variant that leaves an axis of its group unset. Default false so
+  /// nothing existing breaks; a tenant turns it on once its data is clean.
+  require_complete_variants Boolean @default(false)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
+
+  default_dimension_group ProductDimensionGroup? @relation(fields: [default_dimension_group_id], references: [id])
+
+  @@unique([tenant_id, legal_entity_id])
+  @@map("product_parameters")
+}
 
 model ProductCategory {
   id         String   @id @default(uuid()) @db.Uuid
@@ -223,6 +433,20 @@ model Product {
   /// This is the column that carries reduced rates (Turkish KDV 10%/1%, German 7%).
   item_tax_group_id String?  @db.Uuid
 
+  /// ── Product dimensions (migration 014) ──────────────────────────────────
+  /// Which axes this product varies by. NULL means it does not vary — and that
+  /// is a real answer, not a missing one, so products with no variants are
+  /// deliberately left NULL rather than pointed at an empty group.
+  dimension_group_id String? @db.Uuid
+
+  /// The hook for selling batch or serial tracking as an option later.
+  /// **[OFFICIAL]** D365's equivalent is the tracking dimension group, and the
+  /// position of batch relative to Location in the reservation hierarchy is what
+  /// actually changes behaviour — see MODULE_FIT_ANALYSIS §1.
+  /// Only NONE is implemented. The service layer must refuse to change this once
+  /// transactions exist, the same guard as item group and costing method.
+  tracking_policy String @default("NONE") // NONE | BATCH | SERIAL
+
   /// ── Released-product financial setup ────────────────────────────────────
   /// **[OFFICIAL]** both are mandatory fields on a D365 released product, and
   /// they answer different questions: the MODEL group is how the item is valued
@@ -245,10 +469,11 @@ model Product {
   item_tax_group         ItemTaxGroup?             @relation(fields: [item_tax_group_id], references: [id])
   item_model_group       ItemModelGroup?           @relation(fields: [item_model_group_id], references: [id])
   item_group             ItemGroup?                @relation(fields: [item_group_id], references: [id])
+  dimension_group        ProductDimensionGroup?    @relation(fields: [dimension_group_id], references: [id])
   variants               ProductVariant[]
   inventory_stock        InventoryStock[]
   inventory_transactions InventoryTransaction[]
-  inventory_batches      InventoryBatch[]
+  cost_layers            InventoryCostLayer[]
   sales_order_lines      SalesOrderLine[]
   purchase_order_lines   PurchaseOrderLine[]
   count_lines            InventoryCountLine[]
@@ -269,6 +494,19 @@ model ProductVariant {
   tenant_id       String   @db.Uuid
   product_id      String   @db.Uuid
   sku_variant     String
+
+  /// DEPRECATED by migration 014 — read `values` instead.
+  ///
+  /// These three carried the variant's identity before product dimensions existed,
+  /// and they carried it badly: verified on the live database, `size` and `color`
+  /// were NULL on all 150 variants while every one of them held its size in
+  /// `attributes` as `{"Sizes": "42"}`. A free-form JSON key with no validation,
+  /// no ordering (so "10" sorted before "9") and nothing stopping the next writer
+  /// using "Size" or "Beden".
+  ///
+  /// Left in place rather than dropped: they are empty, so nothing is lost, and
+  /// `attributes` is kept so the old and new representations stay comparable.
+  /// **Do not write to any of the three.**
   attributes      Json?
   size            String?
   color           String?
@@ -281,7 +519,7 @@ model ProductVariant {
   inventory_stock        InventoryStock[]
   count_lines            InventoryCountLine[]
   inventory_transactions InventoryTransaction[]
-  inventory_batches      InventoryBatch[]
+  cost_layers            InventoryCostLayer[]
 
   /// The upstream document lines DO carry a real FK to the variant, unlike
   /// `SalesOrderLine.variant_id` / `PurchaseOrderLine.variant_id`, which are bare
@@ -291,6 +529,14 @@ model ProductVariant {
   quotation_lines   SalesQuotationLine[]
   requisition_lines PurchaseRequisitionLine[]
   rfq_case_lines    RfqCaseLine[]
+
+  /// Migration 014 closed the gap the comment above describes: both order-line
+  /// columns are now real foreign keys, verified against 0 orphan rows first.
+  sales_order_lines    SalesOrderLine[]
+  purchase_order_lines PurchaseOrderLine[]
+
+  /// The variant's value on each axis of its product's dimension group.
+  values ProductVariantValue[]
   rfq_request_lines RfqRequestLine[]
 
   @@unique([tenant_id, sku_variant])
@@ -336,6 +582,28 @@ model InventoryTransaction {
   performed_by     String?  @db.Uuid
   created_at       DateTime @default(now())
 
+  /// ── Status (migration 016) ──────────────────────────────────────────────
+  /// **[OFFICIAL]** "Each inventory transaction has a status that's displayed in
+  /// EITHER the Receipt OR the Issue field" — two ladders, never both at once,
+  /// which is why these are two columns with a CHECK forbidding the pair.
+  /// learn.microsoft.com/dynamics365/finance/general-ledger/inventory-posting-profiles
+  ///
+  ///   receipt: ORDERED → REGISTERED → RECEIVED → PURCHASED
+  ///   issue:   ON_ORDER → RESERVED_ORDERED → RESERVED_PHYSICAL → PICKED → DEDUCTED → SOLD
+  ///
+  /// REGISTERED is the arrival step, RECEIVED the physical update, PURCHASED the
+  /// financial one; DEDUCTED and SOLD are their issue-side equivalents. PICKED is
+  /// the state that matters for the warehouse work about to be built: goods taken
+  /// from the shelf, still in the building, no longer available to anyone else.
+  receipt_status String?
+  issue_status   String?
+
+  /// The two dates D365 keeps separately: when the goods moved, and when the cost
+  /// reached the ledger. Together with the statuses they make "received but not
+  /// invoiced" answerable from the subledger instead of by joining documents.
+  physical_date  DateTime?
+  financial_date DateTime?
+
   product       Product            @relation(fields: [product_id], references: [id])
   variant       ProductVariant?    @relation(fields: [variant_id], references: [id])
   from_location WarehouseLocation? @relation("inv_tx_from", fields: [from_location_id], references: [id])
@@ -350,7 +618,22 @@ model InventoryTransaction {
 // FIFO BATCH LEDGER
 // =====================
 
-model InventoryBatch {
+/// A FIFO **cost layer** — not a batch.
+///
+/// Renamed from `InventoryBatch` by migration 015. It holds `unit_cost`,
+/// `received_at`, `source_po_id` and a remaining `quantity`: what a receipt cost,
+/// and how much of it is left to consume. It has no batch number, no expiry date
+/// and no customer-facing identity.
+///
+/// **[OFFICIAL]** a *batch* is a tracking dimension that sits in the reservation
+/// hierarchy beside serial number, and whether it sits above or below `Location`
+/// changes the sales screen, the picking flow and the reservation logic:
+/// learn.microsoft.com/dynamics365/supply-chain/warehousing/flexible-warehouse-level-dimension-reservation
+///
+/// The name was freed deliberately, so that when batch tracking is sold as an
+/// option it can take it without this codebase holding two unrelated concepts
+/// called "batch". See `Product.tracking_policy`.
+model InventoryCostLayer {
   id           String   @id @default(uuid()) @db.Uuid
   tenant_id    String   @db.Uuid
   product_id   String   @db.Uuid
@@ -368,7 +651,7 @@ model InventoryBatch {
   location WarehouseLocation @relation(fields: [location_id], references: [id])
 
   @@index([tenant_id, product_id, variant_id, received_at(sort: Asc)])
-  @@map("inventory_batches")
+  @@map("inventory_cost_layers")
 }
 
 // =====================
@@ -704,6 +987,8 @@ model PurchaseOrderLine {
 
   purchase_order PurchaseOrder        @relation(fields: [po_id], references: [id], onDelete: Cascade)
   product        Product              @relation(fields: [product_id], references: [id])
+  /// Migration 014 — real FK, same as the sales side.
+  variant        ProductVariant?      @relation(fields: [variant_id], references: [id])
   receipt_lines  ProductReceiptLine[]
   invoice_lines  VendorInvoiceLine[]
 
@@ -1201,8 +1486,11 @@ model SalesOrderLine {
   /// ("order three of the five quoted lines") reconstructable.
   source_line_id String? @db.Uuid
 
-  order   SalesOrder @relation(fields: [order_id], references: [id], onDelete: Cascade)
-  product Product    @relation(fields: [product_id], references: [id])
+  order   SalesOrder      @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [product_id], references: [id])
+  /// Migration 014 — was a bare UUID with no FK, which is how 37 units came to
+  /// sit on a variant nothing referenced.
+  variant ProductVariant? @relation(fields: [variant_id], references: [id])
 
   @@map("sales_order_lines")
 }
@@ -1381,10 +1669,23 @@ model JournalEntry {
   posted_at     DateTime?
   created_at    DateTime  @default(now())
 
+  /// What this voucher corrects, and why. A correction is a derived document: it
+  /// names its subject, states a reason and is reproducible — never a hand-typed
+  /// journal that happens to offset something.
+  /// **[OFFICIAL]** Business Central: "An entry can only be reversed one time."
+  /// The `@unique` is what enforces that.
+  corrects_entry_id String?   @unique @db.Uuid
+  correction_reason String?
+  is_correction     Boolean   @default(false)
+
+  corrects   JournalEntry?  @relation("correction", fields: [corrects_entry_id], references: [id])
+  corrected_by JournalEntry? @relation("correction")
+
   lines JournalLine[]
 
   @@index([tenant_id, entry_date(sort: Desc)])
   @@index([tenant_id, source_module, source_id])
+  @@index([tenant_id, is_correction])
   @@map("journal_entries")
 }
 
@@ -1395,6 +1696,11 @@ model JournalLine {
   debit_amount     Decimal @default(0) @db.Decimal(14, 2)
   credit_amount    Decimal @default(0) @db.Decimal(14, 2)
   description      String?
+
+  /// D365's `Correction` field. Under STORNO a correction is a NEGATIVE amount in
+  /// the original column, which is otherwise indistinguishable from a legitimately
+  /// negative posting. Under REVERSE it is informational.
+  is_correction    Boolean @default(false)
 
   journal_entry JournalEntry @relation(fields: [journal_entry_id], references: [id], onDelete: Cascade)
   account       Account      @relation(fields: [account_id], references: [id])
@@ -1651,6 +1957,21 @@ model FinanceParameters {
   /// tenant can be migrated deliberately rather than abruptly.
   require_balanced_posting       Boolean @default(true)
   allow_posting_to_closed_period Boolean @default(false)
+
+  /// How a posted voucher is corrected. **[OFFICIAL]** D365 makes this a parameter
+  /// too (*General ledger parameters → Transaction reversal → Correction*), because
+  /// the right answer is jurisdictional:
+  ///
+  ///   REVERSE — copy the entry with debit and credit swapped, amounts keep their
+  ///             sign. Balance correct, but turnover inflated on both sides.
+  ///   STORNO  — copy it in the SAME columns with the amounts negated, zeroing the
+  ///             original out. Turnover stays correct.
+  ///
+  /// [OFFICIAL] "Use the reverse entry in countries or regions where turnover is
+  /// rarely used. Other countries or regions use Storno accounting."
+  /// Default REVERSE: negative amounts break naive reports, so a tenant opts INTO
+  /// storno because its jurisdiction expects it. See docs/architecture/CORRECTIONS.md.
+  correction_method String @default("REVERSE") // REVERSE | STORNO
 
   functional_currency String  @default("BOB")
   /// Rounding tolerance below which a posting imbalance is written to ROUNDING

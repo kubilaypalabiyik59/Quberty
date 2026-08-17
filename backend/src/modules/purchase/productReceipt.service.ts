@@ -2,10 +2,16 @@ import { Prisma } from '@prisma/client';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
-import { allocateNumber, nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
+import { allocateNumber } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { resolveItemPolicies, groupByItemGroup, ItemPolicy } from '../../shared/services/itemPolicy.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
+import { resolveWarehouseParameters } from '../../shared/services/warehouseParameters.service';
+import { WarehouseService } from '../warehouse/warehouse.service';
+
+const warehouseService = new WarehouseService();
 
 /**
  * Product receipt — the PHYSICAL half of a purchase.
@@ -215,6 +221,10 @@ export async function createAndPostReceipt(
         netUnitCost: number;
         lineNet: number;
         policy: ItemPolicy | undefined;
+        /// Where this line's goods actually landed. Needed by putaway, which must
+        /// take them FROM here — **[OFFICIAL]** "the first pick is always from the
+        /// location where the registration occurs".
+        locationId: string;
       };
       const priced: Priced[] = [];
 
@@ -249,6 +259,7 @@ export async function createAndPostReceipt(
           netUnitCost,
           lineNet: net,
           policy: policies.get(line.product_id),
+          locationId: r.location_id ?? locationId,
         });
 
         await tx.productReceiptLine.create({
@@ -297,6 +308,7 @@ export async function createAndPostReceipt(
           data: {
             tenant_id:        tenantId,
             transaction_type: 'PURCHASE_RECEIPT',
+            ...physicalStatusFor('PURCHASE_RECEIPT'),
             reference_type:   'PRODUCT_RECEIPT',
             reference_id:     receipt.id,
             reference_number: receipt.receipt_number,
@@ -311,7 +323,7 @@ export async function createAndPostReceipt(
           },
         });
 
-        await tx.inventoryBatch.create({
+        await tx.inventoryCostLayer.create({
           data: {
             tenant_id:    tenantId,
             product_id:   line.product_id,
@@ -324,6 +336,82 @@ export async function createAndPostReceipt(
             received_at:  new Date(),
           },
         });
+      }
+
+      // ── Putaway work ──────────────────────────────────────────────────────
+      // **[OFFICIAL]** the two-step inbound flow: "the receipt is posted first to
+      // record the increase of inventory … The warehouse worker then registers the
+      // put-away to make the items available to pick."
+      //   learn.microsoft.com/dynamics365/business-central/design-details-inbound-warehouse-flow
+      //
+      // Until now the receipt WAS the whole story: goods landed in a receiving
+      // location and nothing ever moved them, so stock could sit visibly on the
+      // dock while a sales order failed for want of it.
+      //
+      // Only the destination is directive-resolved. **[OFFICIAL]** "during purchase
+      // registration, the first pick is always from the location where the
+      // registration occurs" — so the source is the receiving location, recorded on
+      // the work rather than looked up.
+      const whParams = await resolveWarehouseParameters(po.warehouse_id, tx);
+      let putawayWork = 0;
+
+      if (whParams.requirePutaway) {
+        for (const p of priced) {
+          // A not-stocked line has no inventory to put away.
+          if (p.policy?.stocked === false) continue;
+
+          const lineLocation = p.locationId;
+          const destination = await warehouseService.resolvePutawayLocation(
+            tenantId, po.warehouse_id, p.productId, p.qty,
+          );
+
+          if (!destination || destination === lineLocation) {
+            // No directive matched, or it resolved back to where the goods already
+            // are. Creating work that moves nothing would be worse than creating
+            // none: it would report a job done and change nothing, which is exactly
+            // the failure this whole step exists to remove.
+            logger.warn(
+              { tenantId, receipt: receiptNumber, product: p.productId, warehouse: po.warehouse_id },
+              'Putaway required but no location directive resolved a destination — no work created',
+            );
+            continue;
+          }
+
+          await tx.warehouseWork.create({
+            data: {
+              tenant_id:      tenantId,
+              // Derived from the receipt rather than drawn from a NumberSequence:
+              // `WAREHOUSE_WORK` is not a configured sequence reference, and adding
+              // one is a setup decision, not something to slip in here. The code is
+              // unique because the receipt number is.
+              work_id_code:   `WRK-PA-${receiptNumber}-${putawayWork + 1}`,
+              work_type:      'PUTAWAY',
+              status:         'OPEN',
+              warehouse_id:   po.warehouse_id,
+              reference_type: 'PRODUCT_RECEIPT',
+              reference_id:   receipt.id,
+              priority:       3,
+              lines: {
+                create: [{
+                  sequence:         1,
+                  line_type:        'PUT',
+                  product_id:       p.productId,
+                  variant_id:       p.variantId,
+                  quantity:         p.qty,
+                  from_location_id: lineLocation,
+                  to_location_id:   destination,
+                  status:           'PENDING',
+                }],
+              },
+            },
+          });
+          putawayWork++;
+        }
+
+        logger.info(
+          { tenantId, receipt: receiptNumber, putawayWork },
+          'Putaway work created for product receipt',
+        );
       }
 
       // ── Order status ──────────────────────────────────────────────────────
@@ -478,34 +566,30 @@ async function postReceiptVoucher(
     debits[0].debit_amount = Number((debits[0].debit_amount + (ctx.accrued - debited)).toFixed(2));
   }
 
-  const entryNumber = await nextJournalVoucher(ctx.tenantId, tx, ctx.legalEntityId);
-  const entry = await tx.journalEntry.create({
-    data: {
-      tenant_id:     ctx.tenantId,
-      entry_number:  entryNumber,
-      entry_date:    new Date(),
-      description:   `Product receipt: ${ctx.receiptNumber} (${ctx.poNumber})`,
-      source_module: 'PRODUCT_RECEIPT',
-      source_id:     ctx.receiptId,
-      status:        'POSTED',
-      posted_at:     new Date(),
-      created_by:    ctx.userId,
-      lines: {
-        create: [
-          ...debits,
-          {
-            account_id: base.PURCHASE_ACCRUAL,
-            debit_amount: 0,
-            credit_amount: ctx.accrued,
-            description: `Goods received not invoiced — ${ctx.poNumber}`,
-          },
-        ],
+  const entry = await postJournal({
+    tenantId:      ctx.tenantId,
+    legalEntityId: ctx.legalEntityId,
+    tx,
+    description:   `Product receipt: ${ctx.receiptNumber} (${ctx.poNumber})`,
+    source:        { module: 'PRODUCT_RECEIPT', id: ctx.receiptId },
+    userId:        ctx.userId,
+    lines: [
+      ...debits.map(d => ({
+        accountId:   d.account_id,
+        debit:       d.debit_amount,
+        credit:      d.credit_amount,
+        description: d.description,
+      })),
+      {
+        accountId:   base.PURCHASE_ACCRUAL,
+        credit:      ctx.accrued,
+        description: `Goods received not invoiced — ${ctx.poNumber}`,
       },
-    },
+    ],
   });
 
   logger.info(
-    { tenantId: ctx.tenantId, receipt: ctx.receiptNumber, voucher: entryNumber, accrued: ctx.accrued },
+    { tenantId: ctx.tenantId, receipt: ctx.receiptNumber, voucher: entry.entry_number, accrued: ctx.accrued },
     'Product receipt posted (physical update)',
   );
   return entry.id;
@@ -591,26 +675,23 @@ async function postLegacyCombinedVoucher(
     debits[0].debit_amount = Number((debits[0].debit_amount + (net - debited)).toFixed(2));
   }
 
-  const entryNumber = await nextJournalVoucher(ctx.tenantId, tx, ctx.legalEntityId);
-  const entry = await tx.journalEntry.create({
-    data: {
-      tenant_id:     ctx.tenantId,
-      entry_number:  entryNumber,
-      entry_date:    new Date(),
-      description:   `PO Receipt: ${ctx.poNumber}`,
-      source_module: 'PURCHASE',
-      source_id:     ctx.receiptId,
-      status:        'POSTED',
-      posted_at:     new Date(),
-      created_by:    ctx.userId,
-      lines: {
-        create: [
-          ...debits,
-          { account_id: acc.VAT_INPUT, debit_amount: tax, credit_amount: 0, description: 'Recoverable input tax' },
-          { account_id: acc.AP, debit_amount: 0, credit_amount: gross, description: `AP — ${ctx.poNumber}` },
-        ],
-      },
-    },
+  const entry = await postJournal({
+    tenantId:      ctx.tenantId,
+    legalEntityId: ctx.legalEntityId,
+    tx,
+    description:   `PO Receipt: ${ctx.poNumber}`,
+    source:        { module: 'PURCHASE', id: ctx.receiptId },
+    userId:        ctx.userId,
+    lines: [
+      ...debits.map(d => ({
+        accountId:   d.account_id,
+        debit:       d.debit_amount,
+        credit:      d.credit_amount,
+        description: d.description,
+      })),
+      { accountId: acc.VAT_INPUT, debit:  tax,   description: 'Recoverable input tax' },
+      { accountId: acc.AP,        credit: gross, description: `AP — ${ctx.poNumber}` },
+    ],
   });
   return entry.id;
 }

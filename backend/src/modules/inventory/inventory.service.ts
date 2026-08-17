@@ -1,7 +1,12 @@
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 import { resolveItemPolicies } from '../../shared/services/itemPolicy.service';
+import {
+  resolveWarehouseParameters,
+  availabilityLocationFilter,
+} from '../../shared/services/warehouseParameters.service';
 
 export class InventoryService {
   /**
@@ -27,7 +32,21 @@ export class InventoryService {
 
     const where: any = { tenant_id: tenantId, product_id: productId };
     if (variantId) where.variant_id = variantId;
-    if (warehouseId) where.location = { zone: { warehouse_id: warehouseId } };
+
+    // What counts as available is a warehouse setting, not a constant.
+    //
+    // **[OFFICIAL]** in a two-step inbound flow the receipt records that goods
+    // arrived and only the putaway "makes the items available to pick". A warehouse
+    // running that flow must not count stock still sitting on the receiving dock —
+    // and one that is not running it must count everything, exactly as before.
+    // `ALL_LOCATIONS` is the default, so nothing changes until a warehouse opts in.
+    if (warehouseId) {
+      const params = await resolveWarehouseParameters(warehouseId);
+      where.location = {
+        zone: { warehouse_id: warehouseId },
+        ...(availabilityLocationFilter(params) ?? {}),
+      };
+    }
 
     const result = await db.inventoryStock.aggregate({
       where,
@@ -36,10 +55,22 @@ export class InventoryService {
     return (result._sum.quantity ?? 0) - (result._sum.reserved_qty ?? 0);
   }
 
+  /**
+   * Reserve stock for an order's lines.
+   *
+   * `warehouseId` is not optional decoration. Without it this method walked EVERY
+   * stock row for the product in the tenant, oldest first, and reserved wherever it
+   * found quantity — while `getAvailableStock` above scoped its answer to the
+   * order's warehouse. The two disagreed, so an order whose availability check
+   * passed in La Paz could have its stock reserved in Istanbul. Same defect class
+   * as the return path that migration 011 fixed, and invisible on a single-warehouse
+   * tenant; this one has three, in two countries.
+   */
   async reserveStock(
     tenantId: string,
     lines: { product_id: string; variant_id?: string | null; quantity: number }[],
-    orderId: string
+    orderId: string,
+    warehouseId?: string | null
   ) {
     // Nothing to reserve for an item with no inventory subledger.
     const policies = await resolveItemPolicies(tenantId, lines.map((l) => l.product_id));
@@ -47,11 +78,24 @@ export class InventoryService {
     for (const line of lines) {
       if (policies.get(line.product_id)?.stocked === false) continue;
 
+      // Reservation must see exactly what availability saw, including the
+      // pick-location filter. If they diverge, an order passes its check and then
+      // reserves stock the check excluded — the same class of bug as reserving in
+      // the wrong warehouse, one level further down.
+      const whParams = await resolveWarehouseParameters(warehouseId);
       const stockRecords = await db.inventoryStock.findMany({
         where: {
           tenant_id: tenantId,
           product_id: line.product_id,
           ...(line.variant_id ? { variant_id: line.variant_id } : {}),
+          ...(warehouseId
+            ? {
+                location: {
+                  zone: { warehouse_id: warehouseId },
+                  ...(availabilityLocationFilter(whParams) ?? {}),
+                },
+              }
+            : {}),
         },
         orderBy: { updated_at: 'asc' }, // FIFO: oldest location first
       });
@@ -127,7 +171,7 @@ export class InventoryService {
       if (policies.get(line.product_id)?.stocked === false) continue;
 
       // Find FIFO batches for this product/variant (oldest received_at first)
-      const batches = await db.inventoryBatch.findMany({
+      const batches = await db.inventoryCostLayer.findMany({
         where: {
           tenant_id: tenantId,
           product_id: line.product_id,
@@ -144,7 +188,7 @@ export class InventoryService {
         const toDeduct = Math.min(remaining, batch.quantity);
 
         // Consume from FIFO batch
-        await db.inventoryBatch.update({
+        await db.inventoryCostLayer.update({
           where: { id: batch.id },
           data: { quantity: { decrement: toDeduct } },
         });
@@ -173,6 +217,7 @@ export class InventoryService {
           data: {
             tenant_id: tenantId,
             transaction_type: 'OUTBOUND',
+            ...physicalStatusFor('OUTBOUND'),
             reference_type: 'SALES_ORDER',
             reference_id: order.id,
             reference_number: order.order_number,
@@ -212,6 +257,7 @@ export class InventoryService {
             data: {
               tenant_id: tenantId,
               transaction_type: 'OUTBOUND',
+            ...physicalStatusFor('OUTBOUND'),
               reference_type: 'SALES_ORDER',
               reference_id: order.id,
               reference_number: order.order_number,
@@ -231,7 +277,11 @@ export class InventoryService {
   }
 
   /**
-   * receiveStock: also creates an InventoryBatch for FIFO tracking.
+   * receiveStock: also creates an InventoryCostLayer for FIFO costing.
+   *
+   * "Cost layer", not "batch": it records what this receipt cost and how much of
+   * it is left to consume. A *batch* is a tracking dimension and is a different
+   * concept entirely — see the model comment in schema.prisma. Migration 015.
    */
   async receiveStock(
     tenantId: string,
@@ -257,7 +307,7 @@ export class InventoryService {
     }
 
     // Create FIFO batch record
-    await db.inventoryBatch.create({
+    await db.inventoryCostLayer.create({
       data: {
         tenant_id: tenantId,
         product_id: productId,
@@ -276,6 +326,7 @@ export class InventoryService {
       data: {
         tenant_id: tenantId,
         transaction_type: 'INBOUND',
+            ...physicalStatusFor('INBOUND'),
         reference_type: 'PURCHASE_ORDER',
         reference_id: referenceId,
         reference_number: poNumber ?? null,
@@ -322,7 +373,7 @@ export class InventoryService {
       }
 
       // FIFO: transfer oldest batches first
-      const batches = await tx.inventoryBatch.findMany({
+      const batches = await tx.inventoryCostLayer.findMany({
         where: { tenant_id: tenantId, product_id: data.product_id, ...(data.variant_id ? { variant_id: data.variant_id } : {}), location_id: data.from_location_id, quantity: { gt: 0 } },
         orderBy: { received_at: 'asc' },
       });
@@ -331,18 +382,20 @@ export class InventoryService {
       for (const batch of batches) {
         if (remaining <= 0) break;
         const toMove = Math.min(remaining, batch.quantity);
-        await tx.inventoryBatch.update({ where: { id: batch.id }, data: { quantity: { decrement: toMove } } });
-        await tx.inventoryBatch.create({
+        await tx.inventoryCostLayer.update({ where: { id: batch.id }, data: { quantity: { decrement: toMove } } });
+        await tx.inventoryCostLayer.create({
           data: { tenant_id: tenantId, product_id: data.product_id, variant_id: data.variant_id ?? null, location_id: data.to_location_id, source_po_id: batch.source_po_id, po_number: batch.po_number, quantity: toMove, unit_cost: batch.unit_cost, received_at: batch.received_at },
         });
         remaining -= toMove;
       }
 
       await tx.inventoryTransaction.create({
-        data: { tenant_id: tenantId, transaction_type: 'TRANSFER_OUT', reference_type: 'transfer', product_id: data.product_id, variant_id: data.variant_id ?? null, from_location_id: data.from_location_id, to_location_id: data.to_location_id, quantity: data.quantity, notes: data.notes, performed_by: userId },
+        data: { tenant_id: tenantId, transaction_type: 'TRANSFER_OUT',
+            ...physicalStatusFor('TRANSFER_OUT'), reference_type: 'transfer', product_id: data.product_id, variant_id: data.variant_id ?? null, from_location_id: data.from_location_id, to_location_id: data.to_location_id, quantity: data.quantity, notes: data.notes, performed_by: userId },
       });
       await tx.inventoryTransaction.create({
-        data: { tenant_id: tenantId, transaction_type: 'TRANSFER_IN', reference_type: 'transfer', product_id: data.product_id, variant_id: data.variant_id ?? null, from_location_id: data.from_location_id, to_location_id: data.to_location_id, quantity: data.quantity, notes: data.notes, performed_by: userId },
+        data: { tenant_id: tenantId, transaction_type: 'TRANSFER_IN',
+            ...physicalStatusFor('TRANSFER_IN'), reference_type: 'transfer', product_id: data.product_id, variant_id: data.variant_id ?? null, from_location_id: data.from_location_id, to_location_id: data.to_location_id, quantity: data.quantity, notes: data.notes, performed_by: userId },
       });
     });
   }

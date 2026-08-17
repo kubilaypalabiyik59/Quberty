@@ -122,7 +122,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
   await db.inventoryStock.create({
     data: { tenant_id: tenant.id, product_id: shoe.id, location_id: location.id, quantity: 10 },
   });
-  await db.inventoryBatch.create({
+  await db.inventoryCostLayer.create({
     data: {
       tenant_id: tenant.id, product_id: shoe.id, location_id: location.id,
       quantity: 10, unit_cost: 200, received_at: new Date(),
@@ -131,7 +131,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
   await db.inventoryStock.create({
     data: { tenant_id: tenant.id, product_id: accessory.id, location_id: location.id, quantity: 10 },
   });
-  await db.inventoryBatch.create({
+  await db.inventoryCostLayer.create({
     data: {
       tenant_id: tenant.id, product_id: accessory.id, location_id: location.id,
       quantity: 10, unit_cost: 15, received_at: new Date(),
@@ -312,7 +312,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
     await db.salesOrderLine.deleteMany({ where: { order_id: { in: created.orderIds } } });
     await db.salesOrder.deleteMany({ where: { id: { in: created.orderIds } } });
     await db.inventoryTransaction.deleteMany({ where: { product_id: { in: created.productIds } } });
-    await db.inventoryBatch.deleteMany({ where: { product_id: { in: created.productIds } } });
+    await db.inventoryCostLayer.deleteMany({ where: { product_id: { in: created.productIds } } });
     await db.inventoryStock.deleteMany({ where: { product_id: { in: created.productIds } } });
     await db.product.deleteMany({ where: { id: { in: created.productIds } } });
     await db.postingProfile.deleteMany({ where: { id: { in: created.profileIds } } });

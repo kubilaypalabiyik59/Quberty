@@ -43,6 +43,11 @@ export type PostingType =
   | 'BANK'
   | 'PAYROLL_EXPENSE'
   | 'PAYROLL_PAYABLE'
+  /// What is withheld from gross pay and owed to somebody other than the
+  /// employee — social security, income tax withholding, AFP. Payroll debited
+  /// gross and credited NET, so the deductions were credited to nothing at all
+  /// and the voucher did not balance. Only required when deductions are non-zero.
+  | 'PAYROLL_DEDUCTION_PAYABLE'
   | 'ROUNDING';
 
 /** Specificity axis, least specific last. Order here IS the resolution order. */

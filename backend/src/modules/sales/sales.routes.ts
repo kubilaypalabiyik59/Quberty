@@ -9,11 +9,12 @@ import { ok, created, message } from '../../shared/response';
 import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema } from '../../shared/schemas';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
-import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
 import { logger } from '../../shared/logger';
+import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -102,6 +103,7 @@ app.post('/storefront', async (c) => {
         data: {
           tenant_id:        c.get('tenantId'),
           transaction_type: 'OUTBOUND',
+            ...physicalStatusFor('OUTBOUND'),
           reference_type:   'SALES_ORDER',
           reference_id:     order.id,
           reference_number: order.order_number,
@@ -115,7 +117,7 @@ app.post('/storefront', async (c) => {
         },
       });
       // Consume FIFO batch
-      const fifo = await db.inventoryBatch.findFirst({
+      const fifo = await db.inventoryCostLayer.findFirst({
         where: {
           tenant_id: c.get('tenantId'), product_id: line.product_id,
           ...(line.variant_id ? { variant_id: line.variant_id } : {}),
@@ -124,7 +126,7 @@ app.post('/storefront', async (c) => {
         orderBy: { received_at: 'asc' },
       });
       if (fifo) {
-        await db.inventoryBatch.update({ where: { id: fifo.id }, data: { quantity: { decrement: Math.min(toDeduct, fifo.quantity) } } });
+        await db.inventoryCostLayer.update({ where: { id: fifo.id }, data: { quantity: { decrement: Math.min(toDeduct, fifo.quantity) } } });
       }
       remaining -= toDeduct;
     }
@@ -308,31 +310,28 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
         });
       }
 
-      // D-5: this used to be `count() + 1`, computed inside the transaction, on a
-      // column that is globally @unique — two concurrent invoices produced the
-      // same number and one rolled back. The sequence allocator is atomic.
-      const entryNumber = await nextJournalVoucher(c.get('tenantId'), tx);
-      await tx.journalEntry.create({
-        data: {
-          tenant_id:    c.get('tenantId'),
-          entry_number: entryNumber,
-          entry_date:   new Date(),
-          description:  `Sales Invoice: ${order.order_number} — Factura #${String(f.factura_number).padStart(6, '0')}`,
-          source_module: 'SALES_INVOICE',
-          source_id:    f.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   c.get('user').id,
-          lines: {
-            create: [
-              { account_id: acc.AR,                   debit_amount: total,               credit_amount: 0,                   description: `AR — ${customerName}` },
-              { account_id: acc.TAX_TURNOVER_EXPENSE, debit_amount: Number(f.it_amount), credit_amount: 0,                   description: `Turnover tax expense` },
-              ...revenueLines,
-              { account_id: acc.VAT_OUTPUT,           debit_amount: 0,                   credit_amount: Number(f.iva_amount), description: `Output VAT` },
-              { account_id: acc.TAX_TURNOVER_PAYABLE, debit_amount: 0,                   credit_amount: Number(f.it_amount),  description: `Turnover tax payable` },
-            ],
-          },
-        },
+      // D-5: the voucher number used to be `count() + 1`, computed inside the
+      // transaction, on a column that is globally @unique — two concurrent invoices
+      // produced the same number and one rolled back. postJournal allocates it
+      // atomically, and now also asserts the entry balances.
+      await postJournal({
+        tenantId:    c.get('tenantId'),
+        tx,
+        description: `Sales Invoice: ${order.order_number} — Factura #${String(f.factura_number).padStart(6, '0')}`,
+        source:      { module: 'SALES_INVOICE', id: f.id },
+        userId:      c.get('user').id,
+        lines: [
+          { accountId: acc.AR,                   debit:  total,               description: `AR — ${customerName}` },
+          { accountId: acc.TAX_TURNOVER_EXPENSE, debit:  Number(f.it_amount), description: `Turnover tax expense` },
+          ...revenueLines.map(l => ({
+            accountId:   l.account_id,
+            debit:       l.debit_amount,
+            credit:      l.credit_amount,
+            description: l.description,
+          })),
+          { accountId: acc.VAT_OUTPUT,           credit: Number(f.iva_amount), description: `Output VAT` },
+          { accountId: acc.TAX_TURNOVER_PAYABLE, credit: Number(f.it_amount),  description: `Turnover tax payable` },
+        ],
       });
     }
 
@@ -377,25 +376,17 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
 
     if (bankAccount && payAcc) {
       const totalAmount = Number(order.total_amount);
-      const entryNumber = await nextJournalVoucher(c.get('tenantId'), tx);
-      await tx.journalEntry.create({
-        data: {
-          tenant_id:    c.get('tenantId'),
-          entry_number: entryNumber,
-          entry_date:   paymentDate,
-          description:  `AR Payment: ${order.order_number}${notes ? ' — ' + notes : ''}`,
-          source_module: 'SALES_PAYMENT',
-          source_id:    order.id,
-          status:       'POSTED',
-          posted_at:    new Date(),
-          created_by:   c.get('user').id,
-          lines: {
-            create: [
-              { account_id: bankAccount.id, debit_amount: totalAmount, credit_amount: 0,           description: `Cash receipt — ${order.order_number}` },
-              { account_id: payAcc.AR,      debit_amount: 0,           credit_amount: totalAmount, description: `Clear AR — ${order.order_number}` },
-            ],
-          },
-        },
+      await postJournal({
+        tenantId:    c.get('tenantId'),
+        tx,
+        date:        paymentDate,
+        description: `AR Payment: ${order.order_number}${notes ? ' — ' + notes : ''}`,
+        source:      { module: 'SALES_PAYMENT', id: order.id },
+        userId:      c.get('user').id,
+        lines: [
+          { accountId: bankAccount.id, debit:  totalAmount, description: `Cash receipt — ${order.order_number}` },
+          { accountId: payAcc.AR,      credit: totalAmount, description: `Clear AR — ${order.order_number}` },
+        ],
       });
     }
   });
@@ -413,7 +404,27 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
   if (order.invoice_id) throw new AppError('Cannot edit an order that has already been invoiced', 400);
   if (!['DRAFT', 'CONFIRMED'].includes(order.status)) throw new AppError('Can only edit DRAFT or CONFIRMED orders', 400);
 
-  const { customer_id, notes, lines } = body;
+  const { customer_id, notes, lines, warehouse_id } = body;
+
+  // `warehouse_id` used to be dropped here without a word. The edit form sends it
+  // (frontend sales/orders/page.tsx), this route destructured only three fields,
+  // and the request still returned 200 — so changing an order's warehouse in the UI
+  // appeared to work and did nothing. The order kept whichever warehouse it was
+  // created with, which since `default_warehouse_id` was pinned is WH-001 for
+  // anything created without an explicit choice. Confirming then failed on
+  // "insufficient stock" while the goods sat visibly in another warehouse.
+  //
+  // Site is re-derived rather than accepted, for the reason in sales.service.ts:43 —
+  // site is the warehouse's site, and accepting both lets them disagree.
+  const dimensionUpdate: { warehouse_id?: string; site_id?: string | null } = {};
+  if (warehouse_id !== undefined && warehouse_id !== order.warehouse_id) {
+    const dims = await resolveInventoryDimensions(
+      c.get('tenantId'),
+      { warehouseId: warehouse_id || null, documentKind: 'sales order' },
+    );
+    dimensionUpdate.warehouse_id = dims.warehouse_id ?? undefined;
+    dimensionUpdate.site_id = dims.site_id;
+  }
 
   if (lines !== undefined) {
     await db.salesOrderLine.deleteMany({ where: { order_id: order.id } });
@@ -427,9 +438,9 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
     const taxAmount = (await computeDocumentTax(c.get('tenantId'), subtotal, {
       legacyConfig: c.get('taxConfig'),
     })).vat;
-    await db.salesOrder.update({ where: { id: order.id }, data: { subtotal, tax_amount: taxAmount, total_amount: subtotal, ...(customer_id !== undefined && { customer_id }), ...(notes !== undefined && { notes }) } });
+    await db.salesOrder.update({ where: { id: order.id }, data: { subtotal, tax_amount: taxAmount, total_amount: subtotal, ...(customer_id !== undefined && { customer_id }), ...(notes !== undefined && { notes }), ...dimensionUpdate } });
   } else {
-    const data: any = {};
+    const data: any = { ...dimensionUpdate };
     if (customer_id !== undefined) data.customer_id = customer_id;
     if (notes !== undefined) data.notes = notes;
     if (Object.keys(data).length) await db.salesOrder.update({ where: { id: order.id }, data });
@@ -568,6 +579,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
         data: {
           tenant_id:        c.get('tenantId'),
           transaction_type: 'RETURN',
+            ...physicalStatusFor('RETURN'),
           reference_type:   'SALES_ORDER',
           reference_id:     order.id,
           reference_number: order.order_number,
@@ -600,31 +612,27 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
       },
     });
 
-    // D-5: was `count() + 1` incremented locally across up to three entries — a
-    // race against every other posting in the system. Each entry now draws its own
-    // number from the atomic sequence.
-    const nextJE = () => nextJournalVoucher(c.get('tenantId'), tx);
+    // D-5: the voucher number was `count() + 1` incremented locally across up to
+    // three entries — a race against every other posting in the system. Each entry
+    // now draws its own number atomically from inside postJournal.
 
     // ── 3. JE 1 — Reverse sales invoice (only if invoiced) ─────────────────────
     // Original invoice: Dr CxC, Dr IT Exp; Cr Revenue, Cr IVA Débito, Cr IT por Pagar
     // Reversal:         Cr CxC, Cr IT Exp; Dr Revenue, Dr IVA Débito, Dr IT por Pagar
     if (order.invoice_id && retAcc) {
-      await tx.journalEntry.create({
-        data: {
-          tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
-          description: `Return — Reverse Invoice: ${order.order_number}`,
-          source_module: 'SALES_RETURN', source_id: order.id,
-          status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
-          lines: {
-            create: [
-              { account_id: retAcc.REVENUE,    debit_amount: subtotal,  credit_amount: 0,         description: `Return revenue reversal` },
-              { account_id: retAcc.VAT_OUTPUT, debit_amount: ivaAmount, credit_amount: 0,         description: `Return IVA Débito reversal` },
-              { account_id: retAcc.TAX_TURNOVER_PAYABLE,     debit_amount: itAmount,  credit_amount: 0,         description: `Return IT por Pagar reversal` },
-              { account_id: retAcc.AR,       debit_amount: 0,         credit_amount: total,     description: `Return CxC credit` },
-              { account_id: retAcc.TAX_TURNOVER_EXPENSE,     debit_amount: 0,         credit_amount: itAmount,  description: `Return IT Expense reversal` },
-            ],
-          },
-        },
+      await postJournal({
+        tenantId:    c.get('tenantId'),
+        tx,
+        description: `Return — Reverse Invoice: ${order.order_number}`,
+        source:      { module: 'SALES_RETURN', id: order.id },
+        userId:      c.get('user').id,
+        lines: [
+          { accountId: retAcc.REVENUE,              debit:  subtotal,  description: `Return revenue reversal` },
+          { accountId: retAcc.VAT_OUTPUT,           debit:  ivaAmount, description: `Return IVA Débito reversal` },
+          { accountId: retAcc.TAX_TURNOVER_PAYABLE, debit:  itAmount,  description: `Return IT por Pagar reversal` },
+          { accountId: retAcc.AR,                   credit: total,     description: `Return CxC credit` },
+          { accountId: retAcc.TAX_TURNOVER_EXPENSE, credit: itAmount,  description: `Return IT Expense reversal` },
+        ],
       });
     }
 
@@ -640,38 +648,32 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
         sum + line.quantity * (costMap.get(line.product_id) ?? 0), 0);
 
       if (cogsAmount > 0) {
-        await tx.journalEntry.create({
-          data: {
-            tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
-            description: `Return — Reverse COGS: ${order.order_number}`,
-            source_module: 'SALES_RETURN', source_id: order.id,
-            status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
-            lines: {
-              create: [
-                { account_id: retAcc.INVENTORY, debit_amount: cogsAmount, credit_amount: 0,          description: `Return inventory in` },
-                { account_id: retAcc.COGS,      debit_amount: 0,          credit_amount: cogsAmount, description: `Return COGS reversal` },
-              ],
-            },
-          },
+        await postJournal({
+          tenantId:    c.get('tenantId'),
+          tx,
+          description: `Return — Reverse COGS: ${order.order_number}`,
+          source:      { module: 'SALES_RETURN', id: order.id },
+          userId:      c.get('user').id,
+          lines: [
+            { accountId: retAcc.INVENTORY, debit:  cogsAmount, description: `Return inventory in` },
+            { accountId: retAcc.COGS,      credit: cogsAmount, description: `Return COGS reversal` },
+          ],
         });
       }
     }
 
     // ── 5. JE 3 — Reverse AR payment (only if already paid) ───────────────────
     if (order.paid_at && retAcc) {
-      await tx.journalEntry.create({
-        data: {
-          tenant_id: c.get('tenantId'), entry_number: await nextJE(), entry_date: new Date(),
-          description: `Return — Refund: ${order.order_number}`,
-          source_module: 'SALES_RETURN', source_id: order.id,
-          status: 'POSTED', posted_at: new Date(), created_by: c.get('user').id,
-          lines: {
-            create: [
-              { account_id: retAcc.AR,  debit_amount: total, credit_amount: 0,     description: `Return CxC refund` },
-              { account_id: retAcc.BANK, debit_amount: 0,     credit_amount: total, description: `Return refund from Bancos` },
-            ],
-          },
-        },
+      await postJournal({
+        tenantId:    c.get('tenantId'),
+        tx,
+        description: `Return — Refund: ${order.order_number}`,
+        source:      { module: 'SALES_RETURN', id: order.id },
+        userId:      c.get('user').id,
+        lines: [
+          { accountId: retAcc.AR,   debit:  total, description: `Return CxC refund` },
+          { accountId: retAcc.BANK, credit: total, description: `Return refund from Bancos` },
+        ],
       });
     }
 

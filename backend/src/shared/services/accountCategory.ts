@@ -45,6 +45,12 @@ export const ACCOUNT_CATEGORIES = [
   'TURNOVER_TAX_PAYABLE', // Bolivia IT; no equivalent in TR/DE, which is fine
   'WITHHOLDING_TAX_PAYABLE', // Turkish tevkifat, and reverse-charge liabilities
   'PAYROLL_PAYABLE',
+  /// Withheld from gross pay and owed to somebody other than the employee —
+  /// income tax withholding, social security, AFP. Deliberately NOT the same
+  /// account as PAYROLL_PAYABLE: one is owed to the employee and settles on
+  /// payday, the other is owed to the state and settles on a filing deadline.
+  /// Merging them hides which of the two a balance represents.
+  'PAYROLL_DEDUCTION_PAYABLE',
   'OTHER_LIABILITY',
   // Equity
   'SHARE_CAPITAL',
@@ -105,6 +111,7 @@ export const POSTING_TYPE_BY_CATEGORY: Record<PostingType, AccountCategory> = {
   BANK:                 'BANK',
   PAYROLL_EXPENSE:      'PAYROLL_EXPENSE',
   PAYROLL_PAYABLE:      'PAYROLL_PAYABLE',
+  PAYROLL_DEDUCTION_PAYABLE: 'PAYROLL_DEDUCTION_PAYABLE',
   ROUNDING:             'OTHER_INCOME',
 };
 

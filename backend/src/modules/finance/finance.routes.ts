@@ -6,7 +6,7 @@ import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message, paginated } from '../../shared/response';
 import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
-import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
+import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import type { AppEnv } from '../../shared/context';
 
@@ -220,41 +220,29 @@ app.post('/journal-entries', requireRole('admin', 'store_manager'), validate(Cre
     throw new AppError('entry_date, description, and lines are required');
   }
 
-  // Check if the target period is closed
-  const d = new Date(entry_date);
-  const closedPeriod = await db.accountingPeriod.findFirst({
-    where: { tenant_id: c.get('tenantId'), year: d.getFullYear(), month: d.getMonth() + 1, status: 'CLOSED' },
+  // The closed-period check and the balance assertion used to live here, and ONLY
+  // here — the other fifteen journal writers in the product had neither. Both now
+  // live in postJournal, so a POS sale is held to the same rules as a manual entry.
+  //
+  // This route keeps its DRAFT default deliberately: a manual entry is reviewed
+  // and posted separately, unlike a machine-generated document voucher.
+  const posted = await postJournal({
+    tenantId:    c.get('tenantId'),
+    date:        new Date(entry_date),
+    description,
+    source:      { module: source_module || 'MANUAL', id: source_id || null },
+    userId:      c.get('user').id,
+    status:      'DRAFT',
+    lines: lines.map((l: any) => ({
+      accountId:   l.account_id,
+      debit:       Number(l.debit_amount ?? 0),
+      credit:      Number(l.credit_amount ?? 0),
+      description: l.description || null,
+    })),
   });
-  if (closedPeriod) throw new AppError(`Period ${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')} is closed. Reopen it before posting entries.`, 400);
 
-  // Validate balanced entry
-  const totalDebit  = lines.reduce((s: number, l: any) => s + Number(l.debit_amount ?? 0), 0);
-  const totalCredit = lines.reduce((s: number, l: any) => s + Number(l.credit_amount ?? 0), 0);
-  if (Math.abs(totalDebit - totalCredit) > 0.01) {
-    throw new AppError(`Journal entry must balance. Debits: ${totalDebit.toFixed(2)}, Credits: ${totalCredit.toFixed(2)}`);
-  }
-
-  // Last of the `count() + 1` generators — same D-5 race as sales and purchase.
-  const entryNumber = await nextJournalVoucher(c.get('tenantId'));
-
-  const entry = await db.journalEntry.create({
-    data: {
-      tenant_id:    c.get('tenantId'),
-      entry_number: entryNumber,
-      entry_date:   new Date(entry_date),
-      description,
-      source_module: source_module || null,
-      source_id:     source_id || null,
-      created_by:    c.get('user').id,
-      lines: {
-        create: lines.map((l: any) => ({
-          account_id:    l.account_id,
-          debit_amount:  Number(l.debit_amount ?? 0),
-          credit_amount: Number(l.credit_amount ?? 0),
-          description:   l.description || null,
-        })),
-      },
-    },
+  const entry = await db.journalEntry.findUnique({
+    where: { id: posted.id },
     include: { lines: { include: { account: true } } },
   });
   return created(c, entry);
@@ -435,19 +423,37 @@ app.get('/iva-net-report', async (c) => {
   const from = new Date(Number(year), Number(month) - 1, 1);
   const to   = new Date(Number(year), Number(month), 0, 23, 59, 59);
 
-  // IVA Débito Fiscal exists under two codes because two charts of accounts were applied to the
-  // same tenant: '2103' from the finance.routes seed, '2105' from the bolivia-pcg template.
-  // ERP sales post to '2103'; POS posts to '2105'. Reading only '2103' omitted all POS output tax
-  // from the declaration — see GAP_ANALYSIS.md D-7.
-  // This sums every account that carries output IVA. It is a bridge until posting profiles resolve
-  // the account by configuration rather than by literal; do not extend this pattern.
-  const DEBITO_CODES  = ['2103', '2105'];
-  const CREDITO_CODES = ['1105'];
+  // Accounts are resolved by CATEGORY, not by code. This was the last place in the
+  // finance module where a chart of accounts was named in code: the literals
+  // ['2103','2105'] and ['1105'] were a bridge left behind when D-7 was hotfixed,
+  // and they are Bolivian — a Turkish tenant's 391 / 191 or a German SKR04's
+  // 3806 / 1406 would have reported zero output tax with no error at all.
+  //
+  // Two accounts still carry output tax on this tenant (2103 from the seed, 2105
+  // from the template), which is D-1's damage; resolving by category picks up BOTH
+  // without knowing either number, which is exactly what the D-7 hotfix needed.
+  const taxAccounts = await db.account.findMany({
+    where: {
+      tenant_id: c.get('tenantId'),
+      category: { in: ['VAT_PAYABLE', 'VAT_RECEIVABLE'] },
+    },
+    select: { id: true, code: true, name: true, category: true },
+  });
 
-  const [debitoAccounts, creditoAccounts] = await Promise.all([
-    db.account.findMany({ where: { tenant_id: c.get('tenantId'), code: { in: DEBITO_CODES } }, select: { id: true } }),
-    db.account.findMany({ where: { tenant_id: c.get('tenantId'), code: { in: CREDITO_CODES } }, select: { id: true } }),
-  ]);
+  const debitoAccounts  = taxAccounts.filter(a => a.category === 'VAT_PAYABLE');
+  const creditoAccounts = taxAccounts.filter(a => a.category === 'VAT_RECEIVABLE');
+
+  // Returning zeros because nothing is categorised is the D-4 failure mode wearing
+  // a different hat: a declaration of 0.00 looks like a quiet month, not a
+  // misconfiguration. Say so instead.
+  if (debitoAccounts.length === 0) {
+    throw new AppError(
+      'No account is categorised VAT_PAYABLE, so output tax cannot be reported. ' +
+        'Assign the category under Finance → Chart of accounts.',
+      500,
+      'TAX_ACCOUNTS_UNCATEGORISED',
+    );
+  }
 
   const linesFor = (accountIds: string[]) =>
     accountIds.length === 0 ? Promise.resolve([]) : db.journalLine.findMany({
@@ -460,9 +466,25 @@ app.get('/iva-net-report', async (c) => {
     linesFor(creditoAccounts.map(a => a.id)),
   ]);
 
-  const totalDebito  = (debitoLines as any[]).reduce((s: number, l: any) => s + Number(l.credit_amount), 0);
-  const totalCredito = (creditoLines as any[]).reduce((s: number, l: any) => s + Number(l.debit_amount), 0);
-  const netPayable   = totalDebito - totalCredito;
+  // NET both columns. This previously summed ONE column per side — credits for
+  // output tax, debits for input tax — and ignored the other entirely.
+  //
+  // That made corrections invisible to the declaration. Output tax is a liability,
+  // so a correction to it posts a DEBIT under the REVERSE method; the old code
+  // dropped that debit on the floor, leaving the trial balance right and the filing
+  // wrong. Netting is also simply the correct definition of a period's débito
+  // fiscal: what was charged, less what was reversed within the same period.
+  // See docs/architecture/CORRECTIONS.md §2.1.
+  const sumNet = (lines: any[], normal: 'CREDIT' | 'DEBIT') =>
+    lines.reduce((s: number, l: any) => {
+      const debit  = Number(l.debit_amount);
+      const credit = Number(l.credit_amount);
+      return s + (normal === 'CREDIT' ? credit - debit : debit - credit);
+    }, 0);
+
+  const totalDebito  = Number(sumNet(debitoLines as any[], 'CREDIT').toFixed(2));
+  const totalCredito = Number(sumNet(creditoLines as any[], 'DEBIT').toFixed(2));
+  const netPayable   = Number((totalDebito - totalCredito).toFixed(2));
 
   return ok(c, {
     period: { year: Number(year), month: Number(month) },
@@ -471,6 +493,13 @@ app.get('/iva-net-report', async (c) => {
     net_payable:    netPayable,
     debito_lines:   debitoLines,
     credito_lines:  creditoLines,
+    // Which accounts were actually read. A declaration should never leave the
+    // reader guessing which accounts produced it — and on this tenant the answer
+    // is two different output-tax accounts, which is itself worth seeing.
+    accounts: {
+      debito:  debitoAccounts.map(a => ({ code: a.code, name: a.name })),
+      credito: creditoAccounts.map(a => ({ code: a.code, name: a.name })),
+    },
   });
 });
 
