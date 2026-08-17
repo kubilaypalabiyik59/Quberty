@@ -477,4 +477,167 @@ app.post('/location-directives', requireRole('admin'), async (c) => {
   return created(c, directive);
 });
 
+// ── Warehouse parameters — per warehouse, not per tenant ─────────────────────
+//
+// **[OFFICIAL]** D365 sets warehouse behaviour on the individual warehouse, which
+// is also what a three-store retailer needs: "receive it and it is sellable" in the
+// shops and directed putaway in the distribution warehouse, at the same time.
+//
+// Migration 017 created the table and switched nothing on. This is where a person
+// switches it on, instead of running a script from the repo.
+
+app.get('/parameters', requireRole('admin', 'store_manager'), async (c) => {
+  const warehouses = await db.warehouse.findMany({
+    where: { tenant_id: c.get('tenantId') },
+    include: {
+      site: { select: { code: true, name: true } },
+      parameters: { include: { default_receive_location: { select: { id: true, code: true } } } },
+      zones: {
+        select: {
+          id: true, code: true, name: true,
+          locations: {
+            select: { id: true, code: true, is_pick_location: true, is_receive_location: true, is_active: true },
+            orderBy: { code: 'asc' },
+          },
+        },
+        orderBy: { code: 'asc' },
+      },
+      location_directives: {
+        where: { is_active: true },
+        select: { id: true, code: true, name: true, directive_type: true, work_type: true },
+      },
+    },
+    orderBy: { code: 'asc' },
+  });
+
+  // Everything the screen needs to warn BEFORE a switch is flipped, computed here
+  // rather than left for the UI to infer. Enabling PICK_LOCATIONS_ONLY on a
+  // warehouse with no pick location makes all of its stock unsellable — that is a
+  // fact about the data, so the server states it.
+  const rows = await Promise.all(warehouses.map(async (w) => {
+    const pickLocations = w.zones.flatMap(z => z.locations).filter(l => l.is_pick_location && l.is_active);
+    const stranded = await db.inventoryStock.aggregate({
+      where: {
+        tenant_id: c.get('tenantId'),
+        quantity: { gt: 0 },
+        location: { zone: { warehouse_id: w.id }, is_pick_location: false },
+      },
+      _sum: { quantity: true },
+    });
+
+    return {
+      ...w,
+      readiness: {
+        pick_location_count: pickLocations.length,
+        putaway_directive_count: w.location_directives.filter(d => d.directive_type === 'PUTAWAY').length,
+        units_outside_pick_locations: Number(stranded._sum.quantity ?? 0),
+        can_enable_putaway: pickLocations.length > 0
+          && w.location_directives.some(d => d.directive_type === 'PUTAWAY'),
+      },
+    };
+  }));
+
+  return ok(c, rows);
+});
+
+app.put('/parameters/:warehouseId', requireRole('admin', 'store_manager'), async (c) => {
+  const warehouseId = c.req.param('warehouseId');
+  const wh = await db.warehouse.findFirst({
+    where: { id: warehouseId, tenant_id: c.get('tenantId') },
+    include: {
+      zones: { select: { locations: { select: { is_pick_location: true, is_active: true } } } },
+      location_directives: { where: { is_active: true, directive_type: 'PUTAWAY' }, select: { id: true } },
+    },
+  });
+  if (!wh) throw new AppError('Warehouse not found', 404);
+
+  const b = await c.req.json();
+  const wantPutaway = b.require_putaway ?? undefined;
+  const wantAvailability = b.availability_counts ?? undefined;
+
+  const pickCount = wh.zones.flatMap(z => z.locations).filter(l => l.is_pick_location && l.is_active).length;
+
+  // Refused, not warned. Turning these on without somewhere to put goods does not
+  // degrade gracefully — it makes stock invisible to sales with no way to move it,
+  // which reads as inventory evaporating.
+  if (wantPutaway === true && wh.location_directives.length === 0) {
+    throw new AppError(
+      `${wh.code} has no active putaway location directive, so putaway work would have no destination ` +
+        `and no work would be created. Add a directive first.`,
+      400,
+      'PUTAWAY_NO_DIRECTIVE',
+    );
+  }
+  if (wantAvailability === 'PICK_LOCATIONS_ONLY' && pickCount === 0) {
+    throw new AppError(
+      `${wh.code} has no pick location, so counting only pick locations would make ALL of its stock ` +
+        `unsellable. Flag at least one location as a pick location first.`,
+      400,
+      'NO_PICK_LOCATION',
+    );
+  }
+
+  const row = await db.warehouseParameters.upsert({
+    where: { warehouse_id: warehouseId },
+    create: {
+      tenant_id: c.get('tenantId'),
+      warehouse_id: warehouseId,
+      require_putaway: b.require_putaway ?? false,
+      require_pick_work: b.require_pick_work ?? false,
+      availability_counts: b.availability_counts ?? 'ALL_LOCATIONS',
+      default_receive_location_id: b.default_receive_location_id ?? null,
+    },
+    update: {
+      ...(b.require_putaway !== undefined && { require_putaway: !!b.require_putaway }),
+      ...(b.require_pick_work !== undefined && { require_pick_work: !!b.require_pick_work }),
+      ...(b.availability_counts !== undefined && { availability_counts: b.availability_counts }),
+      ...(b.default_receive_location_id !== undefined && {
+        default_receive_location_id: b.default_receive_location_id || null,
+      }),
+    },
+  });
+
+  return ok(c, row);
+});
+
+// Directives get a full editor, including lines — the two-action sequence
+// **[OFFICIAL]** Microsoft prescribes (Consolidate, then Empty location with no
+// incoming work) is not something a person should have to write SQL for.
+app.post('/location-directives/:id/lines', requireRole('admin', 'store_manager'), async (c) => {
+  const directive = await db.locationDirective.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+  });
+  if (!directive) throw new AppError('Location directive not found', 404);
+
+  const b = await c.req.json();
+  if (!['CONSOLIDATE', 'EMPTY_LOCATION'].includes(b.strategy)) {
+    throw new AppError('strategy must be CONSOLIDATE or EMPTY_LOCATION', 400);
+  }
+  if (!b.zone_id && !b.location_id) {
+    throw new AppError('A directive line must name a zone or a specific location.', 400);
+  }
+
+  const line = await db.locationDirectiveLine.create({
+    data: {
+      directive_id: directive.id,
+      sequence: b.sequence ?? 1,
+      from_qty: b.from_qty ?? 0,
+      to_qty: b.to_qty ?? null,
+      strategy: b.strategy,
+      zone_id: b.zone_id ?? null,
+      location_id: b.location_id ?? null,
+    },
+  });
+  return created(c, line);
+});
+
+app.delete('/location-directives/:id', requireRole('admin', 'store_manager'), async (c) => {
+  const d = await db.locationDirective.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+  });
+  if (!d) throw new AppError('Location directive not found', 404);
+  await db.locationDirective.delete({ where: { id: d.id } });
+  return ok(c, null);
+});
+
 export default app;

@@ -122,7 +122,16 @@ const NAV = [
       },
       { href: '/audit', icon: ShieldCheck, label: 'Audit Log' },
       { href: '/settings', icon: Settings, label: 'Settings' },
-      { href: '/setup', icon: Wand2, label: 'Setup Wizard' },
+      {
+        href: '/setup', icon: Wand2, label: 'Setup', children: [
+          { href: '/setup', label: 'Overview' },
+          { href: '/setup/organisation', label: 'Organisation' },
+          { href: '/setup/finance', label: 'Financial Dimensions' },
+          { href: '/setup/warehouse', label: 'Warehouse' },
+          { href: '/products/setup', label: 'Products' },
+          { href: '/setup/wizard', label: 'New company wizard' },
+        ],
+      },
     ],
   },
 ];

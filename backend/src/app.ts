@@ -22,6 +22,7 @@ import authRoutes           from './modules/auth/auth.routes';
 import productRoutes        from './modules/inventory/product.routes';
 import inventoryRoutes      from './modules/inventory/inventory.routes';
 import warehouseRoutes      from './modules/warehouse/warehouse.routes';
+import setupRoutes          from './modules/setup/setup.routes';
 import salesRoutes          from './modules/sales/sales.routes';
 import purchaseRoutes       from './modules/purchase/purchase.routes';
 import customerRoutes       from './modules/customers/customer.routes';
@@ -186,6 +187,7 @@ v1.route('/inventory-counts', inventoryCountRoutes);
 v1.route('/finance',          financeRoutes);
 v1.route('/pos',              posRoutes);
 v1.route('/audit',            auditRoutes);
+v1.route('/setup',            setupRoutes);
 
 app.route('/api/v1', v1);
 
