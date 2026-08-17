@@ -6,6 +6,7 @@ import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { convertLeadToCustomer } from '../crm/crm.service';
+import { siteOfWarehouse } from '../../shared/services/inventoryDimension.service';
 import {
   QUOTATION_STATUS,
   QUOTATION_OPEN_STATUSES,
@@ -393,7 +394,11 @@ export async function confirmQuotation(tenantId: string, quotationId: string, us
         customer_id: customerId,
         source: 'manual',
         status: 'DRAFT',
-        site_id: q.site_id,
+        // The warehouse is settled — it came from the quotation. The site is
+        // re-derived rather than copied, because quotations written before
+        // migration 011 carry a warehouse and a null site; copying the null
+        // would propagate the gap into every converted order.
+        site_id: await siteOfWarehouse(q.warehouse_id, tx),
         warehouse_id: q.warehouse_id,
         currency: q.currency,
         subtotal: q.subtotal,

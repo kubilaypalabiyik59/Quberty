@@ -72,6 +72,60 @@
     --info:         212 62% 40%;
     --info-soft:    212 65% 94%;
 
+    /* ── chart series. Identity only — never status. ──────────────────────
+       Before this existed, every chart invented its own colours: SalesChart
+       hardcoded a blue bar, a green "winner" cell and, in dark mode, a maroon
+       palette left over from the visual direction we abandoned when the accent
+       became teal. Charts were therefore the one part of the product still
+       outside the design system.
+
+       These five steps were VALIDATED, not chosen by eye — lightness band,
+       chroma floor, colour-vision-deficiency separation, normal-vision floor
+       and contrast against the surface all pass, in both themes. Do not edit a
+       single value without re-running that check; a hand-tweaked hue is how a
+       palette silently becomes unreadable to a deuteranopic reader.
+
+       Assign these IN ORDER and never cycle. A sixth series is not a generated
+       sixth hue — it folds into "other", or the chart becomes small multiples.
+
+       ⚠️ Slot 1 is NOT --accent. The accent at its own step (184 72% 26%) fails
+       the chroma floor: as a large fill it reads grey. This ramp is a sibling of
+       the accent hue, not the accent itself.
+
+       ⚠️ success/warning/danger above are RESERVED for the traffic light and are
+       never reused as "series 6". On an operations panel the status colours are
+       the dominant colour job; a series borrowing one makes the panel unreadable.
+
+       Worst adjacent tritan separation sits in the 6–8 band, which is legal only
+       with secondary encoding — so any chart with two or more series ships a
+       legend, and four or fewer are also direct-labelled. That is a requirement,
+       not a preference. */
+    --series-1: 175 84% 32%;
+    --series-2:  19 90% 43%;
+    --series-3: 243 75% 59%;
+    --series-4:  26 90% 37%;
+    --series-5: 293 69% 49%;
+
+    /* ── operations map ───────────────────────────────────────────────────
+       The map is SVG, so it cannot wear Tailwind classes on every path. These
+       are the roles it names instead — still tokens, still theme-aware, and
+       still never a raw colour typed into a component.
+
+       `--map-unknown` is a neutral and must NEVER drift toward green: on this
+       panel it means "there is no plan, so no claim is being made", and a green
+       tint would turn an absence of evidence into a statement of health. */
+    --map-land:         210 20% 90%;
+    --map-coast:        214 17% 78%;
+    --map-grid:         214 20% 92%;
+    --map-place:        215 15% 45%;
+    --map-label:        215 15% 42%;
+    --map-label-strong: 215 32% 13%;
+    --map-ring:           0  0% 100%;
+    --map-ok:           152 55% 30%;
+    --map-warn:          35 78% 34%;
+    --map-late:         358 62% 43%;
+    --map-unknown:      215 12% 62%;
+
     /* ── focus ───────────────────────────────────────────────────────── */
     --ring: 184 72% 32%;
 
@@ -120,6 +174,29 @@
     --danger-soft:   358 40% 16%;
     --info:         210 70% 68%;
     --info-soft:    212 40% 17%;
+
+    /* Selected for the dark band against the dark surface — the same five hues
+       re-stepped and re-validated as a set, NOT the light values lightened.
+       An automatic flip is how a palette that passes in light fails in dark. */
+    --series-1: 173 80% 36%;
+    --series-2:  19 74% 56%;
+    --series-3: 235 65% 65%;
+    --series-4:  40 73% 44%;
+    --series-5: 292 62% 60%;
+
+    /* Map, dark. The land is a lifted surface rather than a lightened copy of
+       the light theme — a control room has quiet walls. */
+    --map-land:         215 22% 16%;
+    --map-coast:        215 16% 28%;
+    --map-grid:         215 18% 14%;
+    --map-place:        214 14% 58%;
+    --map-label:        214 14% 60%;
+    --map-label-strong: 210 24% 93%;
+    --map-ring:         215 30% 8%;
+    --map-ok:           150 48% 50%;
+    --map-warn:          40 72% 58%;
+    --map-late:           2 70% 62%;
+    --map-unknown:      215 12% 45%;
 
     --ring: 176 55% 55%;
   }

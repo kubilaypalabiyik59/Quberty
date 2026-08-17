@@ -2,6 +2,7 @@ import { Hono }    from 'hono';
 import { ReportService } from './report.service';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok } from '../../shared/response';
+import { buildCeoSnapshot } from './ceoDashboard.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -63,6 +64,19 @@ app.get('/daily-revenue', requireRole('admin', 'store_manager'), async (c) => {
 
 app.get('/dashboard', requireRole('admin', 'store_manager'), async (c) => {
   const data = await reportService.getDashboardSummary(c.get('tenantId'));
+  return ok(c, data);
+});
+
+/**
+ * The CEO dashboard's single read.
+ *
+ * Returns facts — statuses and dates — and no computed health. Colour and
+ * "how late" are derived in the browser from a virtual clock, so they stay
+ * correct between refreshes rather than going stale the moment they are sent.
+ * See ceoDashboard.service.ts.
+ */
+app.get('/ceo-dashboard', requireRole('admin', 'store_manager'), async (c) => {
+  const data = await buildCeoSnapshot(c.get('tenantId'));
   return ok(c, data);
 });
 

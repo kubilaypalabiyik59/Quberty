@@ -738,10 +738,291 @@ before building further on either.
 
 1. Migrate list pages and the remaining `components/erp/*` off the bridge, deleting bridge lines
    as they become unused.
-2. Charts still hardcode colours (the revenue bar is a fixed green) — they need token-driven
-   series colours in both themes.
+2. ~~Charts still hardcode colours~~ — **done 2026-08-16**, see §4b.
 3. Density pass on list views: row height, padding, font size.
 4. Decide whether the storefront gets its own density and type scale.
+
+---
+
+## 4b. CEO Dashboard workstream — opened 2026-08-16
+
+**Design doc: [docs/design/CEO_DASHBOARD.md](docs/design/CEO_DASHBOARD.md).** Read it before
+building any of this. Two inputs: HyperUI (chart composition) and the `ERP Gamification` panel at
+`D:\ERP Gamification` (a separate app, read in full — the operations-panel reference).
+
+Kubi's decisions, 2026-08-16: the panel lands at **`/reports/ceo-dashboard`**; sales orders get a
+nullable promised-delivery date; and the map is in scope *as an architecture*, because the
+e-commerce delivery leg is a real journey and a carrier tracking API will later feed it.
+
+### Phase 0 done — charts are inside the design system for the first time
+
+Charts were the last part of the product still outside it. `SalesChart.tsx` hardcoded hex and, in
+dark mode, a **maroon palette left over from the visual direction abandoned when the accent became
+teal**; `reports/page.tsx` carried its own six-colour array and cycled it.
+
+- **A validated five-slot series ramp** is now in `globals.css` (`--series-1…5`, both themes) and
+  wired in `tailwind.config.ts`. Chosen with the `dataviz` skill's checker — lightness band,
+  chroma floor, CVD separation, normal-vision floor, contrast — **not by eye. Re-run that check
+  before editing any value.** Note slot 1 is deliberately *not* `--accent`: the accent at its own
+  step fails the chroma floor and reads grey as a large fill.
+- `src/lib/chartTokens.ts` is the **one sanctioned place** that resolves tokens to colour strings,
+  because Recharts writes SVG attributes and cannot take a Tailwind class. Chart components still
+  name roles, never colours. It watches the `dark` class rather than the theme context, so it works
+  outside `ThemeProvider`.
+- **Status colours are reserved for the traffic light** and are never series colours.
+
+Three defects fixed on the way, each one colour making a false claim:
+
+| Was | Why it was wrong |
+|---|---|
+| Peak revenue bar painted with the **success** colour | Spent a reserved status colour on a non-status, and coloured by **rank** — changing the date range repainted whichever bar won. Now a direct label. |
+| MoM growth line drawn in **green** | Claimed every point was good news, including the negative months. |
+| Revenue-by-city pie **cycled** a six-colour array by index | A city changed colour when the list reordered. Now the ramp is consumed in order, capped at five, tail folded into "Other". |
+
+**And a real bug, unrelated to colour:** the whole reports page rendered **`₺` — Turkish lira — on
+a Bolivian tenant**. Same family as `PurchaseOrder.currency` defaulting to `TRY`. Replaced by one
+`CURRENCY` constant with the real fix (tenant currency from configuration) written down in place;
+six hardcodes became one, which is not the same as fixed.
+
+**Verified in the browser, both themes, no console errors.** `npx tsc --noEmit` clean on every
+file touched (the pre-existing errors in `inventory/counting/[id]` and `sales/orders/[id]` are
+untouched and unrelated). The series tokens were read back out of the live DOM per theme to prove
+the CSS variables actually resolve, rather than trusting the screenshot:
+
+```
+light  175 84% 32% · 19 90% 43% · 243 75% 59% · 26 90% 37% · 293 69% 49%
+dark   173 80% 36% · 19 74% 56% · 235 65% 65% · 40 73% 44% · 292 62% 60%
+```
+
+The peak label clipped at the top of the plot on first render — fixed by raising the chart's top
+margin. That is exactly the class of thing the validator cannot catch and only looking can.
+
+### Running it found two things reading it did not — both block the CEO dashboard
+
+1. **The sales documents carry no inventory dimension.** `getSalesByCity` inner-joins `sites`, so
+   **"Revenue by City" has never returned a row** and failed silently as a blank card.
+
+   My first reading of this was wrong and **Kubi corrected it: site is the warehouse's site.**
+   `Warehouse.site_id` is not-null, so `SalesOrder.site_id` is a derived copy, never an
+   independent attribute — "which site owns the order" was a false question. The real gap is one
+   level down:
+
+   ```
+   sales_orders  51 rows · site 0 · warehouse 10     DIRECT 48 → 7 with warehouse
+                                                     QUOTATION 3 → 3 with warehouse
+   ```
+
+   The process-chain documents set the warehouse every time; **the old direct sales path sets it
+   on 7 of 48**, because `warehouse_id` is optional and unenforced (`sales.service.ts:53`,
+   `pos.routes.ts:48`). Fix warehouse first, derive site from it, backfill the 10 that can be.
+
+   **And it is not only reporting.** `sales.routes.ts:504` skips the warehouse filter when the
+   order has none, so a **return** restores stock to whichever row `findFirst` reaches first.
+   Invisible on one warehouse; this tenant has three.
+2. **The site master would mislead the map on day one.** Two Turkish sites (`Istanbul`, `Ankara`,
+   country `TR`) in the Bolivian tenant, and `Santa Cruz Store Site` has **`city = 'Bolivia'`** — a
+   country in the city column. Geocoding that drops the store ~400 km from Santa Cruz: a map that
+   looks plausible and is wrong, which is worse than one that looks broken.
+
+Blank chart cards now state the reason instead of rendering an empty rectangle
+(`EmptyChart` in `reports/page.tsx`) — a blank box reads as "broken" or "still loading", and a
+reader cannot tell either from "there is genuinely nothing here".
+
+Both findings are written up with evidence in
+[CEO_DASHBOARD.md §5.3–5.4](docs/design/CEO_DASHBOARD.md).
+
+### BUILT — migration 011 and the dimension resolver, applied 2026-08-17
+
+Kubi approved all three. **[OFFICIAL]** grounding, and it is what shaped the design:
+
+> "The site dimension is mandatory, and **you can set the warehouse dimension to be mandatory**."
+> — [Master planning and multisite functionality](https://learn.microsoft.com/dynamics365/supply-chain/master-planning/master-plan-multisite-functionality)
+>
+> "the demand order is expected to indicate **where the order must be shipped from** (that is,
+> what site and warehouse)." —
+> [Flexible warehouse-level dimension reservation](https://learn.microsoft.com/dynamics365/supply-chain/warehousing/flexible-warehouse-level-dimension-reservation)
+
+Site mandatory always, warehouse mandatory **by choice** — so the switch is a parameter, not a
+NOT NULL. And the second sentence is a description of the return bug.
+
+| Artefact | What |
+|---|---|
+| [011_inventory_dimensions_on_demand.sql](backend/prisma/sql/011_inventory_dimensions_on_demand.sql) | **Applied.** `sales_orders.requested_delivery_date`, `sales_parameters.default_warehouse_id` + `require_warehouse_on_sales_order`, `purchase_orders.site_id`, backfill, 3 indexes. Additive only. |
+| `shared/services/inventoryDimension.service.ts` | The single place site is written. Precedence explicit → register → parameter → sole-warehouse → none. Throws on an unknown warehouse rather than falling back; throws on nothing-resolved when the tenant requires it. |
+| `sales.service.ts` · `pos.routes.ts` · `quotation.service.ts` | All three creation paths now resolve dimensions. **`site_id` is no longer accepted from callers** — accepting both let them disagree. POS now copies the register session's warehouse, which it never did. |
+| `sales.routes.ts` return path | Resolves a warehouse instead of skipping the filter, and orders by `id` so an unresolvable case is at least repeatable. |
+| `scripts/provisionSalesDimensions.ts` | Reports candidates, **refuses to guess**. |
+| `scripts/verifyInventoryDimensions.ts` · `verifySalesDimensionsLive.ts` | The invariant, and a live self-cleaning round-trip. |
+
+**Backfill result — every row that has a warehouse now has the matching derived site:**
+
+```
+sales_orders          51 total · 10 warehouse · 10 site
+purchase_orders       18 total · 18 warehouse · 18 site   (100% — PO warehouse is NOT NULL)
+sales_quotations       6 total ·  6 warehouse ·  6 site
+purchase_requisitions  5 total ·  5 warehouse ·  5 site
+
+41 sales orders have no warehouse and stay NULL — nothing to derive from.
+Inventing a site would put revenue in a city it did not happen in.
+```
+
+**Verified:** `verifySalesDimensionsLive.ts` 9/9 against the real database (including "a `site_id`
+passed by the caller is ignored"), `verifyProcessChain.ts` all checks passed with counts back to
+baseline, `npx jest` 119 passing — the 4 failing suites are the same pre-existing ones. Backend
+type-check clean outside those test files.
+
+**A bug the live run caught that reading would not have:** Prisma rejects `"2026-09-30"` for a
+`@db.Date` field ("premature end of input, expected ISO-8601 DateTime"). A date from a form would
+have failed at runtime while type-checking cleanly. `toDateOrNull` in `sales.service.ts` normalises
+it, and returns null on garbage rather than losing the order.
+
+### ⚠ NEEDS KUBI — the default warehouse is deliberately unset
+
+`provisionSalesDimensions.ts` refuses to pick, and the evidence shows why the obvious heuristic is
+wrong:
+
+```
+code        name                   site                     city        country  SOs  POs  on_hand
+WH-001      Warehouse Bolivia      Warehouse Bolivia        La Paz      BO         3    4       54
+WH-IST-01   Istanbul Main Store    Istanbul                 Istanbul    TR         7   14       90
+WH-MAIN     Santa Cruz Store       Santa Cruz Store Site    Bolivia     BO         0    0       60
+```
+
+**The busiest warehouse is the Turkish template leftover.** A script optimising for usage would
+enshrine `WH-IST-01` as the default for a business that trades in Bolivia, and every future order
+would inherit it. So nothing is pinned and `require_warehouse_on_sales_order` is still FALSE.
+
+Note also `WH-MAIN`'s site has `city = 'Bolivia'` — a country in the city column, and it holds 60
+units while having zero documents.
+
+```bash
+npx tsx scripts/provisionSalesDimensions.ts --warehouse WH-MAIN --require
+```
+
+**Provisioned 2026-08-17 on Kubi's call:** `WH-001 / Warehouse Bolivia` is the sales default and
+`require_warehouse_on_sales_order` is now **TRUE** on the test tenant. Worth knowing: the warehouse
+chosen is also the *least* configured one — 1 zone, 1 location, 54 units on hand.
+
+### Warehouse setup screen — rebuilt 2026-08-17
+
+`/warehouse/locations` already existed (390 lines, warehouse→zone→location drill-down). It was
+**extended, not replaced**, and rewritten against design tokens.
+
+**[OFFICIAL]** the documented order is zone groups → zones → location types → **location formats**
+→ location profiles → locations, with a **Location setup wizard** for bulk creation, and the rule
+that a location name may not exceed **10 characters including separators**
+([Configure locations in a WMS-enabled warehouse](https://learn.microsoft.com/dynamics365/supply-chain/warehousing/tasks/configure-locations-wms-enabled-warehouse)).
+
+**What we took, and what we did not.** Zones and locations (both already in the schema) plus the
+naming rule. We did **not** create master tables for location formats, profiles, types or zone
+groups — five master tables before a shoe retailer can name a shelf is the enterprise weight this
+product exists to avoid. **The cut is a behaviour cut, not a schema cut**: `WarehouseLocation`
+already carries `aisle`/`rack`/`shelf`/`bin`, `location_type`, `is_pick_location`,
+`is_receive_location`, `max_weight`, `max_volume` — the data a location profile would hold — so
+profiles later become a table those columns point at, not a migration.
+
+| Artefact | What |
+|---|---|
+| `modules/warehouse/locationFormat.service.ts` | Segment model + the 10-character rule + a 2,000-per-run cap. Refuses with an explanation rather than truncating. |
+| `POST /warehouse/locations/bulk` | The Location setup wizard equivalent. **`dry_run` is the default** — a range that looks small often is not, and four segments of 1–10 is ten thousand bins. Existing codes are skipped, not errored. |
+| `GET /warehouse/overview` | One read: warehouses, sites, zone/location counts, on-hand, doc counts, and which one is the sales default. |
+| `POST /warehouse/warehouses` | **No longer invents a site.** It used to auto-create `SITE-<code>` with `city: 'La Paz'` defaulted — that is exactly how this tenant got one site per warehouse and a site whose city is `'Bolivia'`. A site is now chosen, or created explicitly with real values. |
+
+The screen leads with what is *wrong*, not the happy path: no default warehouse, warehouses
+spanning two countries, stock in a warehouse with no locations, and a ⚠ beside any city that is
+actually a country name (resolved via `Intl.DisplayNames`, so there is no country table to
+maintain).
+
+### CEO dashboard — BUILT, at `/reports/ceo-dashboard`
+
+Sidebar: **Management → Reports → CEO dashboard**.
+
+The architecture from the gamification panel, adapted: **the server sends facts, the browser
+derives everything time-dependent.** `ceoDashboard.service.ts` returns statuses and dates and
+deliberately has **no `health` field**; the page computes `progress = clamp((now − start) /
+(due − start), 0, 1)` against a clock that ticks every minute. A colour computed on the server is
+stale the moment it is sent, and it makes the 15-minute refresh a free parameter.
+
+Two rules are enforced in code and must stay: **no person is ever named** (there is no
+`assigned_to` or `created_by` anywhere in the service, and the panel header says "situations, not
+people"), and **no time window means no colour claim** — work with no promised date is grey and
+labelled "no date", never green.
+
+That second rule is doing real work right now:
+
+```
+Order to Cash  37 in flight · Bs 84 457 · 8/1/5/2/21 across Draft→Confirmed→Shipped→Invoiced→Paid
+Source to Pay  18 in flight · Bs 20 585 · 2/0/3/2/11
+coverage: 37 of 37 open sales orders have NO promised delivery date
+          27 of 37 have no warehouse, so they group under "(no site)"
+```
+
+So the O2C traffic light is entirely grey and the panel says so in a banner rather than showing a
+reassuring green bar. S2P has real dates (`expected_date`) and immediately surfaced three overdue
+purchase orders, the worst 138 days late.
+
+**Verified in the browser, both themes, no console errors.** Screenshots:
+[docs/design/screenshots/](docs/design/screenshots/) — `ceo-*.png`, `warehouse-*.png`.
+
+**Gotcha that cost a screenshot cycle:** `bg-series-1` rendered as nothing until the frontend dev
+server was restarted. Adding colours to `tailwind.config.ts` requires a restart — already recorded
+in the design-system notes, and it fails silently rather than erroring.
+
+### THE MAP — built 2026-08-17, after Kubi rejected the panel without it
+
+The first cut delivered floors 1 and 3 (process cards + station strip) and deferred the map to a
+Phase 3, on the grounds that there were no coordinates. **Kubi overruled that, and the reason is
+worth keeping:** *"eğer veri göremezsem ben bilirim ki veride bir sıkıntı var ve bunu
+düzeltebilirim, ancak sen mapi direkt almazsan bu çok büyük bir sıkıntı olur."* A map that shows
+gaps is a diagnostic; a missing map is just missing.
+
+| Artefact | What |
+|---|---|
+| [012_geo_points.sql](backend/prisma/sql/012_geo_points.sql) | **Applied.** `geo_points` cache + `sites.latitude/longitude` manual override. |
+| `shared/services/geocoder.service.ts` | Nominatim, with the usage policy enforced in code: 1 req/sec queue, real User-Agent, permanent caching, **and failures cached too** so an unresolvable address is asked about once rather than on every page load. |
+| `scripts/warmGeocache.ts` | Deliberate warm-up. The panel reads **cache-only** — a dashboard must never wait on a rate-limited external service. |
+| `components/erp/OperationsMap.tsx` | Mercator SVG, world topojson vendored to `public/geo/` (no external host). Coastlines generated once and the camera applied as a transform, because Mercator is affine. Camera fits the data — no country is hardcoded. |
+
+**Precedence, and why the cache is a separate table rather than columns on Site:** a geocoder answer
+is a *guess*. `site.lat/lng` → `geo_points source=manual` → `nominatim` → `none`. Writing the guess
+onto Site would make it indistinguishable from a fact and let a re-run silently overwrite a human's
+correction.
+
+**The map never invents a position.** An agent missing an endpoint is absent and counted in the
+caption. Live result:
+
+```
+28 of 55 agents on the map · 27 not shown
+could not place: eindhoven, bolivia · bo
+```
+
+Those two strings are data defects, exactly as Kubi predicted: a **country name sitting in the
+country CODE column**, and a record with a country and no city. The panel names them under the map
+so they can be fixed.
+
+### Finance / GL checked against Learn — one real gap
+
+Full write-up: **[CEO_DASHBOARD.md §8b](docs/design/CEO_DASHBOARD.md)**.
+
+**Matches, and closely:** main account + category, account type / normal balance, journal-based
+posting with voucher sequences, fiscal periods, and — the one worth noting — `PostingProfile`'s
+most-specific-first resolver *is* Business Central's **General Posting Setup**, the business ×
+product posting-group matrix that maps parties and items to GL accounts.
+
+**The gap: financial dimensions do not exist.** No dimension column on `JournalLine`, no
+`AccountStructure`, no `Ledger`/`LegalEntity` entity. CLAUDE.md §3 argues *for* skipping the generic
+dimension framework and that reasoning still holds — but the same section requires a deferred
+capability to ship with a schema hook, and **this one has none.**
+
+**The cost is already concrete.** Sales orders now carry a derived `site_id`, so "value by site"
+works on the document side — but the dimension never reaches `JournalLine`, so **a P&L by store
+cannot be produced at all.** For a three-store retailer that is close to the first question an
+owner asks.
+
+**[REC]** two nullable FK columns on `JournalLine` (`site_id`, `dimension_2_id`) rather than a
+generic key/value table — the axis a retailer actually has, every query a plain join, no commitment
+to account structures. **Not implemented; needs the Finance co-founder**, because which axes deserve
+a column is an accounting decision.
 
 ---
 

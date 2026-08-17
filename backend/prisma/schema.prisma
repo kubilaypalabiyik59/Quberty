@@ -85,11 +85,19 @@ model Site {
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())
 
-  warehouses   Warehouse[]
-  employees    Employee[]
-  sales_orders SalesOrder[]
-  quotations   SalesQuotation[]
-  requisitions PurchaseRequisition[]
+  /// Manual coordinate override. Set them and the geocoder is never consulted
+  /// for this site — for the warehouse on an industrial estate whose address
+  /// text will never resolve to the right spot. Null means resolve from the
+  /// address through the `GeoPoint` cache.
+  latitude  Float?
+  longitude Float?
+
+  warehouses      Warehouse[]
+  employees       Employee[]
+  sales_orders    SalesOrder[]
+  quotations      SalesQuotation[]
+  requisitions    PurchaseRequisition[]
+  purchase_orders PurchaseOrder[]
 
   @@unique([tenant_id, code])
   @@map("sites")
@@ -119,6 +127,7 @@ model Warehouse {
   requisitions        PurchaseRequisition[]
   product_receipts    ProductReceipt[]
   rfq_cases           RfqCase[]
+  default_for_sales   SalesParameters[]
 
   @@unique([tenant_id, code])
   @@map("warehouses")
@@ -621,8 +630,16 @@ model PurchaseOrder {
   source_document_type String  @default("DIRECT")
   source_document_id   String? @db.Uuid
 
+  /// Derived from `warehouse_id`, never entered — site is the warehouse's site.
+  /// Denormalised so the operations panel can group by geography without
+  /// joining through warehouses on every query; kept in step by
+  /// `inventoryDimension.service.ts`. `warehouse_id` here is already NOT NULL,
+  /// so unlike the sales side this backfilled to 100%.
+  site_id String? @db.Uuid
+
   supplier         Supplier            @relation(fields: [supplier_id], references: [id])
   warehouse        Warehouse           @relation(fields: [warehouse_id], references: [id])
+  site             Site?               @relation(fields: [site_id], references: [id])
   lines            PurchaseOrderLine[]
   arrival_journals ArrivalJournal[]
   product_receipts ProductReceipt[]
@@ -1106,6 +1123,16 @@ model SalesOrder {
   total_amount     Decimal   @default(0) @db.Decimal(14, 2)
   shipping_address Json?
   notes            String?
+
+  /// Date promised to the customer — the sales-side counterpart of
+  /// `PurchaseOrder.expected_date`, mirroring D365's RequestedReceiptDate.
+  ///
+  /// Nullable on purpose. The operations panel measures health as
+  /// elapsed / planned, and with no promise there is no denominator; such an
+  /// order reports as `unknown` rather than being handed an invented window
+  /// that would paint it green. See docs/design/CEO_DASHBOARD.md §5.1.
+  requested_delivery_date DateTime? @db.Date
+
   wave_id          String?   @db.Uuid
   invoice_id       String?   @db.Uuid // soft ref to Factura — set when invoiced
   paid_at          DateTime?
@@ -1657,6 +1684,23 @@ model SalesParameters {
   allow_negative_inventory_sale Boolean @default(false)
   require_customer_tax_id       Boolean @default(false)
 
+  /// ── Inventory dimensions on demand documents ───────────────────────────
+  /// Site is never configured here: it is `warehouse.site_id`, always derived.
+  /// What IS configurable is the warehouse, and Microsoft draws the same line —
+  /// "The site dimension is mandatory, and you can set the warehouse dimension
+  /// to be mandatory."
+  /// learn.microsoft.com/dynamics365/supply-chain/master-planning/master-plan-multisite-functionality
+  ///
+  /// Fallback warehouse, consulted after the explicit request value and the POS
+  /// register session and before the sole-warehouse shortcut.
+  default_warehouse_id             String? @db.Uuid
+  /// FALSE keeps today's behaviour, so an unprovisioned tenant is unaffected.
+  /// TRUE refuses to create a demand document that cannot say where it ships
+  /// from — which is also what stops the return path guessing (§5.3b of the
+  /// panel design doc). Same ship-off/turn-on-per-tenant pattern as
+  /// `require_balanced_posting`.
+  require_warehouse_on_sales_order Boolean @default(false)
+
   /// ── Prospect to Quote switches ─────────────────────────────────────────
   /// The upstream chain is Lead → Opportunity → Quotation → Order, and EVERY
   /// step of it is optional. These switches are how a tenant declares which
@@ -1684,6 +1728,7 @@ model SalesParameters {
 
   default_tax_group      TaxGroup?     @relation(fields: [default_tax_group_id], references: [id])
   default_item_tax_group ItemTaxGroup? @relation(fields: [default_item_tax_group_id], references: [id])
+  default_warehouse      Warehouse?    @relation(fields: [default_warehouse_id], references: [id])
 
   @@unique([tenant_id, legal_entity_id])
   @@map("sales_parameters")
@@ -2781,4 +2826,43 @@ model RfqRequestLine {
   @@index([request_id])
   @@index([case_line_id])
   @@map("rfq_request_lines")
+}
+
+/// Geocoding cache.
+///
+/// Deliberately a cache keyed by a normalised address, NOT columns on Site:
+/// the same place appears under several rows, geocoding is rate-limited, and —
+/// the reason that matters — **a geocoder result is a guess**. Storing it
+/// separately with a `source` keeps a guess distinguishable from a fact, so a
+/// human correction is visibly a correction and a re-run can never overwrite it.
+///
+/// `source = 'manual'` always beats `'nominatim'`. `'none'` caches a failure on
+/// purpose: without it an unresolvable address is re-queried on every page load,
+/// which is precisely the bulk geocoding the Nominatim usage policy forbids.
+model GeoPoint {
+  id        String @id @default(uuid()) @db.Uuid
+  tenant_id String @db.Uuid
+
+  /// Lower-cased "city, region, country" — the lookup key.
+  query_key  String
+  /// What was actually asked, kept for debugging a bad hit.
+  query_text String
+
+  latitude  Float?
+  longitude Float?
+
+  /// manual | nominatim | none
+  source String @default("nominatim")
+  /// Nominatim importance. Low confidence is shown rather than hidden, so a
+  /// reader can tell a precise hit from a country centroid.
+  confidence   Float?
+  display_name String?
+
+  resolved_at DateTime?
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@unique([tenant_id, query_key])
+  @@index([tenant_id, source])
+  @@map("geo_points")
 }

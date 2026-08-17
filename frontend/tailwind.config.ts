@@ -58,6 +58,18 @@ const config: Config = {
           DEFAULT: 'hsl(var(--info) / <alpha-value>)',
           soft: 'hsl(var(--info-soft) / <alpha-value>)',
         },
+        /**
+         * Chart series — identity only, assigned in order, never cycled.
+         * See globals.css for why slot 1 is not the accent and why the status
+         * colours above are off-limits as series.
+         */
+        series: {
+          1: 'hsl(var(--series-1) / <alpha-value>)',
+          2: 'hsl(var(--series-2) / <alpha-value>)',
+          3: 'hsl(var(--series-3) / <alpha-value>)',
+          4: 'hsl(var(--series-4) / <alpha-value>)',
+          5: 'hsl(var(--series-5) / <alpha-value>)',
+        },
         ring: 'hsl(var(--ring) / <alpha-value>)',
         /** Sign-in brand panel — fixed dark in both themes, see globals.css. */
         panel: {

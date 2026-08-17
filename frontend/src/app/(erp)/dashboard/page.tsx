@@ -267,7 +267,7 @@ export default function DashboardPage() {
 
           <SalesChart
             data={chartMode === 'monthly' ? (monthlySales ?? []) : (dailyRevenue ?? [])}
-            green
+            highlightPeak
             mode={chartMode}
           />
         </div>

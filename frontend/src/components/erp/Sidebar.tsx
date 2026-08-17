@@ -107,7 +107,12 @@ const NAV = [
   {
     label: 'Management',
     items: [
-      { href: '/reports', icon: BarChart3, label: 'Reports' },
+      {
+        href: '/reports', icon: BarChart3, label: 'Reports', children: [
+          { href: '/reports', label: 'Analytics' },
+          { href: '/reports/ceo-dashboard', label: 'CEO dashboard' },
+        ],
+      },
       { href: '/import', icon: Upload, label: 'Import' },
       {
         href: '/hr', icon: UserCog, label: 'HR', children: [

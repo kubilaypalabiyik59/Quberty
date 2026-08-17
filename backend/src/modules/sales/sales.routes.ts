@@ -12,6 +12,8 @@ import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
+import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
+import { logger } from '../../shared/logger';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -496,13 +498,60 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
     { document: `Return for ${order.order_number}`, partyId: order.customer_id ?? null },
   );
 
+  // ── Where do the goods go back to? ─────────────────────────────────────────
+  //
+  // **[OFFICIAL]** "the demand order is expected to indicate where the order
+  // must be shipped from (that is, what site and warehouse)."
+  // learn.microsoft.com/dynamics365/supply-chain/warehousing/flexible-warehouse-level-dimension-reservation
+  //
+  // This code used to skip the warehouse filter whenever the order had none, so
+  // `findFirst` — with no ordering — put the returned goods in whichever stock
+  // row the query happened to reach first. Invisible on a single-warehouse
+  // tenant; on this one, with three warehouses and 41 orders carrying no
+  // warehouse, it could silently move stock into the wrong building.
+  //
+  // Orders created since migration 011 always carry a warehouse. Older ones may
+  // not, so the behaviour on a miss is deliberate rather than accidental: refuse
+  // when the tenant has declared the dimension mandatory, and otherwise fall
+  // back to the tenant default — never to "whatever came first". This mirrors
+  // posting.service.ts, which throws under `require_balanced_posting` and logs
+  // loudly otherwise.
+  const returnDims = await resolveInventoryDimensions(
+    c.get('tenantId'),
+    { warehouseId: order.warehouse_id, documentKind: `return for ${order.order_number}` },
+  );
+
+  if (!returnDims.warehouse_id) {
+    logger.error(
+      { tenantId: c.get('tenantId'), order: order.order_number },
+      'Return has no warehouse to restore stock to; falling back to a deterministic pick. ' +
+        'Set Sales parameters → default warehouse to make this unambiguous.',
+    );
+  } else if (returnDims.origin !== 'explicit') {
+    logger.warn(
+      { tenantId: c.get('tenantId'), order: order.order_number, origin: returnDims.origin },
+      'Order carries no warehouse; returning stock to the resolved fallback warehouse',
+    );
+  }
+
   // Pre-fetch stock records for each line outside transaction (findFirst per line)
   const stockByLine: Array<{ stock: any; line: any }> = [];
   for (const line of order.lines) {
     const stockWhere: any = { tenant_id: c.get('tenantId'), product_id: line.product_id };
     if (line.variant_id) stockWhere.variant_id = line.variant_id;
-    if (order.warehouse_id) stockWhere.location = { zone: { warehouse_id: order.warehouse_id } };
-    const stock = await db.inventoryStock.findFirst({ where: stockWhere });
+    if (returnDims.warehouse_id) {
+      stockWhere.location = { zone: { warehouse_id: returnDims.warehouse_id } };
+    }
+    const stock = await db.inventoryStock.findFirst({
+      where: stockWhere,
+      // Ordered so that an unresolvable case is at least repeatable and
+      // auditable. An arbitrary row is not the same as a defensible one, but a
+      // stable wrong answer can be found and corrected; a random one cannot.
+      // By `id` rather than a timestamp: InventoryStock has no `created_at`,
+      // and ordering by `updated_at` would make the pick move every time stock
+      // changed — the opposite of repeatable.
+      orderBy: { id: 'asc' },
+    });
     stockByLine.push({ stock, line });
   }
 

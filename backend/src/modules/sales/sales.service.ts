@@ -7,11 +7,28 @@ import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextJournalVoucher } from '../../shared/services/numberSequence.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
+import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { WarehouseService } from '../warehouse/warehouse.service';
 
 const inventoryService = new InventoryService();
 const warehouseService = new WarehouseService();
+
+/**
+ * Coerce a date-only value to something Prisma will accept for a `@db.Date`.
+ *
+ * A form sends `"2026-09-30"`. Prisma rejects it — "premature end of input,
+ * expected ISO-8601 DateTime" — so passing the string straight through fails at
+ * runtime while type-checking cleanly. An invalid string returns null rather
+ * than throwing: a mistyped promise date should not lose the whole order, and a
+ * null promise is a state the panel already handles honestly (it reports
+ * `unknown`, never on-time).
+ */
+function toDateOrNull(v: Date | string | null | undefined): Date | null {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(`${v}`.length === 10 ? `${v}T00:00:00.000Z` : `${v}`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 export class SalesService {
   /**
@@ -22,6 +39,15 @@ export class SalesService {
     if (!data.lines || data.lines.length === 0) {
       throw new AppError('Sales order must have at least one line');
     }
+
+    // Storage dimensions before anything is written. `data.site_id` is
+    // deliberately ignored — site is the warehouse's site and is never taken
+    // from the caller; accepting both let them disagree, which is how every
+    // order ended up with a null site while some had a warehouse.
+    const dims = await resolveInventoryDimensions(
+      tenantId,
+      { warehouseId: data.warehouse_id, documentKind: 'sales order' },
+    );
 
     const orderNumber = await nextSalesOrderNumber(tenantId);
 
@@ -49,8 +75,9 @@ export class SalesService {
         customer_id: data.customer_id,
         source: data.source ?? 'manual',
         status: 'DRAFT',
-        site_id: data.site_id,
-        warehouse_id: data.warehouse_id,
+        site_id: dims.site_id,
+        warehouse_id: dims.warehouse_id,
+        requested_delivery_date: toDateOrNull(data.requested_delivery_date),
         currency: data.currency ?? 'BOB',
         subtotal,
         discount_amount: data.discount_amount ?? 0,
@@ -354,8 +381,15 @@ export class SalesService {
 interface CreateOrderDto {
   customer_id?: string;
   source?: 'manual' | 'storefront' | 'import';
-  site_id?: string;
+  /**
+   * `site_id` is deliberately NOT accepted. Site is the warehouse's site and is
+   * derived by `inventoryDimension.service.ts`. Accepting it from the caller
+   * would let the two disagree, and a denormalised copy that disagrees with its
+   * source is worse than no copy at all.
+   */
   warehouse_id?: string;
+  /** What was promised to the customer. Drives the panel's health ratio. */
+  requested_delivery_date?: Date | string | null;
   currency?: string;
   discount_amount?: number;
   shipping_address?: object;

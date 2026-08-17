@@ -9,6 +9,7 @@ import { ok, created, message } from '../../shared/response';
 import { OpenSessionSchema, CloseSessionSchema, PosSaleSchema } from '../../shared/schemas';
 import { logger }   from '../../shared/logger';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
+import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -223,12 +224,28 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     const changeDue = cash_tendered !== undefined ? Number(cash_tendered) - totalAmount : 0;
 
     // 5. Create SalesOrder (COMPLETED immediately)
+    //
+    // The register session has carried a site and a warehouse since it was
+    // opened, and until now the sale simply did not copy them — which is the
+    // larger half of why 41 of 51 sales orders could not say where they shipped
+    // from. The session's warehouse is the explicit answer here; the resolver
+    // still runs so a session opened without one falls through to the tenant
+    // default and so the tenant's `require_warehouse_on_sales_order` switch
+    // applies to the counter exactly as it does to the back office.
+    const dims = await resolveInventoryDimensions(
+      tenantId,
+      { warehouseId: session.warehouse_id, documentKind: 'POS sale' },
+      tx,
+    );
+
     const order = await tx.salesOrder.create({
       data: {
         tenant_id:    tenantId,
         order_number: orderNumber,
         source:       'pos',
         status:       'COMPLETED',
+        site_id:      dims.site_id,
+        warehouse_id: dims.warehouse_id,
         subtotal,
         tax_amount:   ivaAmount,
         total_amount: totalAmount,

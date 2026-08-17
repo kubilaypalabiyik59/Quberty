@@ -4,6 +4,7 @@ import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
+import { planLocations, segmentsOf, MAX_LOCATION_NAME, type Segment } from './locationFormat.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -35,30 +36,126 @@ app.get('/warehouses', async (c) => {
   return ok(c, warehouses);
 });
 
+/**
+ * Create a warehouse.
+ *
+ * ## Why this no longer invents a site
+ *
+ * It used to auto-create `SITE-<code>` whenever `site_id` was absent, defaulting
+ * the city to 'La Paz' and the country to 'BO'. That is how the anchor tenant
+ * ended up with one site per warehouse — which empties the site tier of meaning,
+ * since a site exists precisely to be the operational unit ABOVE several
+ * warehouses — and how one site came to have `city = 'Bolivia'`, a country in
+ * the city column, which would put that store ~400 km from Santa Cruz on any map.
+ *
+ * A site is now either chosen or created deliberately. `create_site: true` with
+ * real values is the explicit path; there are no hardcoded geographic defaults,
+ * because a hardcoded city in a product sold in three countries is a defect.
+ */
+/**
+ * Everything the warehouse setup screen needs, in one read.
+ *
+ * Deliberately includes the things that make a misconfiguration visible rather
+ * than only the happy-path fields: which warehouse is the sales default, how
+ * many locations each zone actually has, and whether stock is sitting in a
+ * warehouse nobody sells from.
+ */
+app.get('/overview', async (c) => {
+  const tenantId = c.get('tenantId');
+
+  const [warehouses, params, stock] = await Promise.all([
+    db.warehouse.findMany({
+      where: { tenant_id: tenantId },
+      include: {
+        site: { select: { id: true, code: true, name: true, city: true, country: true } },
+        zones: { include: { _count: { select: { locations: true } } } },
+        _count: { select: { sales_orders: true, purchase_orders: true } },
+      },
+      orderBy: { code: 'asc' },
+    }),
+    db.salesParameters.findFirst({
+      where: { tenant_id: tenantId, legal_entity_id: null },
+      select: { default_warehouse_id: true, require_warehouse_on_sales_order: true },
+    }),
+    db.$queryRaw<{ warehouse_id: string; on_hand: number; stock_rows: number }[]>`
+      SELECT z.warehouse_id::text AS warehouse_id,
+             COALESCE(SUM(st.quantity), 0)::float AS on_hand,
+             COUNT(st.id)::int AS stock_rows
+        FROM warehouse_zones z
+        LEFT JOIN warehouse_locations l ON l.zone_id = z.id
+        LEFT JOIN inventory_stock st ON st.location_id = l.id
+       WHERE z.tenant_id = ${tenantId}::uuid
+       GROUP BY 1
+    `,
+  ]);
+
+  const stockBy = new Map(stock.map((s) => [s.warehouse_id, s]));
+
+  return ok(c, {
+    default_warehouse_id: params?.default_warehouse_id ?? null,
+    warehouse_required: params?.require_warehouse_on_sales_order ?? false,
+    warehouses: warehouses.map((w) => ({
+      id: w.id,
+      code: w.code,
+      name: w.name,
+      type: w.type,
+      is_active: w.is_active,
+      is_default: w.id === params?.default_warehouse_id,
+      site: w.site,
+      zone_count: w.zones.length,
+      location_count: w.zones.reduce((n, z) => n + z._count.locations, 0),
+      sales_orders: w._count.sales_orders,
+      purchase_orders: w._count.purchase_orders,
+      on_hand: stockBy.get(w.id)?.on_hand ?? 0,
+      stock_rows: stockBy.get(w.id)?.stock_rows ?? 0,
+    })),
+  });
+});
+
 app.post('/warehouses', requireRole('admin', 'store_manager'), async (c) => {
-  const { code, name, type, site_id, site_name, site_city, site_country } = await c.req.json();
+  const { code, name, type, site_id, site_name, site_city, site_country, create_site } = await c.req.json();
   if (!code || !name) throw new AppError('code and name are required');
 
   let resolvedSiteId = site_id;
 
-  // Auto-create site if not provided
   if (!resolvedSiteId) {
+    if (!create_site) {
+      const sites = await db.site.findMany({
+        where: { tenant_id: c.get('tenantId') },
+        select: { id: true, code: true, name: true, city: true },
+        orderBy: { name: 'asc' },
+      });
+      throw new AppError(
+        'A warehouse must belong to a site. Pass site_id, or pass create_site with site_name, ' +
+          'site_city and site_country. ' +
+          (sites.length
+            ? `Existing sites: ${sites.map((s) => `${s.code} (${s.name}, ${s.city})`).join(' · ')}`
+            : 'No sites exist yet — create one.'),
+        422,
+      );
+    }
+    if (!site_name || !site_city || !site_country) {
+      throw new AppError(
+        'Creating a site needs site_name, site_city and site_country. These are not defaulted: ' +
+          'a hardcoded city is wrong in every country but one.',
+        422,
+      );
+    }
     const siteCode = `SITE-${code}`;
     const existingSite = await db.site.findFirst({ where: { tenant_id: c.get('tenantId'), code: siteCode } });
-    if (existingSite) {
-      resolvedSiteId = existingSite.id;
-    } else {
-      const site = await db.site.create({
-        data: {
-          tenant_id: c.get('tenantId'),
-          code:      siteCode,
-          name:      site_name || name,
-          city:      site_city || 'La Paz',
-          country:   site_country || 'BO',
-        },
-      });
-      resolvedSiteId = site.id;
-    }
+    resolvedSiteId = existingSite
+      ? existingSite.id
+      : (
+          await db.site.create({
+            data: {
+              tenant_id: c.get('tenantId'),
+              code:      siteCode,
+              name:      site_name,
+              city:      site_city,
+              country:   site_country,
+            },
+          })
+        ).id;
   }
 
   const warehouse = await db.warehouse.create({
@@ -132,6 +229,87 @@ app.post('/locations', requireRole('admin', 'store_manager'), async (c) => {
     include: { zone: { include: { warehouse: { select: { name: true } } } } },
   });
   return created(c, location);
+});
+
+/**
+ * Bulk location creation — our equivalent of D365's **Location setup wizard**.
+ *
+ * **[OFFICIAL]** "To quickly create the locations within a warehouse, use the
+ * Location setup wizard. As part of this process, you can easily maintain the
+ * format of the location names."
+ * learn.microsoft.com/dynamics365/supply-chain/warehousing/warehouse-configuration
+ *
+ * `dry_run` (the default) returns the plan without writing. A range that looks
+ * small often is not — four segments of 1–10 is ten thousand bins — and finding
+ * that out by creating them is expensive to undo.
+ *
+ * Existing codes are skipped rather than erroring, so re-running after widening
+ * a range does the obvious thing instead of failing on the first collision.
+ */
+app.post('/locations/bulk', requireRole('admin', 'store_manager'), async (c) => {
+  const body = await c.req.json();
+  const { zone_id, segments, location_type, is_pick_location, is_receive_location } = body;
+  const dryRun = body.dry_run !== false;
+
+  if (!zone_id) throw new AppError('zone_id is required');
+  if (!Array.isArray(segments) || !segments.length) throw new AppError('segments must be a non-empty array');
+
+  const zone = await db.warehouseZone.findFirst({
+    where: { id: zone_id, tenant_id: c.get('tenantId') },
+    include: { warehouse: { select: { code: true, name: true } } },
+  });
+  if (!zone) throw new AppError('Zone not found for this tenant', 404);
+
+  const plan = planLocations(segments as Segment[]);
+
+  const existing = await db.warehouseLocation.findMany({
+    where: { zone_id, code: { in: plan.codes } },
+    select: { code: true },
+  });
+  const already = new Set(existing.map((e) => e.code));
+  const toCreate = plan.codes.filter((code) => !already.has(code));
+
+  if (dryRun) {
+    return ok(c, {
+      dry_run: true,
+      zone: { id: zone.id, code: zone.code, name: zone.name, warehouse: zone.warehouse.name },
+      name_length: plan.nameLength,
+      max_name_length: MAX_LOCATION_NAME,
+      total: plan.total,
+      already_exist: already.size,
+      will_create: toCreate.length,
+      sample: plan.sample,
+    });
+  }
+
+  if (!toCreate.length) {
+    return ok(c, { created: 0, already_exist: already.size, message: 'Every location in this range already exists.' });
+  }
+
+  await db.warehouseLocation.createMany({
+    data: toCreate.map((code) => {
+      const parts = segmentsOf(code, segments as Segment[]);
+      return {
+        tenant_id:           c.get('tenantId'),
+        zone_id,
+        code,
+        aisle:               parts.aisle ?? null,
+        rack:                parts.rack ?? null,
+        shelf:               parts.shelf ?? null,
+        bin:                 parts.bin ?? null,
+        location_type:       location_type ?? 'bulk',
+        is_pick_location:    !!is_pick_location,
+        is_receive_location: !!is_receive_location,
+      };
+    }),
+  });
+
+  return created(c, {
+    created: toCreate.length,
+    already_exist: already.size,
+    zone: zone.name,
+    sample: toCreate.slice(0, 5),
+  });
 });
 
 // ── Work ──────────────────────────────────────────────────────────────────────
