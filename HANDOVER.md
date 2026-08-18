@@ -24,7 +24,8 @@
 > The registry of what each module owns, what is built and what is missing:
 > [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
 
-**Last updated**: 2026-08-17 — **seven setup tasks: financial dimensions + department master,
+**Last updated**: 2026-08-18 — **a Setup UI so all of it is configurable without this repo**
+(§4i). Earlier: **seven setup tasks: financial dimensions + department master,
 WH-MAIN putaway, the IT tax side, the correction journals POSTED, trade agreements, factura
 lines** (§4h — read §4h.8, one switch is deliberately off).
 
@@ -1656,11 +1657,14 @@ already recorded. Both invoicing paths write lines, ERP and POS.
 printed factura still renders from the header, and the credit-note path still writes
 a negative-total factura with no lines.
 
-### 8. ⚠ ONE SWITCH IS DELIBERATELY OFF — needs Kubi
+### 8. The store dimension is now REQUIRED — decided by Kubi 2026-08-18
 
-Kubi's decision was **store dimension REQUIRED on revenue and COGS from day one**.
-It is currently **OPTIONAL**, because running it produced information the decision
-was made without:
+Kubi's decision was **store dimension REQUIRED on revenue and COGS from day one**,
+and after seeing the cost below he confirmed it: *"sadece 14 siparis icin
+kesemeyeceksem hicbir sorun yok, onemli olan process implemente oldu mu olmadi mi"*.
+
+**It is REQUIRED as of 2026-08-18.** The 14 orders below cannot be invoiced until a
+warehouse is set on them. That is accepted, not overlooked:
 
 **14 sales orders that can still be invoiced have no site, and no warehouse to
 derive one from.** Migration 011 already backfilled everything derivable, so they
@@ -1674,17 +1678,14 @@ SO-2026-00031 SHIPPED    SO-2026-00033 CONFIRMED  SO-2026-00036 SHIPPED
 SO-2026-00041 CONFIRMED  SO-2026-00044 SHIPPED
 ```
 
-Making STORE required today makes all fourteen **un-invoiceable**. New orders are
-unaffected — `require_warehouse_on_sales_order` is already on.
+All fourteen are un-invoiceable until somebody sets a warehouse on them. New orders
+are unaffected — `require_warehouse_on_sales_order` is already on. The impact list is
+now visible in the UI at `/setup/finance`, so answering this no longer needs a script.
 
-Two ways forward, Kubi's call:
-1. assign a warehouse to those 14 (they are test data, so this is cheap), then flip;
-2. flip now and let them fail until somebody fixes each one.
-
-The switch is one command:
+Reversing it is one command, or the toggle on `/setup/finance`:
 
 ```bash
-cd backend && npx tsx scripts/provisionFinancialDimensions.ts --apply --require-store
+cd backend && npx tsx scripts/provisionFinancialDimensions.ts --apply
 ```
 
 ### 9. Also still true
@@ -1699,6 +1700,84 @@ cd backend && npx tsx scripts/provisionFinancialDimensions.ts --apply --require-
 - `DimensionRule.fixed_value_id` is declared and **nothing reads it**.
 - `TradeAgreement.party_scope = 'PARTY_GROUP'` is declared and the resolver **skips
   it with a WARN**, because customer/vendor groups still have no master.
+
+---
+
+## 4i. Setup UI — BUILT 2026-08-18
+
+Kubi's objection, and it was correct: migrations 018-022 built operating units,
+financial dimensions, warehouse parameters, location directives and trade
+agreements, and **every one of them could only be applied by running a script from
+this repo**. That is not a parametric system — it makes each new store an errand for
+whoever wrote the migration.
+
+> *"Heryer parametrik yapi olmali, ileride 0 dan bir magaza kurarsam nabacagim ben?
+> Tek tek sana mi soracagim, bu cok surdurulebilir olmaz."*
+
+### A note on the "missing buttons"
+
+Kubi reported that Requisitions had no create button and Item Model setup had no new
+button. **Both buttons existed.** The likely cause was self-inflicted: the backend
+dev server was stopped for most of that session (Prisma holds the query-engine DLL
+on Windows, so `prisma generate` cannot run while it is up). With the API down,
+every page renders empty and dialogs whose dropdowns await data do not open. **If
+pages look broken, check the backend is running before believing the UI.**
+
+### Built
+
+| Route | What |
+|---|---|
+| `/setup` | Readiness per module — **facts and counts, never a score**. "3 of 8 products have no item group" is actionable; "62% configured" is not. The one judgement it makes is whether a module BLOCKS trading, which is a real distinction: no posting profile refuses documents, no location directive merely means no directed putaway |
+| `/setup/organisation` | **The "open a new store" page.** Site → warehouse → operating unit, in that order because `Warehouse.site_id` is NOT NULL |
+| `/setup/finance` | Financial dimensions, their values, their requirement rules |
+| `/setup/warehouse` | Putaway and availability per warehouse, plus a directive editor |
+| `/setup/wizard` | The existing first-run wizard, moved off the hub route |
+
+Backend: `modules/setup/setup.routes.ts` (operating units, dimensions, readiness),
+plus warehouse parameters and directive lines on `warehouse.routes.ts`.
+
+### Three things the screens refuse rather than warn about
+
+Each one was learned the hard way earlier in the same session:
+
+1. **A dimension's slot and value source are immutable once it exists** — moving an
+   axis would silently re-interpret every voucher already coded against it. 409.
+2. **Making an axis REQUIRED can refuse a posting**, so the screen asks the server
+   what it would cost and lists the blocked documents **by name** first. That exact
+   question could only be answered by writing a one-off script; nobody should learn
+   it by breaking invoicing.
+3. **Putaway switches are refused when the warehouse cannot support them.** Pick-only
+   availability with no pick location makes all of that warehouse's stock unsellable;
+   putaway with no directive creates no work at all. Both read as inventory
+   evaporating.
+
+`require_pick_work` is shown **disabled with its reason** rather than hidden — a
+switch that silently does nothing is worse than one that admits it.
+
+### ⚠ Load planning workbench — cannot be built yet, and this is a backend gap
+
+Kubi asked how he would manage Shipment and Load planning. There is nothing to put a
+screen on:
+
+```
+Shipment    exists but is HEADER-ONLY — one shipment = one order, NO LINES
+            → partial shipment is not representable
+Load        no model at all
+Wave        exists (template, release)
+require_pick_work   declared, nothing reads it
+```
+
+This is O2C steps 5-7 in S2P_O2C_STATUS, already marked ❌. A workbench today would
+be an empty shell. **Shipment lines + a Load model + outbound work come first.**
+
+### Still missing UI (stated, not hidden)
+
+- **Trade agreements** — API exists (`/procurement/setup/trade-agreements`), no page.
+- **Sales / Procurement parameters** — the hub links to them; the pages do not exist.
+- **Dimension picker on the manual journal.** `STORE` is now REQUIRED on revenue and
+  COGS, so a hand-entered journal touching those accounts **is refused today**. The
+  API accepts `lines[].dimensions`; the form does not send it. Correct behaviour,
+  real blocker.
 
 ---
 
