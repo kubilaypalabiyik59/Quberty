@@ -155,7 +155,7 @@ Tenant is resolved from:
         type: 'object',
         properties: {
           id:             { type: 'string', format: 'uuid' },
-          factura_number: { type: 'integer', example: 1 },
+          factura_number: { type: 'string', example: '000001' },
           source_type:    { type: 'string', enum: ['SALE','POS_SALE','MANUAL','RETURN'] },
           customer_name:  { type: 'string' },
           customer_nit:   { type: 'string', nullable: true },
@@ -599,7 +599,7 @@ Tenant is resolved from:
           } } } },
         },
         responses: {
-          '201': { description: 'Sale completed', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { order_id: { type: 'string' }, order_number: { type: 'string' }, factura_number: { type: 'integer' }, total: { type: 'number' }, iva_amount: { type: 'number' }, change_due: { type: 'number' } } } } } } } },
+          '201': { description: 'Sale completed', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { order_id: { type: 'string' }, order_number: { type: 'string' }, factura_number: { type: 'string' }, total: { type: 'number' }, iva_amount: { type: 'number' }, change_due: { type: 'number' } } } } } } } },
           '400': { description: 'Insufficient stock or invalid session', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
         },
       },

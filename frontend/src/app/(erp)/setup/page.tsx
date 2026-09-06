@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { AlertTriangle, CheckCircle2, ArrowRight, Wand2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ArrowRight, Wand2, Hash } from 'lucide-react';
 import { PageHeader, ErrorNote } from '@/components/erp/PageHeader';
 
 /**
@@ -46,6 +46,21 @@ export default function SetupHubPage() {
           <div className="text-body font-medium text-fg">New company wizard</div>
           <div className="text-caption text-fg-muted">
             Country, chart of accounts and a first warehouse, in one pass. Start here for a brand-new tenant.
+          </div>
+        </div>
+        <ArrowRight className="h-4 w-4 text-fg-muted" />
+      </Link>
+
+      <Link
+        href="/setup/numbering"
+        className="flex items-center gap-3 rounded-lg border border-border bg-surface p-4 hover:border-accent"
+      >
+        <Hash className="h-5 w-5 text-accent" />
+        <div className="flex-1">
+          <div className="text-body font-medium text-fg">Number sequences</div>
+          <div className="text-caption text-fg-muted">
+            How each document is numbered, and whether the legal invoice series is generated or typed
+            by hand.
           </div>
         </div>
         <ArrowRight className="h-4 w-4 text-fg-muted" />

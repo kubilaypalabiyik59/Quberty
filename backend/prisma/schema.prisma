@@ -1972,7 +1972,19 @@ model DefaultDimensionAssignment {
 model Factura {
   id               String   @id @default(uuid()) @db.Uuid
   tenant_id        String   @db.Uuid
-  factura_number   Int
+  /// The legal number as issued, already rendered through the FACTURA number
+  /// sequence format — text, not an integer, because the format may carry a
+  /// prefix, a year, or a branch segment in another jurisdiction and adding one
+  /// must not be a migration of a legal column.
+  ///
+  /// Bolivia's format is `{######}`, which is exactly what the clients used to
+  /// render with `padStart(6, '0')`, so migration 023 left every issued number
+  /// byte-identical: `1` became `000001`, the string that was already printed.
+  ///
+  /// Ordering is now lexicographic. That agrees with numeric order only while
+  /// the width is fixed — correct for `{######}` up to 999999, and the reason
+  /// reports sort on `invoice_date` where they can.
+  factura_number   String
   source_type      String // SALE, MANUAL
   source_id        String?  @db.Uuid
   customer_name    String
@@ -2186,6 +2198,22 @@ model NumberSequence {
   /// allocation must hold a row lock until the caller's transaction commits, which
   /// is why this is a per-sequence choice and not a global policy.
   continuous Boolean @default(false)
+
+  /// When true the system does NOT generate the number — a user supplies it and
+  /// the counter is left alone. D365 puts this flag on the sequence itself
+  /// rather than in a module parameter, which is why it lives here: a tenant can
+  /// run FACTURA by hand (pre-printed or authority-issued stock) while
+  /// CREDIT_NOTE stays automatic.
+  ///
+  ///   "On the General FastTab, specify whether the number sequence is manual,
+  ///    and continuous or non-continuous."
+  ///   — learn.microsoft.com/dynamics365/fin-ops-core/fin-ops/
+  ///     organization-administration/tasks/set-up-number-sequences-individual-basis
+  ///
+  /// Switching manual → automatic does not re-derive `next_number`; the Setup
+  /// screen shows the highest number already issued so an administrator can set
+  /// it deliberately. Guessing here would hand out a colliding number.
+  manual Boolean @default(false)
 
   /// SHARED | LEGAL_ENTITY | FISCAL_YEAR — controls when the counter restarts.
   scope String @default("LEGAL_ENTITY")

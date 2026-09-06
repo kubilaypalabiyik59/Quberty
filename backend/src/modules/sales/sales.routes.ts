@@ -8,6 +8,7 @@ import { validate }    from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
 import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema } from '../../shared/schemas';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { postJournal } from '../../shared/services/journal.service';
 import { contextForSalesOrder } from '../../shared/services/dimension.service';
@@ -22,23 +23,11 @@ import type { AppEnv } from '../../shared/context';
 const app = new Hono<AppEnv>();
 const salesService = new SalesService();
 
-// ── Atomic factura number (race-condition safe) ────────────────────────────────
-async function nextFacturaNumber(tenantId: string): Promise<number> {
-  const rows = await db.$queryRaw<{ last_number: number }[]>`
-    INSERT INTO factura_counters (tenant_id, last_number, updated_at)
-    SELECT ${tenantId}::uuid, COALESCE(MAX(factura_number), 0) + 1, NOW()
-    FROM facturas WHERE tenant_id = ${tenantId}::uuid
-    ON CONFLICT (tenant_id)
-    DO UPDATE SET
-      last_number = GREATEST(
-        factura_counters.last_number + 1,
-        (SELECT COALESCE(MAX(factura_number), 0) + 1 FROM facturas WHERE tenant_id = ${tenantId}::uuid)
-      ),
-      updated_at = NOW()
-    RETURNING last_number
-  `;
-  return Number(rows[0].last_number);
-}
+// The local `factura_counters` allocator that used to live here is gone. It was
+// one of three near-copies (sales, finance, POS) that disagreed about seeding and
+// all allocated before the writing transaction, so a rollback burned a legal
+// number. `nextFacturaNumber` from the number sequence service replaces all
+// three; see migration 023.
 
 app.get('/', async (c) => {
   const data = await salesService.getOrders(c.get('tenantId'), c.req.query() as any);
@@ -194,15 +183,13 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
     }
   }
 
-  const { customer_nit, notes } = c.get('body');
+  const { customer_nit, notes, factura_number: manualFacturaNumber } = c.get('body');
 
   const shippingAddr = order.shipping_address as any;
   const customerName =
     order.customer
       ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
       : shippingAddr?.name ?? 'Cliente Mostrador';
-
-  const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
 
   // Lines and their item-group policy, resolved before the transaction so the
   // revenue split can be computed inside it without extra round trips.
@@ -234,6 +221,15 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
   );
 
   const factura = await db.$transaction(async (tx) => {
+    // Allocated INSIDE the transaction. The FACTURA series is continuous, so the
+    // row lock has to be held until this commits — otherwise a failure below
+    // (posting profile unresolved, stock gone) would leave a hole in a legally
+    // sequential series. This is the whole reason `allocateNumber` refuses to
+    // allocate a continuous sequence without a transaction client.
+    const facturaNumber = await nextFacturaNumber(c.get('tenantId'), tx, {
+      manualNumber: manualFacturaNumber,
+    });
+
     const f = await tx.factura.create({
       data: {
         tenant_id:      c.get('tenantId'),
@@ -337,7 +333,7 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
       await postJournal({
         tenantId:    c.get('tenantId'),
         tx,
-        description: `Sales Invoice: ${order.order_number} — Factura #${String(f.factura_number).padStart(6, '0')}`,
+        description: `Sales Invoice: ${order.order_number} — Factura #${f.factura_number}`,
         source:      { module: 'SALES_INVOICE', id: f.id },
         userId:      c.get('user').id,
         dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
@@ -519,8 +515,9 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : shippingAddr?.name ?? 'Cliente Mostrador';
 
-  // Pre-fetch factura number and GL accounts outside transaction (read-only)
-  const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
+  // GL accounts are pre-fetched outside the transaction because they are
+  // read-only. The factura number is NOT — allocating a continuous series
+  // outside the transaction that writes the document is what put gaps in it.
 
   // A return reverses the invoice, the COGS and possibly the payment, so it needs
   // every posting type the forward path used. Resolving them as one set means a
@@ -589,6 +586,17 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), async (c) => {
   }
 
   await db.$transaction(async (tx) => {
+    // The credit note draws from the FACTURA series, which is what this code has
+    // always done.
+    //
+    // **[OPEN — NOT VERIFIED]** whether Bolivia requires notas de crédito to run
+    // on their own series, and how they must reference the factura they correct,
+    // is listed as an open question in HANDOVER §7 and is NOT settled here. The
+    // `CREDIT_NOTE` reference already exists in `SequenceReference`, so the day
+    // the answer is "separate series" this is a one-word change plus a sequence
+    // row — deliberately not made on a guess.
+    const facturaNumber = await nextFacturaNumber(c.get('tenantId'), tx);
+
     // ── 1. Restore stock + record RETURN transactions ───────────────────────────
     for (const { stock, line } of stockByLine) {
       if (stock) {

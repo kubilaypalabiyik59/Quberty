@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { FileText, Eye } from 'lucide-react';
 import { SalesOrderPDF } from './SalesOrderPDF';
+import { useTaxPreview } from '@/lib/useTaxPreview';
 
 const PDFDownloadLink = dynamic(
   () => import('@react-pdf/renderer').then(m => m.PDFDownloadLink),
@@ -20,8 +21,24 @@ interface Props {
 }
 
 export function SalesOrderPDFButton({ order, variant = 'both' }: Props) {
-  const doc = <SalesOrderPDF order={order} />;
+  // The document itself cannot fetch, so the tax is resolved here and passed in.
+  // Until it arrives the buttons stay disabled rather than rendering a PDF with
+  // zeroes on it — a customer-facing document with a wrong tax line is worse than
+  // a button that is briefly not ready.
+  const { tax, isPending } = useTaxPreview(Number(order.total_amount), {
+    partyId: order.customer_id ?? null,
+  });
+
+  const doc = <SalesOrderPDF order={order} tax={tax} />;
   const fileName = `Pedido-${order.order_number}.pdf`;
+
+  if (isPending) {
+    return (
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-gray-400">…</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-1">

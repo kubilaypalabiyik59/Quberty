@@ -36,9 +36,24 @@ export const CreateSalesOrderSchema = z.object({
   lines:        z.array(SalesLineSchema).min(1, 'At least one line is required'),
 });
 
+/**
+ * A document number typed by the user.
+ *
+ * Accepted only when that document's number sequence is set to `manual`;
+ * `allocateNumber` rejects it on an automatic series rather than ignoring it, so
+ * sending this to a tenant that generates its own numbers is a 400, not a
+ * silently discarded field.
+ *
+ * Free text on purpose. A manual series is whatever the tax authority printed on
+ * the stock, and validating it against our own `format` would reject exactly the
+ * numbers manual mode exists to accept.
+ */
+const ManualDocumentNumber = z.string().trim().min(1).max(40).optional();
+
 export const InvoiceOrderSchema = z.object({
-  customer_nit: z.string().optional(),
-  notes:        z.string().optional(),
+  customer_nit:   z.string().optional(),
+  notes:          z.string().optional(),
+  factura_number: ManualDocumentNumber,
 });
 
 export const PayOrderSchema = z.object({
@@ -75,6 +90,7 @@ export const PosSaleSchema = z.object({
   payment_method: z.enum(['CASH', 'CARD', 'TRANSFER']),
   cash_tendered:  z.number().nonnegative().optional(),
   lines:          z.array(PosLineSchema).min(1, 'At least one line is required'),
+  factura_number: ManualDocumentNumber,
 });
 
 // ── Finance ───────────────────────────────────────────────────────────────────
@@ -100,11 +116,12 @@ export const CreateJournalEntrySchema = z.object({
 );
 
 export const CreateManualFacturaSchema = z.object({
-  customer_name: z.string().min(1),
-  customer_nit:  z.string().optional(),
-  total_amount:  z.number().positive(),
-  invoice_date:  z.string().optional(),
-  notes:         z.string().optional(),
+  customer_name:  z.string().min(1),
+  customer_nit:   z.string().optional(),
+  total_amount:   z.number().positive(),
+  invoice_date:   z.string().optional(),
+  notes:          z.string().optional(),
+  factura_number: ManualDocumentNumber,
 });
 
 // ── Purchase ──────────────────────────────────────────────────────────────────

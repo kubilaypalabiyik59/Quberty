@@ -8,27 +8,13 @@ import { ok, created, message, paginated } from '../../shared/response';
 import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
 import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
 
-// ── Atomic factura number (race-condition safe) ────────────────────────────────
-async function nextFacturaNumber(tenantId: string): Promise<number> {
-  const rows = await db.$queryRaw<{ last_number: number }[]>`
-    INSERT INTO factura_counters (tenant_id, last_number, updated_at)
-    SELECT ${tenantId}::uuid, COALESCE(MAX(factura_number), 0) + 1, NOW()
-    FROM facturas WHERE tenant_id = ${tenantId}::uuid
-    ON CONFLICT (tenant_id)
-    DO UPDATE SET
-      last_number = GREATEST(
-        factura_counters.last_number + 1,
-        (SELECT COALESCE(MAX(factura_number), 0) + 1 FROM facturas WHERE tenant_id = ${tenantId}::uuid)
-      ),
-      updated_at = NOW()
-    RETURNING last_number
-  `;
-  return Number(rows[0].last_number);
-}
+// The third copy of the `factura_counters` allocator used to live here. All three
+// are gone; the series is owned by the FACTURA number sequence. See migration 023.
 
 // ── Accounts (Chart of Accounts) ──────────────────────────────────────────────
 
@@ -324,17 +310,28 @@ app.get('/facturas/:id', async (c) => {
 });
 
 app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManualFacturaSchema), async (c) => {
-  const { customer_name, customer_nit, invoice_date, total_amount, source_type, source_id, notes } = c.get('body');
+  const {
+    customer_name, customer_nit, invoice_date, total_amount, source_type, source_id, notes,
+    factura_number: manualFacturaNumber,
+  } = c.get('body');
   if (!customer_name || !total_amount) throw new AppError('customer_name and total_amount are required');
 
-  const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
   const total = Number(total_amount);
   const docTax = await computeDocumentTax(c.get('tenantId'), total, {
     legacyConfig: c.get('taxConfig'),
   });
   const { subtotal, vat: ivaAmount, turnover: itAmount } = docTax;
 
-  const factura = await db.factura.create({
+  // This route used to allocate the number and then create the factura on the
+  // pooled client, with no transaction at all. A continuous series cannot be
+  // allocated that way — `allocateNumber` throws — and it should not have been
+  // allocated that way before either: a failure between the two left a hole.
+  const factura = await db.$transaction(async (tx) => {
+    const facturaNumber = await nextFacturaNumber(c.get('tenantId'), tx, {
+      manualNumber: manualFacturaNumber,
+    });
+
+    return tx.factura.create({
     data: {
       tenant_id:      c.get('tenantId'),
       factura_number: facturaNumber,
@@ -362,8 +359,57 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
       },
       created_by:     c.get('user').id,
     },
+    });
   });
   return created(c, factura);
+});
+
+/**
+ * What the tax on this amount would be, per the configured engine.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * Six client surfaces were each doing their own arithmetic on the way to
+ * showing a customer a number:
+ *
+ *   frontend/src/stores/posCartStore.ts
+ *   frontend/src/components/erp/sales/SalesOrderPDF.tsx
+ *   frontend/src/app/(erp)/sales/orders/page.tsx
+ *   frontend/src/app/(erp)/sales/orders/[id]/page.tsx
+ *   frontend/src/app/(erp)/finance/facturas/page.tsx
+ *   skarpine-pos/src/store/cartStore.ts
+ *
+ * All six ran `total / 1.13` for IVA and `subtotal * 0.03` for IT — the exact
+ * arithmetic `src/__tests__/tax.service.test.ts` records as a DEFECT: on Bs 1 299
+ * it yields 149,44 / 34,49 where the engine yields 168,87 / 38,97. So the till
+ * display, the PDF the customer keeps, and the GL could each describe the same
+ * sale differently.
+ *
+ * They were not simply reading a stored figure because in most of those cases
+ * there is nothing stored yet — a cart, or an invoice dialog on an order that has
+ * not been invoiced. What every one of them actually needs is this question,
+ * answered by the same code that will post the journal.
+ *
+ * ── What this does NOT solve ───────────────────────────────────────────────
+ * This previews under TODAY's tax codes. Redisplaying a document issued under an
+ * older rate still needs the split stored on the document, and `SalesOrder` has a
+ * single `tax_amount` column that cannot hold one. `Factura` already stores
+ * `iva_amount` / `it_amount` separately and its list screen reads them; the
+ * sales-order side needs a tax-line table (D365's TaxTrans) before it can. That
+ * is a schema change and is deliberately not made here.
+ */
+app.get('/tax/preview', async (c) => {
+  const { amount, party_id, product_id, side } = c.req.query();
+  const value = Number(amount);
+  if (!Number.isFinite(value)) throw new AppError('amount must be a number', 400);
+
+  const tax = await computeDocumentTax(c.get('tenantId'), value, {
+    partyId:      party_id || null,
+    productId:    product_id || null,
+    side:         side === 'PURCHASE' ? 'PURCHASE' : 'SALES',
+    legacyConfig: c.get('taxConfig'),
+  });
+
+  return ok(c, tax);
 });
 
 app.post('/facturas/:id/cancel', requireRole('admin'), async (c) => {

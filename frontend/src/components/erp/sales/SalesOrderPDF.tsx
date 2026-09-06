@@ -91,6 +91,8 @@ interface SalesOrderPDFProps {
     customer?: { first_name: string; last_name: string; code?: string; email?: string } | null;
     lines: OrderLine[];
   };
+  /** From the backend tax engine — see lib/useTaxPreview. */
+  tax: { subtotal: number; vat: number; turnover: number };
 }
 
 function variantLabel(line: OrderLine): string {
@@ -102,11 +104,20 @@ function variantLabel(line: OrderLine): string {
   return ` (${line.variant.sku_variant})`;
 }
 
-export function SalesOrderPDF({ order }: SalesOrderPDFProps) {
+/**
+ * The tax figures are a PROP, not something this component works out.
+ *
+ * It used to run `total / 1.13` and `subtotal * 0.03` here, which is the
+ * arithmetic the backend tax test records as a defect — so the PDF the customer
+ * keeps could disagree with the ledger about the same order. A react-pdf document
+ * cannot fetch, so the caller (SalesOrderPDFButton) asks the engine and passes the
+ * answer down; that also keeps this component pure, which is what react-pdf wants.
+ */
+export function SalesOrderPDF({ order, tax }: SalesOrderPDFProps) {
   const total    = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva      = total - subtotal;
-  const it       = subtotal * 0.03;
+  const subtotal = tax.subtotal;
+  const iva      = tax.vat;
+  const it       = tax.turnover;
   const customerName = order.customer
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : 'Walk-in Customer';

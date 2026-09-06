@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, X, Check, AlertCircle, FileText, CheckCircle, Truck, PackageCheck, Ban, Eye, ShoppingBag, Banknote, Pencil, RotateCcw } from 'lucide-react';
+import { useTaxPreview } from '@/lib/useTaxPreview';
 import Link from 'next/link';
 
 const STATUS_BADGE: Record<string, string> = {
@@ -31,10 +32,12 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : (order.shipping_address as any)?.name ?? 'Cliente Mostrador';
 
+  // Asked of the engine that will post the invoice, so the figure in this dialog
+  // is the figure that reaches the ledger. The `total / 1.13` this replaced is
+  // the arithmetic the backend tax test records as a defect.
   const total = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
+  const { tax } = useTaxPreview(total, { partyId: order.customer_id ?? null });
+  const { subtotal, vat: iva, turnover: it } = tax;
 
   const create = useMutation({
     mutationFn: () => api.post(`/sales/orders/${order.id}/invoice`, { customer_nit: nit, notes }),
@@ -69,8 +72,16 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
           </div>
           <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-2 text-sm">
             <div className="flex justify-between text-gray-600"><span>Subtotal neto (sin IVA)</span><span>Bs. {subtotal.toFixed(2)}</span></div>
-            <div className="flex justify-between text-blue-700"><span>IVA 13% (incluido)</span><span>Bs. {iva.toFixed(2)}</span></div>
-            <div className="flex justify-between text-orange-600"><span>IT 3% (sobre neto)</span><span>Bs. {it.toFixed(2)}</span></div>
+            {/* Labelled from the tax codes that applied, not from a literal
+                "13%" that would keep saying 13% after a rate change. */}
+            <div className="flex justify-between text-blue-700">
+              <span>{tax.lines.find(l => l.tax_type === 'VAT')?.code ?? 'IVA'} (incluido)</span>
+              <span>Bs. {iva.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between text-orange-600">
+              <span>{tax.lines.find(l => l.tax_type === 'TURNOVER')?.code ?? 'IT'}</span>
+              <span>Bs. {it.toFixed(2)}</span>
+            </div>
             <div className="flex justify-between font-bold text-gray-900 border-t border-blue-200 pt-2"><span>Total</span><span>Bs. {total.toFixed(2)}</span></div>
           </div>
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2">{error}</p>}

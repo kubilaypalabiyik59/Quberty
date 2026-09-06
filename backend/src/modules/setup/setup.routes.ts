@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import { ACCOUNT_CATEGORIES } from '../../shared/services/accountCategory';
+import { formatNumber } from '../../shared/services/numberSequence.service';
 import type { AppEnv } from '../../shared/context';
 
 /**
@@ -351,6 +352,114 @@ app.get('/dimensions/:id/impact', async (c) => {
         : `${blocked.length} open order(s) have no site and no warehouse to derive one from. ` +
           `Making this REQUIRED means they cannot be invoiced until a warehouse is set on them.`,
   });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * NUMBER SEQUENCES — document numbering
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Cross-module by definition — sales, purchase, finance, CRM and the warehouse
+ * all draw numbers from the same framework — which is why it belongs in this
+ * router and not in any one module's Setup area. D365 files it the same way,
+ * under Organization administration → Number sequences.
+ *
+ * Until now `number_sequences` rows could only be created by running
+ * provisionConfiguration.ts from this repository, and `manual` / `continuous`
+ * could not be changed at all. Migration 023 gave the factura series to this
+ * framework, so leaving it unreachable from the UI would mean the legal invoice
+ * series is configured by editing code.
+ */
+
+/** The counter and the rendered result, so the screen can show both. */
+function describeSequence(s: {
+  format: string; next_number: number; current_year: number | null; scope: string;
+}) {
+  const year = s.scope === 'FISCAL_YEAR' ? (s.current_year ?? new Date().getFullYear()) : new Date().getFullYear();
+  return formatNumber(s.format, s.next_number, year);
+}
+
+app.get('/number-sequences', async (c) => {
+  const tenantId = c.get('tenantId');
+  const rows = await db.numberSequence.findMany({
+    where: { tenant_id: tenantId },
+    orderBy: [{ reference: 'asc' }],
+  });
+
+  // What has actually been issued, so an administrator switching a series back
+  // from manual to automatic can see the number to resume above instead of
+  // guessing. Only FACTURA is reported: it is the one series where a collision is
+  // a legal problem rather than an inconvenience, and a generic
+  // reference → table → column registry covering all fifteen would be a lookup
+  // table to keep in sync for a question nobody has asked about the other
+  // fourteen. Add one when someone needs it.
+  const facturaHigh = await db.factura.aggregate({
+    where: { tenant_id: tenantId },
+    _max: { factura_number: true },
+  });
+
+  return ok(c, rows.map((s) => ({
+    ...s,
+    preview: describeSequence(s),
+    highest_issued: s.reference === 'FACTURA' ? facturaHigh._max.factura_number ?? null : null,
+  })));
+});
+
+app.put('/number-sequences/:id', requireRole('admin'), async (c) => {
+  const b = await c.req.json();
+  const tenantId = c.get('tenantId');
+
+  const row = await db.numberSequence.findFirst({
+    where: { id: c.req.param('id'), tenant_id: tenantId },
+  });
+  if (!row) throw new AppError('Number sequence not found', 404);
+
+  // `reference` is the key every service looks the sequence up by, so it is not
+  // editable here. Renaming it would silently orphan the series.
+  const nextNumber = b.next_number !== undefined ? Number(b.next_number) : row.next_number;
+  if (!Number.isInteger(nextNumber) || nextNumber < 1) {
+    throw new AppError('Next number must be a whole number of 1 or more.', 400);
+  }
+
+  const manual = b.manual !== undefined ? !!b.manual : row.manual;
+
+  // Guard the one mistake that is not recoverable by editing the row again: on an
+  // automatic series, resuming BELOW what has already been issued hands out a
+  // number the unique constraint will reject — the next sale fails, at the till.
+  //
+  // Not applied to a FISCAL_YEAR-scoped series, where the counter is supposed to
+  // restart, nor to a manual one, where the user picks each number anyway.
+  if (!manual && row.scope !== 'FISCAL_YEAR' && row.reference === 'FACTURA') {
+    const high = await db.factura.aggregate({
+      where: { tenant_id: tenantId },
+      _max: { factura_number: true },
+    });
+    const issued = high._max.factura_number;
+    // Only comparable while the format renders digits. Once a series carries a
+    // prefix the comparison is meaningless, so it is skipped rather than guessed.
+    if (issued && /^\d+$/.test(issued) && nextNumber <= Number(issued)) {
+      throw new AppError(
+        `Factura ${issued} has already been issued, so the series cannot resume at ${nextNumber} — ` +
+          `the next invoice would be rejected as a duplicate. Resume at ${Number(issued) + 1} or higher.`,
+        400,
+        'NUMBER_SEQUENCE_BEHIND',
+      );
+    }
+  }
+
+  const updated = await db.numberSequence.update({
+    where: { id: row.id },
+    data: {
+      ...(b.name !== undefined && { name: String(b.name) }),
+      ...(b.format !== undefined && { format: String(b.format) }),
+      ...(b.continuous !== undefined && { continuous: !!b.continuous }),
+      ...(b.manual !== undefined && { manual }),
+      ...(b.is_active !== undefined && { is_active: !!b.is_active }),
+      ...(b.next_number !== undefined && { next_number: nextNumber }),
+    },
+  });
+
+  return ok(c, { ...updated, preview: describeSequence(updated) });
 });
 
 /* ════════════════════════════════════════════════════════════════════════════

@@ -2,6 +2,11 @@
 
 > Living context document. Read this first in a new session.
 >
+> **Codex/Claude collaboration:** after this file, read
+> [docs/collaboration/CODEX_MEMORY.md](docs/collaboration/CODEX_MEMORY.md) and
+> [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md) before
+> continuing an active shared work item.
+>
 > **Smoke-testing the 2026-08-16 session? Start at [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)** —
 > what to click, what to expect, and the four things that need Kubi rather than me.
 >
@@ -54,7 +59,7 @@ Microsoft Dynamics 365 F&O (waves, work templates, location directives, journal-
 finance).
 
 **Stack**
-- `backend/` — Node.js + Express + Prisma
+- `backend/` — Node.js + Hono + Prisma
 - `frontend/` — Next.js 14 (App Router, Pages under `src/app/(erp)` and `src/app/(store)`),
   Tailwind 3, TanStack Query + Table, Zustand, Radix primitives, Recharts, Framer Motion,
   Playwright for E2E

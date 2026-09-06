@@ -1,6 +1,6 @@
 # Quberty ERP — Development Plan
 **Created:** 2026-04-03  
-**Stack:** Next.js 14 · Express + Prisma · Supabase PostgreSQL  
+**Stack:** Next.js 14 · Hono + Prisma · Supabase PostgreSQL  
 **End goal:** Stable ERP → Android POS
 
 ---

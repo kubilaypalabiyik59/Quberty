@@ -24,7 +24,7 @@ interface Props {
 
 export function FacturaPDFButton({ factura, variant = 'both' }: Props) {
   const doc = <FacturaPDF factura={factura} />;
-  const fileName = `Factura-${String(factura.factura_number).padStart(6, '0')}.pdf`;
+  const fileName = `Factura-${factura.factura_number}.pdf`;
 
   return (
     <div className="flex items-center gap-1">

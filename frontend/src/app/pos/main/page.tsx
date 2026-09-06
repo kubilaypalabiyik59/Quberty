@@ -30,7 +30,7 @@ export default function PosMainPage() {
   const session      = usePosSessionStore((s) => s.session);
   const clearSession = usePosSessionStore((s) => s.clearSession);
   const { lines, customer, removeLine, updateQty, clearCart } = usePosCartStore();
-  const { subtotal, iva, it, total, lineCount } = usePosCartTotals();
+  const { subtotal, iva, it, total, lineCount, taxLines, taxLoading } = usePosCartTotals();
 
   const [search,          setSearch]          = useState('');
   const [debouncedQ,      setDebouncedQ]      = useState('');
@@ -279,17 +279,22 @@ export default function PosMainPage() {
 
           {/* Totals */}
           <div className="border-t border-slate-200 px-4 pt-3 pb-2 space-y-1 bg-slate-50/60">
+            {/* The split now comes from the tax engine, so it can be briefly in
+                flight. A dash says "not known yet"; "Bs. 0.00" would say
+                "no tax on this sale", which is a different and wrong claim to put
+                in front of a customer. The labels come from the tax codes that
+                applied rather than a literal 13% / 3%. */}
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">Subtotal (sin IVA)</span>
-              <span className="text-slate-700">Bs. {subtotal.toFixed(2)}</span>
+              <span className="text-slate-700">{taxLoading ? '—' : `Bs. ${subtotal.toFixed(2)}`}</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-slate-500">IVA 13%</span>
-              <span className="text-slate-700">Bs. {iva.toFixed(2)}</span>
+              <span className="text-slate-500">{taxLines.find(l => l.tax_type === 'VAT')?.code ?? 'IVA'}</span>
+              <span className="text-slate-700">{taxLoading ? '—' : `Bs. ${iva.toFixed(2)}`}</span>
             </div>
             <div className="flex justify-between text-sm">
-              <span className="text-slate-500">IT 3%</span>
-              <span className="text-slate-700">Bs. {it.toFixed(2)}</span>
+              <span className="text-slate-500">{taxLines.find(l => l.tax_type === 'TURNOVER')?.code ?? 'IT'}</span>
+              <span className="text-slate-700">{taxLoading ? '—' : `Bs. ${it.toFixed(2)}`}</span>
             </div>
             <div className="flex justify-between items-center pt-1.5 border-t border-slate-200 mt-1">
               <span className="text-slate-900 font-bold text-base">TOTAL</span>

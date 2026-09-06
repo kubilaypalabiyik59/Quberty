@@ -36,6 +36,23 @@ import { AppError } from '../errors/AppError';
  * Whether the Bolivian factura series legally requires gapless numbering is still
  * open (HANDOVER.md §7). That question now selects a flag rather than blocking the
  * design.
+ *
+ * ── Automatic vs manual ─────────────────────────────────────────────────────
+ * A tenant working from pre-printed or authority-issued invoice stock types the
+ * number off the paper; a tenant on a generated series must not be able to. D365
+ * makes this a property of the sequence rather than of a module parameter:
+ *
+ *   "On the General FastTab, specify whether the number sequence is manual, and
+ *    continuous or non-continuous."
+ *   — learn.microsoft.com/dynamics365/fin-ops-core/fin-ops/
+ *     organization-administration/tasks/set-up-number-sequences-individual-basis
+ *
+ * Which is why `manual` lives on the row and not in SalesParameters: it is what
+ * lets FACTURA be manual while CREDIT_NOTE stays automatic, per legal entity.
+ *
+ * A manual sequence does not touch its counter. Uniqueness falls to the
+ * document's own composite unique constraint, the only check that is atomic
+ * against a concurrent insert.
  */
 
 export type SequenceReference =
@@ -66,12 +83,20 @@ interface AllocateOptions {
   legalEntityId?: string | null;
   /** Required when the sequence is continuous. */
   tx?: Prisma.TransactionClient;
+  /**
+   * The number the user typed. Required when the sequence is `manual`, and
+   * REJECTED when it is not — a caller that passes one to an automatic series is
+   * trying to choose its own legal number, and silently ignoring it would be
+   * worse than failing.
+   */
+  manualNumber?: string | null;
 }
 
 interface SequenceRow {
   id: string;
   format: string;
   continuous: boolean;
+  manual: boolean;
   scope: string;
   next_number: number;
   current_year: number | null;
@@ -99,12 +124,12 @@ export function formatNumber(format: string, counter: number, year: number): str
  * the same statement so it cannot race either.
  */
 export async function allocateNumber(opts: AllocateOptions): Promise<string> {
-  const { tenantId, reference, legalEntityId = null, tx } = opts;
+  const { tenantId, reference, legalEntityId = null, tx, manualNumber = null } = opts;
 
   const seq = await (tx ?? db).numberSequence.findFirst({
     where: { tenant_id: tenantId, legal_entity_id: legalEntityId, reference },
     select: {
-      id: true, format: true, continuous: true, scope: true,
+      id: true, format: true, continuous: true, manual: true, scope: true,
       next_number: true, current_year: true, is_active: true,
     },
   }) as SequenceRow | null;
@@ -119,6 +144,40 @@ export async function allocateNumber(opts: AllocateOptions): Promise<string> {
   if (!seq.is_active) {
     throw new AppError(`Number sequence '${reference}' is inactive.`, 500, 'NUMBER_SEQUENCE_INACTIVE');
   }
+
+  // ── Manual ────────────────────────────────────────────────────────────────
+  // The user owns the number, so the counter is not touched at all. Uniqueness is
+  // left to the document's own `@@unique([tenant_id, <number>])` constraint,
+  // which is the only check that is actually atomic against a concurrent insert;
+  // a SELECT here would just be a race with a friendlier message.
+  //
+  // Deliberately NOT done: advancing `next_number` past a manually entered
+  // number. It would have to parse the counter back out of a rendered format,
+  // and it would guess at an administrator's intent. Setup → Number sequences
+  // shows the highest number already issued so the decision is made with the
+  // fact visible. See D365's separate "To a higher number" / "To a lower number"
+  // options, which are likewise explicit rather than inferred.
+  if (seq.manual) {
+    const supplied = manualNumber?.trim();
+    if (!supplied) {
+      throw new AppError(
+        `Number sequence '${reference}' is set to manual, so the document number must be supplied. ` +
+          `Enter it on the document, or switch the sequence to automatic under Setup → Number sequences.`,
+        400,
+        'NUMBER_SEQUENCE_MANUAL_REQUIRED',
+      );
+    }
+    return supplied;
+  }
+  if (manualNumber != null && manualNumber !== '') {
+    throw new AppError(
+      `Number sequence '${reference}' generates its own numbers, so one cannot be supplied. ` +
+        `Switch it to manual under Setup → Number sequences first.`,
+      400,
+      'NUMBER_SEQUENCE_NOT_MANUAL',
+    );
+  }
+
   if (seq.continuous && !tx) {
     throw new AppError(
       `Number sequence '${reference}' is continuous (gapless) and must be allocated inside a ` +
@@ -169,4 +228,33 @@ export function nextJournalVoucher(
   legalEntityId: string | null = null,
 ): Promise<string> {
   return allocateNumber({ tenantId, reference: 'JOURNAL_VOUCHER', legalEntityId, tx });
+}
+
+/**
+ * The legal invoice series.
+ *
+ * This replaces three hand-written copies of the same `factura_counters` raw SQL
+ * — in sales, finance and POS — which disagreed about how to seed a tenant whose
+ * counter row did not exist yet (POS started at 1 regardless of what had been
+ * issued) and which all allocated BEFORE opening the transaction that writes the
+ * factura, so a rollback burned a number. See migration 023.
+ *
+ * `tx` is not optional here the way it is on a journal voucher. The FACTURA
+ * sequence ships continuous, and a continuous series allocated outside the
+ * caller's transaction is not gapless at all — `allocateNumber` throws rather
+ * than let that pass silently, and requiring the argument turns that runtime
+ * error into a compile-time one.
+ */
+export function nextFacturaNumber(
+  tenantId: string,
+  tx: Prisma.TransactionClient,
+  opts: { manualNumber?: string | null; legalEntityId?: string | null } = {},
+): Promise<string> {
+  return allocateNumber({
+    tenantId,
+    reference: 'FACTURA',
+    legalEntityId: opts.legalEntityId ?? null,
+    tx,
+    manualNumber: opts.manualNumber ?? null,
+  });
 }

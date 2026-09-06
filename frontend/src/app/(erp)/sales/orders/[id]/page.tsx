@@ -10,6 +10,7 @@ import {
   XCircle, AlertCircle, User, MapPin, Hash, RotateCcw
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { useTaxPreview } from '@/lib/useTaxPreview';
 import { SalesOrderPDFButton } from '@/components/erp/sales/SalesOrderPDFButton';
 import { FacturaPDFButton } from '@/components/erp/finance/FacturaPDFButton';
 
@@ -102,10 +103,10 @@ export default function OrderDetailPage() {
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : (order.shipping_address as any)?.name ?? 'Walk-in Customer';
 
+  // See lib/useTaxPreview — the client no longer decomposes the total itself.
   const total = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
+  const { tax } = useTaxPreview(total, { partyId: order.customer_id ?? null });
+  const { subtotal, vat: iva, turnover: it } = tax;
 
   const isInvoiceable = INVOICEABLE_STATUSES.includes(order.status);
   const hasInvoice = !!order.invoice_id && !!order.factura;
@@ -293,7 +294,7 @@ export default function OrderDetailPage() {
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
                 {hasInvoice
-                  ? `Factura #${String(order.factura.factura_number).padStart(6, '0')} — ${new Date(order.factura.invoice_date).toLocaleDateString()}`
+                  ? `Factura #${order.factura.factura_number} — ${new Date(order.factura.invoice_date).toLocaleDateString()}`
                   : isInvoiceable
                   ? 'This order is ready to be invoiced.'
                   : `Orders in ${order.status} status cannot be invoiced yet.`
@@ -403,7 +404,7 @@ export default function OrderDetailPage() {
           <div className="mt-4 grid grid-cols-4 gap-4 text-sm text-center">
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-gray-500 mb-1">Factura #</p>
-              <p className="font-bold text-gray-900">{String(order.factura.factura_number).padStart(6, '0')}</p>
+              <p className="font-bold text-gray-900">{order.factura.factura_number}</p>
             </div>
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-blue-600 mb-1">IVA 13%</p>

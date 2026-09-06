@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { Plus, Check, FileText, AlertCircle, X, ExternalLink } from 'lucide-react';
 import Link from 'next/link';
 import { FacturaPDFButton } from '@/components/erp/finance/FacturaPDFButton';
+import { useTaxPreview } from '@/lib/useTaxPreview';
 
 export default function FacturasPage() {
   const qc = useQueryClient();
@@ -38,10 +39,13 @@ export default function FacturasPage() {
     onError: (err: any) => alert(err.response?.data?.message ?? 'Failed to cancel'),
   });
 
+  // The engine that will post this factura works out its own tax. This screen
+  // used to run `total / 1.13` and `subtotal * 0.03`, which is the arithmetic the
+  // backend test records as a defect — it under-reported IVA on every preview,
+  // and hardcoded Bolivia into a screen the product is meant to sell elsewhere.
   const total = Number(form.total_amount) || 0;
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
+  const { tax, isFetching: taxLoading } = useTaxPreview(total, { enabled: showForm });
+  const { subtotal, vat: iva, turnover: it } = tax;
 
   const invoiceLabel = (facturasData?.facturas?.[0] as any)?.invoice_metadata?.invoice_label ?? 'Factura';
 
@@ -92,14 +96,27 @@ export default function FacturasPage() {
                 <span>Subtotal (sin IVA)</span>
                 <span>Bs. {subtotal.toFixed(2)}</span>
               </div>
-              <div className="flex justify-between text-gray-500">
-                <span>IVA 13% (incluido)</span>
-                <span>Bs. {iva.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-gray-500">
-                <span>IT 3% (sobre subtotal)</span>
-                <span>Bs. {it.toFixed(2)}</span>
-              </div>
+              {/* One row per tax code that actually applied, labelled and rated
+                  from the code itself. The labels used to read "IVA 13%" and
+                  "IT 3%" no matter what the tenant was configured with, which
+                  would misdescribe the document the day a rate changes. */}
+              {tax.lines.length > 0
+                ? tax.lines.map(l => (
+                    <div key={l.code} className="flex justify-between text-gray-500">
+                      <span>{l.code} {(l.rate * 100).toFixed(l.rate * 100 % 1 === 0 ? 0 : 2)}%</span>
+                      <span>Bs. {l.amount.toFixed(2)}</span>
+                    </div>
+                  ))
+                : (
+                  <>
+                    <div className="flex justify-between text-gray-500">
+                      <span>IVA</span><span>Bs. {iva.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-500">
+                      <span>IT</span><span>Bs. {it.toFixed(2)}</span>
+                    </div>
+                  </>
+                )}
               <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-1">
                 <span>Total</span>
                 <span>Bs. {total.toFixed(2)}</span>
@@ -154,7 +171,7 @@ export default function FacturasPage() {
             )}
             {(facturasData?.facturas ?? []).map((f: any) => (
               <tr key={f.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-mono font-bold text-gray-900">{String(f.factura_number).padStart(6, '0')}</td>
+                <td className="px-4 py-3 font-mono font-bold text-gray-900">{f.factura_number}</td>
                 <td className="px-4 py-3 text-gray-500 text-xs">{new Date(f.invoice_date).toLocaleDateString()}</td>
                 <td className="px-4 py-3 font-medium text-gray-900">{f.customer_name}</td>
                 <td className="px-4 py-3 font-mono text-xs text-gray-400">{f.customer_nit ?? '—'}</td>
