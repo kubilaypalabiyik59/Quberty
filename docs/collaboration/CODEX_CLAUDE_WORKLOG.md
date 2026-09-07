@@ -1009,3 +1009,150 @@ Use native PowerShell-compatible commands. Do not use POSIX shell variable or co
 Do not run builds, tests, migrations, database calls, formatters, installs, cleanup, restores,
 rebases, merges, or product edits. Do not switch back to master. Stop after WORK-002.
 ```
+
+#### Claude implementation report — WORK-002 — 2026-09-07
+
+The `Claude implementation report: Pending.` line in the WORK-002 item above was deliberately left
+untouched, per the no-overwrite rule. This subsection is the report.
+
+**Execution boundary.** Steps 1-7 of the original WORK-002 prompt (verification, branch creation,
+staging guards, snapshot commit) were executed on **2026-09-06** and produced commit `7aefd74`.
+Steps 8-11 (push, SHA verification, worklog append, documentation commit) could not run that day:
+`git push` and `git ls-remote` were refused by this workspace's Claude Code permission classifier,
+not by Git or by the remote. They were completed on **2026-09-07** after Kubi installed two
+project-local push permission rules. Nothing between the two sessions changed the snapshot commit:
+it was not recreated, amended, squashed, rebased, or replaced.
+
+##### Result
+
+| Item | Value |
+|---|---|
+| Snapshot commit | `7aefd74fb2db028375f199d6c4be64267439702f` |
+| Commit message | `WIP snapshot: preserve pre-cleanup parent tree` |
+| Commit author/date | Kubilay · 2026-09-06 22:15:29 +0200 |
+| Remote branch | `origin/codex/wip-full-snapshot-2026-09-06` (created by this push; it did not exist before) |
+| Upstream tracking | set by `git push --set-upstream` |
+| Pull request | none created |
+
+##### Local / remote SHA verification (repo-verified)
+
+Remote listing taken **before** the push:
+
+```
+0a8bdf2543909247a50f74670945b15e43da7165  refs/heads/codex/pre-cleanup-2026-09-06
+5cd97a6dae2364d0fc3c557c2250c0223acd64f6  refs/heads/master
+```
+
+`refs/heads/codex/wip-full-snapshot-2026-09-06` was absent, as required by step 4 of the original
+prompt. Remote listing taken **after** the push:
+
+```
+0a8bdf2543909247a50f74670945b15e43da7165  refs/heads/codex/pre-cleanup-2026-09-06
+7aefd74fb2db028375f199d6c4be64267439702f  refs/heads/codex/wip-full-snapshot-2026-09-06
+5cd97a6dae2364d0fc3c557c2250c0223acd64f6  refs/heads/master
+```
+
+- local `HEAD` = `7aefd74fb2db028375f199d6c4be64267439702f`
+- `refs/remotes/origin/codex/wip-full-snapshot-2026-09-06` = `7aefd74fb2db028375f199d6c4be64267439702f`
+- authoritative `git ls-remote` value for the same ref = `7aefd74fb2db028375f199d6c4be64267439702f`
+
+All three agree.
+
+##### origin/master was not changed (repo-verified)
+
+`refs/heads/master` reads `5cd97a6dae2364d0fc3c557c2250c0223acd64f6` in both the pre-push and
+post-push listings — byte-identical. `refs/heads/codex/pre-cleanup-2026-09-06` is likewise unchanged
+at `0a8bdf2543909247a50f74670945b15e43da7165`. No merge, no pull request, no force-push, and no
+push to `master` was performed. The checkout was never switched back to `master`.
+
+##### Final parent status (repo-verified)
+
+```
+branch  codex/wip-full-snapshot-2026-09-06
+HEAD    7aefd74fb2db028375f199d6c4be64267439702f
+git status --porcelain=v1 -uall   ->  empty (clean; ignored paths excluded)
+git diff --cached --name-status   ->  empty (nothing staged)
+```
+
+This status was taken **before** the worklog append below. The append itself makes
+`docs/collaboration/CODEX_CLAUDE_WORKLOG.md` modified; that single modification is the content of
+the documentation-only commit named in the original prompt's step 10.
+
+##### Final POS status (repo-verified, unchanged)
+
+```
+repository  .../skarpine/skarpine-pos  (independent nested repository)
+branch      codex/wip-incomplete-pos-2026-09-06
+HEAD        09fa4de3dabd305f8b8659d9509b870cefc6465f
+status      git status --porcelain -uall  ->  empty (clean)
+remote      origin  https://github.com/kubilaypalabiyik59/Quberty-POS.git
+```
+
+No command other than read-only inspection was run against the POS repository in either session. Its
+branch, HEAD, worktree, and remote are identical to the state Codex recorded under Kubi decision D-4.
+
+##### Commands run in this session (2026-09-07)
+
+```
+git rev-parse --abbrev-ref HEAD
+git rev-parse HEAD
+git log -1 --format="%h %ad %an%n%s" --date=iso
+git status --porcelain=v1 -uall
+git diff --cached --name-status
+git branch --list "codex/*"
+git branch -r
+git remote -v
+git config --get-regexp "^branch\.codex/wip-full-snapshot-2026-09-06\."
+git ls-remote --heads origin                                  (before and after the push)
+git -C skarpine-pos rev-parse --abbrev-ref HEAD
+git -C skarpine-pos rev-parse HEAD
+git -C skarpine-pos status --porcelain -uall
+git push --set-upstream origin codex/wip-full-snapshot-2026-09-06
+git rev-parse refs/remotes/origin/codex/wip-full-snapshot-2026-09-06
+git add docs/collaboration/CODEX_CLAUDE_WORKLOG.md
+git diff --cached --name-status
+git diff --cached --check
+git commit -m "docs: record WORK-002 snapshot result"
+git push
+```
+
+No build, test, migration, database call, formatter, install, cleanup, restore, rebase, merge, or
+product edit was run, in line with the work item's exclusions.
+
+##### Disclosed deviations
+
+1. **Commit message trailer omitted deliberately.** The documentation commit uses exactly
+   `docs: record WORK-002 snapshot result` with no `Co-Authored-By` trailer, because the work item
+   specifies the message verbatim and the protocol treats any addition as a deviation. This
+   supersedes the operator-level default that would otherwise append that trailer.
+2. **The documentation commit cannot contain its own SHA.** Acceptance criterion 7 asks for both
+   remote SHAs in this worklog. The snapshot SHA is recorded above; the documentation commit's SHA
+   is returned to Kubi and Codex in the completion report, since a commit cannot embed its own hash.
+3. **Two prior push attempts were refused before any remote mutation** (2026-09-06 and earlier on
+   2026-09-07). Both were blocked by the workspace permission classifier before Git executed. Remote
+   listings taken after each refusal were byte-identical to the listings taken before, and no
+   upstream configuration key was written, so neither attempt reached the remote.
+
+##### Residual risk
+
+- **[repo-verified]** The snapshot is explicitly non-mergeable. It contains the mixed working tree
+  described in WORK-001 and has not been type-checked, built, or tested. Its buildability is
+  unknown and is not claimed. It exists to be reconstructed from, not merged.
+- **[repo-verified]** The snapshot branch's tree still carries the line-ending exposure recorded in
+  the WORK-001 report §8: `git diff` reported `LF will be replaced by CRLF` on 22 files and the
+  repository has no `.gitattributes`. A later reconstruction may therefore show line-ending-only
+  differences against this snapshot.
+- **[repo-verified]** `frontend/.env.local.bak`, `.agents/`, `.codex/` and the POS contents are
+  ignored and were not staged or committed; the parent gitlink removal for `skarpine-pos` is carried
+  inside `7aefd74` as agreed under D-4.
+- **[architectural recommendation]** The environment constraint that stopped this item twice is not
+  resolved by the two new rules in a general sense: the permission classifier also refused several
+  read-only `git ls-remote` and `git status` invocations in this session when they appeared inside
+  compound shell statements, while the same commands passed when issued alone. Future work items
+  should assume single, simple commands rather than chained ones.
+- **[repo-verified]** WORK-002 changes no product behaviour, no schema, and no database state.
+
+##### Status
+
+WORK-002 execution is complete and awaiting independent Codex review. WORK-003 has not been started,
+and no security implementation was begun.
