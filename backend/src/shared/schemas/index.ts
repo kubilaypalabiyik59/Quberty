@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  inspectSequenceFormat,
+  NEXT_NUMBER_MIN,
+  NEXT_NUMBER_MAX,
+} from '../services/numberSequenceRules';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -36,10 +41,46 @@ export const CreateSalesOrderSchema = z.object({
   lines:        z.array(SalesLineSchema).min(1, 'At least one line is required'),
 });
 
+/**
+ * A document number typed by the user.
+ *
+ * Accepted only when that document's number sequence is set to `manual`;
+ * `allocateNumber` rejects it on an automatic series rather than ignoring it, so
+ * sending this to a tenant that generates its own numbers is a 400, not a
+ * silently discarded field.
+ *
+ * Free text on purpose. A manual series is whatever the tax authority printed on
+ * the stock, and validating it against our own `format` would reject exactly the
+ * numbers manual mode exists to accept.
+ */
+const ManualDocumentNumber = z.string().trim().min(1).max(40).optional();
+
 export const InvoiceOrderSchema = z.object({
-  customer_nit: z.string().optional(),
-  notes:        z.string().optional(),
+  customer_nit:   z.string().optional(),
+  notes:          z.string().optional(),
+  factura_number: ManualDocumentNumber,
 });
+
+/**
+ * `POST /sales/orders/:id/return`.
+ *
+ * The return posts a credit-note factura, and that credit note draws from the
+ * FACTURA series — a decision deliberately left in place, because whether
+ * Bolivia requires notas de crédito to run on their own series is still an open
+ * question (HANDOVER §7). Drawing from FACTURA is therefore what this request
+ * has to be able to serve: with the FACTURA sequence set to manual,
+ * `allocateNumber` refuses to invent a number, so without this field the Return
+ * action cannot complete at all on a manual tenant.
+ *
+ * The route previously read raw `c.req.json()` and took only `notes`. `.strict()`
+ * closes the failure that follows from a typo: a client sending `factura_no`
+ * would otherwise be told the document number must be supplied while looking at
+ * a request that appears to supply it.
+ */
+export const ReturnSalesOrderSchema = z.object({
+  notes:          z.string().optional(),
+  factura_number: ManualDocumentNumber,
+}).strict();
 
 export const PayOrderSchema = z.object({
   payment_date:  z.string().optional(),
@@ -75,6 +116,7 @@ export const PosSaleSchema = z.object({
   payment_method: z.enum(['CASH', 'CARD', 'TRANSFER']),
   cash_tendered:  z.number().nonnegative().optional(),
   lines:          z.array(PosLineSchema).min(1, 'At least one line is required'),
+  factura_number: ManualDocumentNumber,
 });
 
 // ── Finance ───────────────────────────────────────────────────────────────────
@@ -100,11 +142,12 @@ export const CreateJournalEntrySchema = z.object({
 );
 
 export const CreateManualFacturaSchema = z.object({
-  customer_name: z.string().min(1),
-  customer_nit:  z.string().optional(),
-  total_amount:  z.number().positive(),
-  invoice_date:  z.string().optional(),
-  notes:         z.string().optional(),
+  customer_name:  z.string().min(1),
+  customer_nit:   z.string().optional(),
+  total_amount:   z.number().positive(),
+  invoice_date:   z.string().optional(),
+  notes:          z.string().optional(),
+  factura_number: ManualDocumentNumber,
 });
 
 // ── Purchase ──────────────────────────────────────────────────────────────────
@@ -310,4 +353,73 @@ export const AwardRfqSchema = z.object({
   reason_code:   z.string().optional(),
   reject_others: z.boolean().optional().default(false),
   expected_date: z.string().optional(),
+});
+
+// ── Setup: number sequences ───────────────────────────────────────────────────
+
+/**
+ * Strict payload for `PUT /setup/number-sequences/:id`.
+ *
+ * This route used to accept raw JSON and coerce with `!!` and `Number()`, so
+ * `{"manual":"false"}` switched the legal invoice series to manual — the string
+ * "false" is truthy — and `{"next_number":"abc"}` reached a NaN check only by
+ * luck. Every field is now typed, and `reference` is absent on purpose: it is the
+ * key every service looks the sequence up by, so renaming it would orphan the
+ * series rather than rename it.
+ *
+ * The counter-token count is enforced here only as "never more than one", because
+ * whether a counter is REQUIRED depends on the row's effective `manual` value,
+ * which the route knows and this schema does not.
+ */
+export const UpdateNumberSequenceSchema = z.object({
+  name:        z.string().trim().min(1).max(80).optional(),
+  format:      z.string().trim().min(1).max(60).optional(),
+  manual:      z.boolean().optional(),
+  continuous:  z.boolean().optional(),
+  is_active:   z.boolean().optional(),
+  // The upper bound is the `Int` column's own ceiling, not a policy: a larger
+  // value cannot be stored at all, and rejecting it here beats a database error.
+  next_number: z.number().int().min(NEXT_NUMBER_MIN).max(NEXT_NUMBER_MAX).optional(),
+
+  /**
+   * REQUEST-ONLY. Never stored, and there is no column for it.
+   *
+   * Confirms that a person has looked at invoices already issued by hand and is
+   * deliberately choosing the series to resume from, in the one case the system
+   * refuses to guess: a non-comparable manual history. It defaults to false, so
+   * an absent field can never be read as consent.
+   */
+  acknowledge_unverifiable_resume: z.boolean().optional().default(false),
+}).strict().superRefine((data, ctx) => {
+  if (data.format === undefined) return;
+  const { counters, unknown, malformed } = inspectSequenceFormat(data.format);
+
+  // Braces first: once they are wrong the token counts mean nothing.
+  if (malformed) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['format'],
+      message:
+        `Malformed format: ${malformed} A format is literal text plus {YYYY} and one counter ` +
+        `such as {######}; anything else would be printed literally on the document.`,
+    });
+    return;
+  }
+  if (unknown.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['format'],
+      message:
+        `Unsupported format token${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}. ` +
+        `Only {YYYY} and a counter such as {######} are substituted; anything else would be ` +
+        `printed literally on the document.`,
+    });
+  }
+  if (counters > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['format'],
+      message: 'A format may contain at most one counter token.',
+    });
+  }
 });

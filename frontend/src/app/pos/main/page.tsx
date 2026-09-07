@@ -74,7 +74,13 @@ export default function PosMainPage() {
     }
   }
 
-  async function handlePaymentConfirm(method: 'CASH' | 'CARD' | 'TRANSFER', cashTendered?: number) {
+  async function handlePaymentConfirm(
+    method: 'CASH' | 'CARD' | 'TRANSFER',
+    cashTendered?: number,
+    // Supplied by PaymentModal only when the FACTURA sequence is manual; left
+    // undefined otherwise so the field is absent from the request.
+    facturaNumber?: string,
+  ) {
     if (!session) throw new Error('No open register session');
     setSaleError('');
     const res = await api.post('/pos/sale', {
@@ -82,6 +88,7 @@ export default function PosMainPage() {
       customer_name:  customer ? `${customer.first_name} ${customer.last_name}` : undefined,
       payment_method: method,
       cash_tendered:  cashTendered,
+      factura_number: facturaNumber,
       lines: lines.map((l) => ({
         product_id:   l.product_id,
         variant_id:   l.variant_id,

@@ -142,7 +142,7 @@ function fmtDate(d: string | Date) {
 
 interface Factura {
   id: string;
-  factura_number: number;
+  factura_number: string;
   invoice_date: string;
   customer_name: string;
   customer_nit?: string;
@@ -217,7 +217,7 @@ export function IvaReportPDF({ facturas, totals, year, month }: Props) {
         {/* Rows */}
         {facturas.map((f, i) => (
           <View key={f.id} style={i % 2 === 0 ? styles.tableRow : styles.tableRowAlt}>
-            <View style={styles.colNum}><Text style={styles.tdMono}>{String(f.factura_number).padStart(6, '0')}</Text></View>
+            <View style={styles.colNum}><Text style={styles.tdMono}>{f.factura_number}</Text></View>
             <View style={styles.colDate}><Text style={styles.tdText}>{fmtDate(f.invoice_date)}</Text></View>
             <View style={styles.colClient}><Text style={styles.tdText}>{f.customer_name}</Text></View>
             <View style={styles.colNit}><Text style={styles.tdMono}>{f.customer_nit ?? 'CF'}</Text></View>

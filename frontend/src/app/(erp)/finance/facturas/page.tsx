@@ -3,14 +3,21 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Plus, Check, FileText, AlertCircle, X, ExternalLink } from 'lucide-react';
+import { Plus, Check, FileText, AlertCircle, X, ExternalLink, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { FacturaPDFButton } from '@/components/erp/finance/FacturaPDFButton';
+import {
+  useFacturaSequence,
+  manualFacturaNumberError,
+  manualFacturaNumberPayload,
+  MANUAL_FACTURA_NUMBER_MAX,
+} from '@/lib/facturaNumbering';
 
 export default function FacturasPage() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
+  const [facturaNumber, setFacturaNumber] = useState('');
   const [form, setForm] = useState({
     customer_name: '',
     customer_nit: '',
@@ -19,15 +26,25 @@ export default function FacturasPage() {
     notes: '',
   });
 
+  // Only asked for while the form is open — the list itself issues nothing.
+  const sequence = useFacturaSequence(showForm);
+  const numberError = sequence.manual === true ? manualFacturaNumberError(facturaNumber) : null;
+
   const { data: facturasData, isLoading } = useQuery({
     queryKey: ['facturas'],
     queryFn: () => api.get('/finance/facturas?limit=100').then(r => ({ facturas: r.data.data })),
   });
 
-  const reset = () => { setShowForm(false); setForm({ customer_name: '', customer_nit: '', total_amount: '', invoice_date: new Date().toISOString().split('T')[0], notes: '' }); setError(''); };
+  const reset = () => { setShowForm(false); setForm({ customer_name: '', customer_nit: '', total_amount: '', invoice_date: new Date().toISOString().split('T')[0], notes: '' }); setFacturaNumber(''); setError(''); };
 
   const create = useMutation({
-    mutationFn: () => api.post('/finance/facturas', { ...form, total_amount: Number(form.total_amount) }),
+    mutationFn: () => api.post('/finance/facturas', {
+      ...form,
+      total_amount: Number(form.total_amount),
+      // Omitted entirely on an automatic series: the backend rejects a supplied
+      // number there rather than ignoring it.
+      factura_number: manualFacturaNumberPayload(sequence.manual, facturaNumber),
+    }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['facturas'] }); reset(); },
     onError: (err: any) => setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Failed to create factura'),
   });
@@ -107,6 +124,46 @@ export default function FacturasPage() {
             </div>
           )}
 
+          {/* The legal number, only when a person supplies it. */}
+          {sequence.manual === true && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {invoiceLabel} number <span className="text-red-500">*</span>
+                <span className="ml-2 font-normal text-gray-400">
+                  typed from the pre-printed form — this series is set to manual
+                </span>
+              </label>
+              <input
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. A-04-0001918"
+                maxLength={MANUAL_FACTURA_NUMBER_MAX}
+                value={facturaNumber}
+                onChange={e => setFacturaNumber(e.target.value)}
+              />
+              {facturaNumber.length > 0 && numberError && (
+                <p className="mt-1 text-xs text-red-600">{numberError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Fail closed: never assume automatic while the answer is unknown. */}
+          {sequence.blockingReason && (
+            <div className="flex items-start gap-2 mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p>{sequence.blockingReason}</p>
+                {sequence.status === 'error' && (
+                  <button
+                    onClick={() => sequence.refetch()}
+                    className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline"
+                  >
+                    <RefreshCw className="h-3 w-3" /> Try again
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="flex items-center gap-2 mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
               <AlertCircle className="h-4 w-4 shrink-0" /> {error}
@@ -114,7 +171,7 @@ export default function FacturasPage() {
           )}
 
           <div className="flex gap-3">
-            <button onClick={() => create.mutate()} disabled={!form.customer_name || !form.total_amount || create.isPending}
+            <button onClick={() => create.mutate()} disabled={!form.customer_name || !form.total_amount || create.isPending || sequence.status !== 'ready' || numberError !== null}
               className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-medium">
               <Check className="h-4 w-4" /> {create.isPending ? 'Creating...' : `Issue ${invoiceLabel}`}
             </button>
@@ -154,7 +211,7 @@ export default function FacturasPage() {
             )}
             {(facturasData?.facturas ?? []).map((f: any) => (
               <tr key={f.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-mono font-bold text-gray-900">{String(f.factura_number).padStart(6, '0')}</td>
+                <td className="px-4 py-3 font-mono font-bold text-gray-900">{f.factura_number}</td>
                 <td className="px-4 py-3 text-gray-500 text-xs">{new Date(f.invoice_date).toLocaleDateString()}</td>
                 <td className="px-4 py-3 font-medium text-gray-900">{f.customer_name}</td>
                 <td className="px-4 py-3 font-mono text-xs text-gray-400">{f.customer_nit ?? '—'}</td>

@@ -155,7 +155,7 @@ Tenant is resolved from:
         type: 'object',
         properties: {
           id:             { type: 'string', format: 'uuid' },
-          factura_number: { type: 'integer', example: 1 },
+          factura_number: { type: 'string', example: '000001' },
           source_type:    { type: 'string', enum: ['SALE','POS_SALE','MANUAL','RETURN'] },
           customer_name:  { type: 'string' },
           customer_nit:   { type: 'string', nullable: true },
@@ -399,7 +399,7 @@ Tenant is resolved from:
       post: {
         tags: ['Sales'], summary: 'Issue Factura (Bolivia invoice) — creates GL journal entry',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { customer_nit: { type: 'string', description: 'NIT for official invoice' }, notes: { type: 'string' } } } } } },
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { customer_nit: { type: 'string', description: 'NIT for official invoice' }, notes: { type: 'string' }, factura_number: { type: 'string', maxLength: 40, description: 'Required when the FACTURA number sequence is set to manual, and REJECTED when it is not. Read GET /setup/number-sequences to find out which.' } } } } } },
         responses: { '201': { description: 'Factura issued', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { $ref: '#/components/schemas/Factura' } } } } } } },
       },
     },
@@ -418,7 +418,9 @@ Tenant is resolved from:
       post: {
         tags: ['Sales'], summary: 'Process return — restores stock + issues credit note Factura + reverses GL',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { notes: { type: 'string' } } } } } },
+        // The credit note draws from the FACTURA series, so it obeys the FACTURA
+        // numbering mode. Unknown properties are rejected.
+        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: { notes: { type: 'string' }, factura_number: { type: 'string', maxLength: 40, description: 'Required when the FACTURA number sequence is set to manual, and REJECTED when it is not. Read GET /setup/number-sequences to find out which.' } } } } } },
         responses: { '200': { description: 'Return processed' } },
       },
     },
@@ -599,7 +601,7 @@ Tenant is resolved from:
           } } } },
         },
         responses: {
-          '201': { description: 'Sale completed', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { order_id: { type: 'string' }, order_number: { type: 'string' }, factura_number: { type: 'integer' }, total: { type: 'number' }, iva_amount: { type: 'number' }, change_due: { type: 'number' } } } } } } } },
+          '201': { description: 'Sale completed', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'object', properties: { order_id: { type: 'string' }, order_number: { type: 'string' }, factura_number: { type: 'string' }, total: { type: 'number' }, iva_amount: { type: 'number' }, change_due: { type: 'number' } } } } } } } },
           '400': { description: 'Insufficient stock or invalid session', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
         },
       },

@@ -2,6 +2,11 @@
 
 import { useState } from 'react';
 import { NumPad } from './NumPad';
+import {
+  useFacturaSequence,
+  manualFacturaNumberError,
+  MANUAL_FACTURA_NUMBER_MAX,
+} from '@/lib/facturaNumbering';
 
 type Method = 'CASH' | 'CARD' | 'TRANSFER';
 
@@ -9,7 +14,7 @@ interface Props {
   visible:   boolean;
   total:     number;
   onClose:   () => void;
-  onConfirm: (method: Method, cashTendered?: number) => Promise<void>;
+  onConfirm: (method: Method, cashTendered?: number, facturaNumber?: string) => Promise<void>;
 }
 
 export function PaymentModal({ visible, total, onClose, onConfirm }: Props) {
@@ -17,19 +22,35 @@ export function PaymentModal({ visible, total, onClose, onConfirm }: Props) {
   const [tendered, setTendered] = useState('0');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
+  const [facturaNumber, setFacturaNumber] = useState('');
+
+  // Asked only while the modal is open. Fail closed: CONFIRM SALE stays disabled
+  // until the tenant's numbering mode is actually known, because discovering it
+  // after the customer has paid is the failure this prevents.
+  const sequence    = useFacturaSequence(visible);
+  const numberError = sequence.manual === true ? manualFacturaNumberError(facturaNumber) : null;
 
   const tenderedNum = parseFloat(tendered) || 0;
   const change      = Math.max(0, tenderedNum - total);
   const cashValid   = method !== 'CASH' || tenderedNum >= total;
+  const canConfirm  = cashValid && sequence.status === 'ready' && numberError === null;
 
   async function confirm() {
     if (!cashValid) { setError('Cash tendered must be ≥ total'); return; }
+    if (numberError) { setError(numberError); return; }
     setLoading(true);
     setError('');
     try {
-      await onConfirm(method, method === 'CASH' ? tenderedNum : undefined);
+      await onConfirm(
+        method,
+        method === 'CASH' ? tenderedNum : undefined,
+        // Omitted entirely on an automatic series — the backend rejects a
+        // supplied number there rather than ignoring it.
+        sequence.manual === true ? facturaNumber.trim() : undefined,
+      );
       setTendered('0');
       setMethod('CASH');
+      setFacturaNumber('');
     } catch (e: any) {
       setError(e.message ?? 'Payment failed');
     } finally {
@@ -97,6 +118,41 @@ export function PaymentModal({ visible, total, onClose, onConfirm }: Props) {
           </div>
         )}
 
+        {/* The legal number, when a person supplies it from pre-printed stock. */}
+        {sequence.manual === true && (
+          <div className="mb-3">
+            <p className="text-slate-500 text-xs font-semibold mb-2">
+              Factura number <span className="text-red-500">*</span>
+              <span className="ml-1.5 font-normal text-slate-400">from the pre-printed form</span>
+            </p>
+            <input
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-lg font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              placeholder="A-04-0001918"
+              maxLength={MANUAL_FACTURA_NUMBER_MAX}
+              value={facturaNumber}
+              onChange={(e) => setFacturaNumber(e.target.value)}
+            />
+            {facturaNumber.length > 0 && numberError && (
+              <p className="mt-1 text-red-500 text-xs">{numberError}</p>
+            )}
+          </div>
+        )}
+
+        {/* Fail closed: the till must not guess the numbering mode. */}
+        {sequence.blockingReason && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3">
+            <p className="text-amber-800 text-sm">{sequence.blockingReason}</p>
+            {sequence.status === 'error' && (
+              <button
+                onClick={() => sequence.refetch()}
+                className="mt-1 text-xs font-semibold text-amber-900 underline"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+
         {error && <p className="text-red-500 text-sm text-center mb-2">{error}</p>}
 
         <div className="flex gap-2.5 mt-2">
@@ -109,9 +165,9 @@ export function PaymentModal({ visible, total, onClose, onConfirm }: Props) {
           </button>
           <button
             onClick={confirm}
-            disabled={!cashValid || loading}
+            disabled={!canConfirm || loading}
             className={`flex-1 py-3.5 rounded-xl font-black text-base transition-colors ${
-              !cashValid || loading
+              !canConfirm || loading
                 ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
                 : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200'
             }`}

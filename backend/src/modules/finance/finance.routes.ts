@@ -8,27 +8,13 @@ import { ok, created, message, paginated } from '../../shared/response';
 import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
 import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
+import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
 
-// ── Atomic factura number (race-condition safe) ────────────────────────────────
-async function nextFacturaNumber(tenantId: string): Promise<number> {
-  const rows = await db.$queryRaw<{ last_number: number }[]>`
-    INSERT INTO factura_counters (tenant_id, last_number, updated_at)
-    SELECT ${tenantId}::uuid, COALESCE(MAX(factura_number), 0) + 1, NOW()
-    FROM facturas WHERE tenant_id = ${tenantId}::uuid
-    ON CONFLICT (tenant_id)
-    DO UPDATE SET
-      last_number = GREATEST(
-        factura_counters.last_number + 1,
-        (SELECT COALESCE(MAX(factura_number), 0) + 1 FROM facturas WHERE tenant_id = ${tenantId}::uuid)
-      ),
-      updated_at = NOW()
-    RETURNING last_number
-  `;
-  return Number(rows[0].last_number);
-}
+// The third copy of the `factura_counters` allocator used to live here. All three
+// are gone; the series is owned by the FACTURA number sequence. See migration 023.
 
 // ── Accounts (Chart of Accounts) ──────────────────────────────────────────────
 
@@ -324,17 +310,28 @@ app.get('/facturas/:id', async (c) => {
 });
 
 app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManualFacturaSchema), async (c) => {
-  const { customer_name, customer_nit, invoice_date, total_amount, source_type, source_id, notes } = c.get('body');
+  const {
+    customer_name, customer_nit, invoice_date, total_amount, source_type, source_id, notes,
+    factura_number: manualFacturaNumber,
+  } = c.get('body');
   if (!customer_name || !total_amount) throw new AppError('customer_name and total_amount are required');
 
-  const facturaNumber = await nextFacturaNumber(c.get('tenantId'));
   const total = Number(total_amount);
   const docTax = await computeDocumentTax(c.get('tenantId'), total, {
     legacyConfig: c.get('taxConfig'),
   });
   const { subtotal, vat: ivaAmount, turnover: itAmount } = docTax;
 
-  const factura = await db.factura.create({
+  // This route used to allocate the number and then create the factura on the
+  // pooled client, with no transaction at all. A continuous series cannot be
+  // allocated that way — `allocateNumber` throws — and it should not have been
+  // allocated that way before either: a failure between the two left a hole.
+  const factura = await db.$transaction(async (tx) => {
+    const facturaNumber = await nextFacturaNumber(c.get('tenantId'), tx, {
+      manualNumber: manualFacturaNumber,
+    });
+
+    return tx.factura.create({
     data: {
       tenant_id:      c.get('tenantId'),
       factura_number: facturaNumber,
@@ -362,6 +359,7 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
       },
       created_by:     c.get('user').id,
     },
+    });
   });
   return created(c, factura);
 });

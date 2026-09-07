@@ -3,8 +3,27 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Plus, X, Check, AlertCircle, FileText, CheckCircle, Truck, PackageCheck, Ban, Eye, ShoppingBag, Banknote, Pencil, RotateCcw } from 'lucide-react';
+import { Plus, X, Check, AlertCircle, FileText, CheckCircle, Truck, PackageCheck, Ban, Eye, ShoppingBag, Banknote, Pencil, RotateCcw, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
+import {
+  useFacturaSequence,
+  manualFacturaNumberError,
+  manualFacturaNumberPayload,
+  MANUAL_FACTURA_NUMBER_MAX,
+} from '@/lib/facturaNumbering';
+
+/**
+ * Two surfaces on this page issue a legal invoice number: the invoice modal and
+ * the return, whose credit note draws from the FACTURA series. Both were left
+ * out when migration 023 moved factura numbering onto number sequences, so both
+ * were unable to complete on a tenant whose FACTURA sequence is manual — the
+ * invoice modal sent no number at all, and the return was a one-click
+ * `window.confirm` with nowhere to type one.
+ *
+ * They ask the same question the same way as every other issuing surface, from
+ * `@/lib/facturaNumbering`: fail closed while the answer is unknown, show the
+ * field only when the series is manual, and omit it entirely when it is not.
+ */
 
 const STATUS_BADGE: Record<string, string> = {
   DRAFT:     'bg-gray-100 text-gray-600',
@@ -21,11 +40,125 @@ const INVOICEABLE = ['CONFIRMED', 'PICKING', 'PACKED', 'SHIPPED', 'COMPLETED'];
 
 interface SOLine { product_id: string; variant_id?: string; quantity: string; unit_price: string; discount_pct?: string; }
 
+/**
+ * Fail closed. While the numbering mode is unknown — loading, or unreadable — no
+ * surface on this page may submit, and this is what says so. Assuming
+ * "automatic" because the answer has not arrived is the specific mistake the
+ * shared hook exists to prevent.
+ */
+function SequenceBlockedNote({ sequence }: { sequence: ReturnType<typeof useFacturaSequence> }) {
+  if (!sequence.blockingReason) return null;
+  return (
+    <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+      <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+      <div className="flex-1">
+        <p>{sequence.blockingReason}</p>
+        {sequence.status === 'error' && (
+          <button onClick={() => sequence.refetch()}
+            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline">
+            <RefreshCw className="h-3 w-3" /> Try again
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Return Modal ──────────────────────────────────────────────────────────────
+/**
+ * This replaces a `window.confirm` that posted an empty body.
+ *
+ * A confirm dialog cannot collect a legal document number, and the credit note a
+ * return writes draws from the FACTURA series — so on a manual tenant the old
+ * one-click Return could not complete at all. The order detail page already had
+ * a return form; this gives the list the same capability rather than sending the
+ * operator somewhere else to finish an action the list offered them.
+ */
+function ReturnModal({ order, onClose, onSuccess }: { order: any; onClose: () => void; onSuccess: () => void }) {
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+  const [facturaNumber, setFacturaNumber] = useState('');
+
+  const sequence = useFacturaSequence();
+  const numberError = sequence.manual === true ? manualFacturaNumberError(facturaNumber) : null;
+
+  const submit = useMutation({
+    mutationFn: () => api.post(`/sales/orders/${order.id}/return`, {
+      notes,
+      factura_number: manualFacturaNumberPayload(sequence.manual, facturaNumber),
+    }),
+    onSuccess: () => { onSuccess(); onClose(); },
+    onError: (err: any) => setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Return failed'),
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-200">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Process Return</h2>
+            <p className="text-sm text-gray-400 mt-0.5">Return {order.order_number}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-300 hover:text-gray-600 text-2xl leading-none">&times;</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Return notes <span className="text-gray-400 font-normal">(optional)</span></label>
+            <input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
+              placeholder="e.g. Customer defect return" value={notes} onChange={e => setNotes(e.target.value)} />
+          </div>
+
+          {sequence.manual === true && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Credit note number <span className="text-red-500">*</span>
+                <span className="ml-2 text-gray-400 font-normal">typed from the pre-printed form</span>
+              </label>
+              <input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-pink-500"
+                placeholder="e.g. A-04-0001919" maxLength={MANUAL_FACTURA_NUMBER_MAX}
+                value={facturaNumber} onChange={e => setFacturaNumber(e.target.value)} />
+              {facturaNumber.length > 0 && numberError && (
+                <p className="mt-1 text-xs text-red-600">{numberError}</p>
+              )}
+            </div>
+          )}
+
+          <div className="bg-pink-50 border border-pink-100 rounded-xl p-4 text-sm text-pink-800">
+            <p className="font-semibold mb-1">This will:</p>
+            <ul className="list-disc list-inside space-y-0.5 text-xs">
+              <li>Restore the ordered stock back to inventory</li>
+              <li>Issue a credit note Factura (negative amount)</li>
+              <li>Reverse all GL journal entries for this order</li>
+            </ul>
+          </div>
+
+          <SequenceBlockedNote sequence={sequence} />
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2">{error}</p>}
+        </div>
+        <div className="flex gap-3 px-6 pb-6">
+          <button onClick={() => submit.mutate()}
+            disabled={submit.isPending || sequence.status !== 'ready' || numberError !== null}
+            className="flex-1 flex items-center justify-center gap-2 bg-pink-600 hover:bg-pink-700 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-sm">
+            <RotateCcw className="h-4 w-4" /> {submit.isPending ? 'Processing...' : 'Confirm Return'}
+          </button>
+          <button onClick={onClose} className="px-5 py-3 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Invoice Modal ─────────────────────────────────────────────────────────────
 function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () => void; onSuccess: () => void }) {
   const [nit, setNit] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+  const [facturaNumber, setFacturaNumber] = useState('');
+
+  // The modal exists only while it is open, so mounting IS opening — the hook
+  // revalidates on mount and blocks until the answer arrives.
+  const sequence = useFacturaSequence();
+  const numberError = sequence.manual === true ? manualFacturaNumberError(facturaNumber) : null;
 
   const customerName = order.customer
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
@@ -37,7 +170,13 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
   const it = subtotal * 0.03;
 
   const create = useMutation({
-    mutationFn: () => api.post(`/sales/orders/${order.id}/invoice`, { customer_nit: nit, notes }),
+    mutationFn: () => api.post(`/sales/orders/${order.id}/invoice`, {
+      customer_nit: nit,
+      notes,
+      // Omitted entirely on an automatic series: the backend rejects a supplied
+      // number there rather than ignoring it.
+      factura_number: manualFacturaNumberPayload(sequence.manual, facturaNumber),
+    }),
     onSuccess: () => { onSuccess(); onClose(); },
     onError: (err: any) => setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Failed to create invoice'),
   });
@@ -62,6 +201,20 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
             <input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="e.g. 12345678" value={nit} onChange={e => setNit(e.target.value)} />
           </div>
+          {sequence.manual === true && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Factura number <span className="text-red-500">*</span>
+                <span className="ml-2 text-gray-400 font-normal">typed from the pre-printed form</span>
+              </label>
+              <input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. A-04-0001918" maxLength={MANUAL_FACTURA_NUMBER_MAX}
+                value={facturaNumber} onChange={e => setFacturaNumber(e.target.value)} />
+              {facturaNumber.length > 0 && numberError && (
+                <p className="mt-1 text-xs text-red-600">{numberError}</p>
+              )}
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
             <input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -73,10 +226,12 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
             <div className="flex justify-between text-orange-600"><span>IT 3% (sobre neto)</span><span>Bs. {it.toFixed(2)}</span></div>
             <div className="flex justify-between font-bold text-gray-900 border-t border-blue-200 pt-2"><span>Total</span><span>Bs. {total.toFixed(2)}</span></div>
           </div>
+          <SequenceBlockedNote sequence={sequence} />
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2">{error}</p>}
         </div>
         <div className="flex gap-3 px-6 pb-6">
-          <button onClick={() => create.mutate()} disabled={create.isPending}
+          <button onClick={() => create.mutate()}
+            disabled={create.isPending || sequence.status !== 'ready' || numberError !== null}
             className="flex-1 flex items-center justify-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white py-3 rounded-xl font-semibold text-sm">
             <FileText className="h-4 w-4" /> {create.isPending ? 'Issuing...' : 'Issue Factura'}
           </button>
@@ -582,6 +737,7 @@ export default function SalesOrdersPage() {
   const [editOrder, setEditOrder] = useState<any | null>(null);
   const [editError, setEditError] = useState('');
   const [invoiceOrder, setInvoiceOrder] = useState<any | null>(null);
+  const [returnOrder, setReturnOrder] = useState<any | null>(null);
   const [payOrder, setPayOrder] = useState<any | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
@@ -612,7 +768,9 @@ export default function SalesOrdersPage() {
   });
 
   // NOTE: do not name this `confirm` — it shadows window.confirm(), which the
-  // Cancel/Return buttons below rely on for their confirmation dialogs.
+  // Cancel button below relies on for its confirmation dialog. (Return no longer
+  // does: a confirm dialog cannot collect a legal credit-note number, so it now
+  // opens ReturnModal.)
   const confirmOrder = useMutation({
     mutationFn: (id: string) => api.post(`/sales/orders/${id}/confirm`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sales-orders'] }),
@@ -637,11 +795,6 @@ export default function SalesOrdersPage() {
     onError: (err: any) => alert(apiErr(err)),
   });
 
-  const returnOrder = useMutation({
-    mutationFn: (id: string) => api.post(`/sales/orders/${id}/return`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sales-orders'] }),
-    onError: (err: any) => alert(apiErr(err)),
-  });
 
   if (showForm) {
     return (
@@ -685,6 +838,13 @@ export default function SalesOrdersPage() {
         <ARPayModal
           order={payOrder}
           onClose={() => setPayOrder(null)}
+          onSuccess={() => qc.invalidateQueries({ queryKey: ['sales-orders'] })}
+        />
+      )}
+      {returnOrder && (
+        <ReturnModal
+          order={returnOrder}
+          onClose={() => setReturnOrder(null)}
           onSuccess={() => qc.invalidateQueries({ queryKey: ['sales-orders'] })}
         />
       )}
@@ -827,7 +987,7 @@ export default function SalesOrdersPage() {
                         </button>
                       )}
                       {['SHIPPED', 'COMPLETED'].includes(order.status) && !(order as any).returned_at && (
-                        <button onClick={() => { if (confirm(`Return ${order.order_number}? This will restore stock and create a credit note.`)) returnOrder.mutate(order.id); }}
+                        <button onClick={() => setReturnOrder(order)}
                           className="inline-flex items-center gap-1 text-xs text-pink-600 hover:text-pink-800 font-medium bg-pink-50 hover:bg-pink-100 px-2.5 py-1.5 rounded-lg">
                           <RotateCcw className="h-3.5 w-3.5" /> Return
                         </button>

@@ -3,6 +3,7 @@ import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
+import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
 import { postJournal } from '../../shared/services/journal.service';
 import { contextForSalesOrder } from '../../shared/services/dimension.service';
 import { writeFacturaLines, linesFromSalesOrder, markInvoiced } from '../../shared/services/facturaLine.service';
@@ -18,17 +19,11 @@ import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
 
-// ── Atomic factura number (same helper as finance/sales) ──────────────────────
-async function nextFacturaNumber(tenantId: string): Promise<number> {
-  const rows = await db.$queryRaw<{ last_number: number }[]>`
-    INSERT INTO factura_counters (tenant_id, last_number, updated_at)
-    VALUES (${tenantId}::uuid, 1, NOW())
-    ON CONFLICT (tenant_id)
-    DO UPDATE SET last_number = factura_counters.last_number + 1, updated_at = NOW()
-    RETURNING last_number
-  `;
-  return Number(rows[0].last_number);
-}
+// The local allocator that used to live here was the most dangerous of the three
+// copies: on a tenant with no `factura_counters` row yet it started the LEGAL
+// series at the literal 1, regardless of how many facturas had already been
+// issued, and left the unique constraint to notice. The series is now owned by
+// the FACTURA number sequence like every other document. See migration 023.
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
@@ -132,6 +127,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
     payment_method = 'CASH',
     cash_tendered,
     lines,
+    factura_number: manualFacturaNumber,
   } = c.get('body');
 
   if (!session_id) throw new AppError('session_id is required');
@@ -140,9 +136,12 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
   const tenantId = c.get('tenantId');
   const userId   = c.get('user').id;
 
-  // Get counters BEFORE the transaction (atomic SQL — race-condition safe)
-  const facturaNumber = await nextFacturaNumber(tenantId);
-  const orderNumber   = await nextSalesOrderNumber(tenantId);
+  // The order number is still drawn before the transaction: it is an internal
+  // commercial reference with no legal sequence requirement, so a gap costs
+  // nothing. The FACTURA number is not — it is now allocated inside the
+  // transaction below, because a continuous legal series allocated out here
+  // leaves a hole in the ledger every time a sale fails after allocation.
+  const orderNumber = await nextSalesOrderNumber(tenantId);
 
   // Voucher numbers are no longer pre-allocated here. POS drew them from
   // `order_counters` via nextJournalEntryNumber (format `JE-000001`) while every
@@ -158,6 +157,15 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
       where: { id: session_id, tenant_id: tenantId, status: 'OPEN' },
     });
     if (!session) throw new AppError('Register session not found or already closed', 400);
+
+    // Allocated here rather than at step 6 only because the inventory
+    // transactions written below quote it. Still inside the transaction, which
+    // is the part that matters: the FACTURA series is continuous, so the row
+    // lock must be held until this sale commits or a failed sale burns a legal
+    // number. Already rendered through the sequence format — do not pad it again.
+    const facturaNumber = await nextFacturaNumber(tenantId, tx, {
+      manualNumber: manualFacturaNumber,
+    });
 
     // 2. Stock check + deduction per line
     const processedLines: Array<{
@@ -213,7 +221,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
             from_location_id: stockRow.location_id,
             quantity:         deduct,
             unit_cost:        costPrice,
-            notes:            `POS sale — Factura #${String(facturaNumber).padStart(6, '0')}`,
+            notes:            `POS sale — Factura #${facturaNumber}`,
             performed_by:     userId,
           },
         });
@@ -278,7 +286,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
       },
     });
 
-    // 6. Create Factura
+    // 6. Create Factura (number allocated at the top of this transaction)
     const factura = await tx.factura.create({
       data: {
         tenant_id:      tenantId,
@@ -329,7 +337,7 @@ app.post('/sale', validate(PosSaleSchema), async (c) => {
       await postJournal({
         tenantId,
         tx,
-        description:  `POS Sale: ${orderNumber} — Factura #${String(facturaNumber).padStart(6, '0')}`,
+        description:  `POS Sale: ${orderNumber} — Factura #${facturaNumber}`,
         source:       { module: 'POS_SALE', id: order.id },
         userId,
         // The register session's warehouse, derived to a site by migration 011 when

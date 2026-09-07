@@ -67,7 +67,12 @@ async function main() {
   const gross = Number(built.reduce((s, l) => s + (l.lineTotal ?? 0), 0).toFixed(2));
 
   // A throwaway factura carrying the same total the lines add up to.
-  const num = -Math.floor(Math.random() * 1_000_000) - 1; // negative: cannot collide with a real one
+  // `factura_number` is text since migration 023, so the throwaway is prefixed
+  // rather than negative — a configured series can never render `VERIFY-…`,
+  // whatever its format, which the old negative integer could not promise once a
+  // format is free to carry a sign or a letter.
+  const stamp = `VERIFY-${Date.now()}`;
+  const num   = `${stamp}-A`;
   const f = await db.factura.create({
     data: {
       tenant_id: tenantId,
@@ -105,7 +110,7 @@ async function main() {
   console.log('\nA document whose lines disagree is refused');
   const f2 = await db.factura.create({
     data: {
-      tenant_id: tenantId, factura_number: num - 1, source_type: 'VERIFY', source_id: order.id,
+      tenant_id: tenantId, factura_number: `${stamp}-B`, source_type: 'VERIFY', source_id: order.id,
       customer_name: 'VERIFY', invoice_date: new Date(),
       subtotal: 1, iva_amount: 0, it_amount: 0, total_amount: 1,
     },

@@ -172,7 +172,7 @@ interface InvoiceMetadata {
 }
 
 interface Factura {
-  factura_number: number;
+  factura_number: string;
   invoice_date: string;
   customer_name: string;
   customer_nit?: string;
@@ -213,7 +213,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
   }
 
   return (
-    <Document title={`${invoiceLabel}-${String(factura.factura_number).padStart(6, '0')}`}>
+    <Document title={`${invoiceLabel}-${factura.factura_number}`}>
       <Page size="A4" style={styles.page}>
 
         {/* Header */}
@@ -224,7 +224,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
           </View>
           <View style={styles.facturaBox}>
             <Text style={styles.facturaLabel}>{invoiceLabel.toUpperCase()}</Text>
-            <Text style={styles.facturaNumber}>N° {String(factura.factura_number).padStart(6, '0')}</Text>
+            <Text style={styles.facturaNumber}>N° {factura.factura_number}</Text>
             <Text style={styles.facturaStatus}>{factura.status}</Text>
           </View>
         </View>
@@ -345,7 +345,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
         {/* Footer */}
         <View style={styles.footer} fixed>
           <Text style={styles.footerText}>Quberty ERP • Sistema de Facturación Bolivia</Text>
-          <Text style={styles.footerText}>{invoiceLabel} N° {String(factura.factura_number).padStart(6, '0')} • {fmtDate(factura.invoice_date)}</Text>
+          <Text style={styles.footerText}>{invoiceLabel} N° {factura.factura_number} • {fmtDate(factura.invoice_date)}</Text>
         </View>
 
       </Page>

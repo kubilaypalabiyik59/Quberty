@@ -1,9 +1,23 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
+import { validate } from '../../shared/middleware/validate';
 import { ok, created } from '../../shared/response';
 import { ACCOUNT_CATEGORIES } from '../../shared/services/accountCategory';
+import { formatNumber } from '../../shared/services/numberSequence.service';
+import {
+  highestIssuedNumber,
+  evaluateAutomaticResume,
+  effectiveFormatRefusal,
+  checkManualToAutomatic,
+  persistedSequenceFields,
+  resumeBehindReason,
+  fiscalYearResumeUnsupported,
+  FISCAL_YEAR_SCOPE,
+} from '../../shared/services/numberSequenceRules';
+import { UpdateNumberSequenceSchema } from '../../shared/schemas';
 import type { AppEnv } from '../../shared/context';
 
 /**
@@ -351,6 +365,205 @@ app.get('/dimensions/:id/impact', async (c) => {
         : `${blocked.length} open order(s) have no site and no warehouse to derive one from. ` +
           `Making this REQUIRED means they cannot be invoiced until a warehouse is set on them.`,
   });
+});
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * NUMBER SEQUENCES — document numbering
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Cross-module by definition — sales, purchase, finance, CRM and the warehouse
+ * all draw numbers from the same framework — which is why it belongs in this
+ * router and not in any one module's Setup area. D365 files it the same way,
+ * under Organization administration → Number sequences.
+ *
+ * Until now `number_sequences` rows could only be created by running
+ * provisionConfiguration.ts from this repository, and `manual` / `continuous`
+ * could not be changed at all. Migration 023 gave the factura series to this
+ * framework, so leaving it unreachable from the UI would mean the legal invoice
+ * series is configured by editing code.
+ */
+
+/** The counter and the rendered result, so the screen can show both. */
+function describeSequence(s: {
+  format: string; next_number: number; current_year: number | null; scope: string;
+}) {
+  const year = s.scope === 'FISCAL_YEAR' ? (s.current_year ?? new Date().getFullYear()) : new Date().getFullYear();
+  return formatNumber(s.format, s.next_number, year);
+}
+
+/**
+ * The highest FACTURA actually issued for this tenant.
+ *
+ * `_max` on a text column is lexicographic, so it is NOT used — see
+ * `highestIssuedNumber`. The numbers are read and compared as digit strings
+ * instead, which is exact and refuses to answer at all once a manual, prefixed
+ * number is present.
+ */
+async function facturaHighestIssued(tenantId: string) {
+  const rows = await db.factura.findMany({
+    where:  { tenant_id: tenantId },
+    select: { factura_number: true },
+  });
+  return highestIssuedNumber(rows.map((r) => r.factura_number));
+}
+
+app.get('/number-sequences', async (c) => {
+  const tenantId = c.get('tenantId');
+  const rows = await db.numberSequence.findMany({
+    where: { tenant_id: tenantId },
+    orderBy: [{ reference: 'asc' }],
+  });
+
+  // What has actually been issued, so an administrator switching a series back
+  // from manual to automatic can see the number to resume above instead of
+  // guessing. Only FACTURA is reported: it is the one series where a collision is
+  // a legal problem rather than an inconvenience, and a generic
+  // reference → table → column registry covering all fifteen would be a lookup
+  // table to keep in sync for a question nobody has asked about the other
+  // fourteen. Add one when someone needs it.
+  const facturaHigh = await facturaHighestIssued(tenantId);
+
+  return ok(c, rows.map((s) => {
+    const isFactura = s.reference === 'FACTURA';
+
+    // Evaluated PER ROW, because the answer depends on that row's scope. A
+    // fiscal-year factura series is refused on the scope alone; see
+    // `fiscalYearResumeUnsupported`.
+    const resume = isFactura ? evaluateAutomaticResume(facturaHigh, s.scope) : null;
+
+    // `facturaHigh` is every factura the tenant ever issued, across every year.
+    // That is the right history for a LEGAL_ENTITY series and the WRONG one for a
+    // FISCAL_YEAR series, whose counter restarts annually — so it is withheld
+    // there rather than shown as though it were the number to resume above.
+    // Reported as "nothing known" rather than "not comparable": the values are
+    // perfectly comparable, it is the QUESTION that does not apply, and the
+    // not-comparable message would tell the administrator something untrue about
+    // why.
+    const reportHistory = isFactura && s.scope !== FISCAL_YEAR_SCOPE;
+
+    return {
+      ...s,
+      preview: describeSequence(s),
+      // Null means "not known", and `highest_issued_comparable` says WHICH kind
+      // of not-known it is: nothing issued yet, or issued numbers that cannot be
+      // ordered against a counter. The screen must not print a guess either way.
+      highest_issued:            reportHistory ? facturaHigh.value : null,
+      highest_issued_numeric:    reportHistory ? facturaHigh.numeric : null,
+      highest_issued_comparable: reportHistory ? facturaHigh.comparable : true,
+      highest_issued_examples:   reportHistory ? facturaHigh.non_numeric : [],
+      // Whether this series COULD be switched to automatic at all, with the
+      // reason, so the Setup screen can explain a refusal before the
+      // administrator flips the switch instead of after.
+      automatic_resume_possible: resume ? resume.possible : true,
+      automatic_resume_code:     resume ? resume.code : 'OK',
+      automatic_resume_reason:   resume ? resume.reason : null,
+      // ACKNOWLEDGEMENT_REQUIRED is possible-but-not-guessable, so the screen
+      // offers a confirmation rather than a dead end. FISCAL_YEAR_RESUME_UNSUPPORTED
+      // is a dead end on purpose, and reports no acknowledgement at all.
+      automatic_resume_requires_acknowledgement:
+        resume ? resume.requires_acknowledgement : false,
+      // Never a value the Int column cannot store.
+      minimum_next_number:       resume ? resume.minimum_next_number : null,
+    };
+  }));
+});
+
+app.put('/number-sequences/:id', requireRole('admin'), validate(UpdateNumberSequenceSchema), async (c) => {
+  const b = c.get('body') as z.infer<typeof UpdateNumberSequenceSchema>;
+  const tenantId = c.get('tenantId');
+
+  const row = await db.numberSequence.findFirst({
+    where: { id: c.req.param('id'), tenant_id: tenantId },
+  });
+  if (!row) throw new AppError('Number sequence not found', 404);
+
+  // `reference` is the key every service looks the sequence up by, so it is not
+  // in the schema at all. Renaming it would orphan the series, not rename it.
+  //
+  // Everything below is already the right TYPE — the schema rejects
+  // `{"manual":"false"}` rather than coercing the truthy string to `true`, which
+  // is what the previous `!!b.manual` did to the legal invoice series.
+  const nextNumber = b.next_number ?? row.next_number;
+  const manual     = b.manual     ?? row.manual;
+  const format     = b.format     ?? row.format;
+
+  // The EFFECTIVE format, not merely a newly supplied one. A row saved before
+  // this validation existed can hold `F-{LE}-{######}`, and a request carrying
+  // only `{"manual": false}` would otherwise make it automatic with no format
+  // ever inspected — every document it issued would print the braces.
+  const formatRefusal = effectiveFormatRefusal(format, manual);
+  if (formatRefusal) throw new AppError(formatRefusal.message, 400, formatRefusal.code);
+
+  // ── FACTURA: the legal series ───────────────────────────────────────────────
+  //
+  // This block used to be guarded by `row.scope !== 'FISCAL_YEAR'`, which was an
+  // UNDOCUMENTED BYPASS: a fiscal-year factura series skipped every check below
+  // and went manual → automatic unexamined. The scope is now a refusal with its
+  // own code, not a reason to fall silent.
+  if (row.reference === 'FACTURA') {
+    // Decided on the scope alone, and BEFORE the history is read — reading it
+    // would answer a different question, and an unusable answer must not be near
+    // a decision. Not overridable by `acknowledge_unverifiable_resume`, which is
+    // enforced inside `checkManualToAutomatic` rather than here, so there is one
+    // place that can say yes.
+    const scopeUnsupported = fiscalYearResumeUnsupported(row.scope);
+
+    // `checkManualToAutomatic` needs a history argument even when the scope has
+    // already settled the answer. It is not read in that case — the scope
+    // refusal is returned first — so the read is skipped rather than performed
+    // for a value nothing may use.
+    const high = scopeUnsupported
+      ? { value: null, numeric: null, comparable: true, non_numeric: [] as string[] }
+      : await facturaHighestIssued(tenantId);
+
+    // The manual → automatic contract. Refuses outright on an unsupported scope
+    // and at the counter ceiling, and otherwise demands an explicit,
+    // acknowledged resumption point when the issued history cannot be ordered.
+    // Only evaluated for the request that actually flips the switch, so an
+    // already-automatic series is untouched.
+    const transition = checkManualToAutomatic(high, {
+      wasManual:          row.manual,
+      targetManual:       manual,
+      formatSupplied:     b.format !== undefined,
+      nextNumberSupplied: b.next_number !== undefined,
+      acknowledged:       b.acknowledge_unverifiable_resume === true,
+    }, row.scope);
+    if (transition) throw new AppError(transition.message, 400, transition.code);
+
+    // Guard the one mistake that is not recoverable by editing the row again: on
+    // an automatic series, resuming BELOW what has already been issued hands out
+    // a number the unique constraint will reject — the next sale fails, at the
+    // till. Skipped while the series stays manual, where the user picks each
+    // number, and silent on a non-comparable history, which the contract above
+    // has already dealt with.
+    //
+    // Exact digit-string comparison, so a highest issued value above
+    // Number.MAX_SAFE_INTEGER is still caught. Reading `high.numeric` here — as
+    // this once did — silently skipped the guard in precisely that case.
+    //
+    // Not run on a FISCAL_YEAR series, and that is a STATED limitation rather
+    // than the old silent skip: the comparison it would make is against a
+    // tenant-wide maximum spanning every year, which is not the number that
+    // series resumes from. The transition above is already refused there, so the
+    // only way to reach this line on that scope is a series that was configured
+    // automatic and stays automatic; its counter is protected by the factura
+    // unique constraint alone until a year-aware history model exists. Recorded
+    // as a residual risk, not papered over.
+    if (!manual && row.scope !== FISCAL_YEAR_SCOPE) {
+      const behind = resumeBehindReason(high, nextNumber);
+      if (behind) throw new AppError(behind, 400, 'NUMBER_SEQUENCE_BEHIND');
+    }
+  }
+
+  // One place decides what is written, and it excludes the request-only
+  // acknowledgement by construction rather than by remembering to omit it.
+  const updated = await db.numberSequence.update({
+    where: { id: row.id },
+    data: persistedSequenceFields(b),
+  });
+
+  return ok(c, { ...updated, preview: describeSequence(updated) });
 });
 
 /* ════════════════════════════════════════════════════════════════════════════

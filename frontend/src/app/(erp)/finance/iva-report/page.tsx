@@ -105,7 +105,7 @@ export default function IvaReportPage() {
             )}
             {(data?.facturas ?? []).map((f: any) => (
               <tr key={f.id} className="hover:bg-gray-50">
-                <td className="px-4 py-2 font-mono font-bold">{String(f.factura_number).padStart(6, '0')}</td>
+                <td className="px-4 py-2 font-mono font-bold">{f.factura_number}</td>
                 <td className="px-4 py-2 text-xs text-gray-500">{new Date(f.invoice_date).toLocaleDateString()}</td>
                 <td className="px-4 py-2 text-gray-900">{f.customer_name}</td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-400">{f.customer_nit ?? '—'}</td>

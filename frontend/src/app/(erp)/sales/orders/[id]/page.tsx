@@ -7,11 +7,17 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   ArrowLeft, FileText, CheckCircle, Truck, Package,
-  XCircle, AlertCircle, User, MapPin, Hash, RotateCcw
+  XCircle, AlertCircle, User, MapPin, Hash, RotateCcw, RefreshCw
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { SalesOrderPDFButton } from '@/components/erp/sales/SalesOrderPDFButton';
 import { FacturaPDFButton } from '@/components/erp/finance/FacturaPDFButton';
+import {
+  useFacturaSequence,
+  manualFacturaNumberError,
+  manualFacturaNumberPayload,
+  MANUAL_FACTURA_NUMBER_MAX,
+} from '@/lib/facturaNumbering';
 
 const STATUS_COLORS = {
   DRAFT: 'gray', CONFIRMED: 'blue', PICKING: 'yellow',
@@ -28,14 +34,23 @@ export default function OrderDetailPage() {
   const [nit, setNit] = useState('');
   const [invoiceNotes, setInvoiceNotes] = useState('');
   const [invoiceError, setInvoiceError] = useState('');
+  const [facturaNumber, setFacturaNumber] = useState('');
 
   const { data: order, isLoading } = useQuery({
     queryKey: ['sales-order', id],
     queryFn: () => api.get(`/sales/orders/${id}`).then(r => r.data.data),
   });
 
+  // Only asked for once the invoice form is open.
+  const sequence = useFacturaSequence(showInvoiceForm);
+  const numberError = sequence.manual === true ? manualFacturaNumberError(facturaNumber) : null;
+
   const createInvoice = useMutation({
-    mutationFn: () => api.post(`/sales/orders/${id}/invoice`, { customer_nit: nit, notes: invoiceNotes }),
+    mutationFn: () => api.post(`/sales/orders/${id}/invoice`, {
+      customer_nit: nit,
+      notes: invoiceNotes,
+      factura_number: manualFacturaNumberPayload(sequence.manual, facturaNumber),
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-order', id] });
       qc.invalidateQueries({ queryKey: ['sales-orders'] });
@@ -72,13 +87,37 @@ export default function OrderDetailPage() {
   const [returnNotes, setReturnNotes] = useState('');
   const [showReturnForm, setShowReturnForm] = useState(false);
   const [returnError, setReturnError] = useState('');
+  const [returnFacturaNumber, setReturnFacturaNumber] = useState('');
+
+  // The credit note this posts draws from the FACTURA series — see the route —
+  // so the return is subject to the same numbering mode as the forward invoice
+  // and must ask the same question. Its OWN instance of the hook, enabled only
+  // while the return form is open: the two forms open independently, and a
+  // shared `showInvoiceForm || showReturnForm` flag would let the return inherit
+  // an answer fetched for the invoice form instead of revalidating for itself.
+  const returnSequence = useFacturaSequence(showReturnForm);
+  const returnNumberError =
+    returnSequence.manual === true ? manualFacturaNumberError(returnFacturaNumber) : null;
+
+  const closeReturnForm = () => {
+    setShowReturnForm(false);
+    setReturnError('');
+    // The typed number is cleared with the form. Leaving it would offer the
+    // previous credit note's number as a default on the next return, and a
+    // reused legal number is refused by the unique constraint at best.
+    setReturnFacturaNumber('');
+  };
 
   const returnOrder = useMutation({
-    mutationFn: () => api.post(`/sales/orders/${id}/return`, { notes: returnNotes }),
+    mutationFn: () => api.post(`/sales/orders/${id}/return`, {
+      notes: returnNotes,
+      // Omitted entirely on an automatic series: the backend rejects a supplied
+      // number there rather than ignoring it.
+      factura_number: manualFacturaNumberPayload(returnSequence.manual, returnFacturaNumber),
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-order', id] });
-      setShowReturnForm(false);
-      setReturnError('');
+      closeReturnForm();
     },
     onError: (err: any) => setReturnError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Return failed'),
   });
@@ -297,7 +336,7 @@ export default function OrderDetailPage() {
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
                 {hasInvoice
-                  ? `Factura #${String(order.factura.factura_number).padStart(6, '0')} — ${new Date(order.factura.invoice_date).toLocaleDateString()}`
+                  ? `Factura #${order.factura.factura_number} — ${new Date(order.factura.invoice_date).toLocaleDateString()}`
                   : isInvoiceable
                   ? 'This order is ready to be invoiced.'
                   : `Orders in ${order.status} status cannot be invoiced yet.`
@@ -347,6 +386,27 @@ export default function OrderDetailPage() {
               </div>
             </div>
 
+            {sequence.manual === true && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Factura number <span className="text-red-500">*</span>
+                  <span className="ml-2 text-gray-400 font-normal">
+                    typed from the pre-printed form — this series is set to manual
+                  </span>
+                </label>
+                <input
+                  className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-200"
+                  placeholder="e.g. A-04-0001918"
+                  maxLength={MANUAL_FACTURA_NUMBER_MAX}
+                  value={facturaNumber}
+                  onChange={e => setFacturaNumber(e.target.value)}
+                />
+                {facturaNumber.length > 0 && numberError && (
+                  <p className="mt-1 text-xs text-red-600">{numberError}</p>
+                )}
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
               <input
@@ -377,6 +437,24 @@ export default function OrderDetailPage() {
               </div>
             </div>
 
+            {/* Fail closed: never assume automatic while the answer is unknown. */}
+            {sequence.blockingReason && (
+              <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p>{sequence.blockingReason}</p>
+                  {sequence.status === 'error' && (
+                    <button
+                      onClick={() => sequence.refetch()}
+                      className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline"
+                    >
+                      <RefreshCw className="h-3 w-3" /> Try again
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {invoiceError && (
               <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">
                 <AlertCircle className="h-4 w-4 shrink-0" /> {invoiceError}
@@ -386,7 +464,7 @@ export default function OrderDetailPage() {
             <div className="flex gap-3">
               <button
                 onClick={() => createInvoice.mutate()}
-                disabled={createInvoice.isPending}
+                disabled={createInvoice.isPending || sequence.status !== 'ready' || numberError !== null}
                 className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors"
               >
                 <FileText className="h-4 w-4" />
@@ -407,7 +485,7 @@ export default function OrderDetailPage() {
           <div className="mt-4 grid grid-cols-4 gap-4 text-sm text-center">
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-gray-500 mb-1">Factura #</p>
-              <p className="font-bold text-gray-900">{String(order.factura.factura_number).padStart(6, '0')}</p>
+              <p className="font-bold text-gray-900">{order.factura.factura_number}</p>
             </div>
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-blue-600 mb-1">IVA 13%</p>
@@ -448,11 +526,54 @@ export default function OrderDetailPage() {
               />
             </div>
 
+            {/* The credit note's legal number, only when a person supplies it. */}
+            {returnSequence.manual === true && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Credit note number <span className="text-red-500">*</span>
+                  <span className="ml-2 text-gray-400 font-normal">
+                    typed from the pre-printed form — the factura series is set to manual
+                  </span>
+                </label>
+                <input
+                  className="w-full border border-orange-200 rounded-xl px-4 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-200 bg-white"
+                  placeholder="e.g. A-04-0001919"
+                  maxLength={MANUAL_FACTURA_NUMBER_MAX}
+                  value={returnFacturaNumber}
+                  onChange={e => setReturnFacturaNumber(e.target.value)}
+                />
+                {returnFacturaNumber.length > 0 && returnNumberError && (
+                  <p className="mt-1 text-xs text-red-600">{returnNumberError}</p>
+                )}
+              </div>
+            )}
+
+            {/* Fail closed: never assume automatic while the answer is unknown. */}
+            {returnSequence.blockingReason && (
+              <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p>{returnSequence.blockingReason}</p>
+                  {returnSequence.status === 'error' && (
+                    <button
+                      onClick={() => returnSequence.refetch()}
+                      className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline"
+                    >
+                      <RefreshCw className="h-3 w-3" /> Try again
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="bg-orange-100/60 border border-orange-200 rounded-xl p-4 text-sm text-orange-800">
               <p className="font-semibold mb-1">This will:</p>
               <ul className="list-disc list-inside space-y-0.5 text-xs">
                 <li>Restore {order.lines?.length ?? 0} line(s) of stock back to inventory</li>
-                <li>Issue a credit note Factura (negative amount)</li>
+                <li>
+                  Issue a credit note Factura (negative amount)
+                  {returnSequence.manual === true && ' with the number entered above'}
+                </li>
                 <li>Reverse all GL journal entries for this order</li>
               </ul>
             </div>
@@ -466,14 +587,18 @@ export default function OrderDetailPage() {
             <div className="flex gap-3">
               <button
                 onClick={() => returnOrder.mutate()}
-                disabled={returnOrder.isPending}
+                disabled={
+                  returnOrder.isPending ||
+                  returnSequence.status !== 'ready' ||
+                  returnNumberError !== null
+                }
                 className="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors"
               >
                 <RotateCcw className="h-4 w-4" />
                 {returnOrder.isPending ? 'Processing...' : 'Confirm Return'}
               </button>
               <button
-                onClick={() => { setShowReturnForm(false); setReturnError(''); }}
+                onClick={closeReturnForm}
                 className="px-5 py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 Cancel
