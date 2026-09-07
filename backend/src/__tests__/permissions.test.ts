@@ -3,8 +3,11 @@
  * Verifies role-to-permission mapping without any HTTP or DB calls.
  */
 
+import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { hasPermission, requirePermission, type Permission } from '../shared/middleware/permissions';
-import { Request, Response, NextFunction } from 'express';
+import { AppError } from '../shared/errors/AppError';
+import type { AppEnv } from '../shared/context';
 
 // ── hasPermission() ────────────────────────────────────────────────────────────
 
@@ -98,38 +101,73 @@ describe('hasPermission()', () => {
 
 // ── requirePermission() middleware ────────────────────────────────────────────
 
-function makeReq(role: string): Partial<Request> {
-  return { user: { id: 'user-1', email: 'test@test.com', role, tenantId: 'tenant-1' } };
+/**
+ * `requirePermission` is Hono middleware: it reads `c.get('user')` and THROWS an
+ * AppError. It does not take an Express `(req, res, next)` triple and never calls
+ * `next(error)` — which is why the previous version of this section stopped
+ * compiling. The error is captured through `app.onError`, where a real request's
+ * error would land.
+ *
+ * `role: undefined` reproduces requirePermission running with no authMiddleware
+ * in front of it, which must be a 401 rather than a 403.
+ */
+function buildPermissionApp(role: string | undefined, permission: Permission) {
+  const captured: { error: unknown; handlerRan: boolean } = {
+    error: undefined,
+    handlerRan: false,
+  };
+  const app = new Hono<AppEnv>();
+
+  const setUser: MiddlewareHandler<AppEnv> = async (c, next) => {
+    if (role !== undefined) {
+      c.set('user', { id: 'user-1', email: 'test@test.com', role, tenantId: 'tenant-1' });
+    }
+    await next();
+  };
+
+  app.get('/guarded', setUser, requirePermission(permission), (c) => {
+    captured.handlerRan = true;
+    return c.json({ ok: true });
+  });
+
+  app.onError((err, c) => {
+    captured.error = err;
+    return c.json({ ok: false }, 500);
+  });
+
+  return { app, captured };
 }
 
 describe('requirePermission() middleware', () => {
-  it('calls next() when user has the permission', () => {
-    const req  = makeReq('admin') as Request;
-    const res  = {} as Response;
-    const next = jest.fn() as NextFunction;
+  it('continues when the user has the permission', async () => {
+    const { app, captured } = buildPermissionApp('admin', 'sales:create');
 
-    requirePermission('sales:create')(req, res, next);
+    const res = await app.request('/guarded');
 
-    expect(next).toHaveBeenCalledWith(); // called with no args = success
+    expect(captured.error).toBeUndefined();
+    expect(res.status).toBe(200);
+    expect(captured.handlerRan).toBe(true);
   });
 
-  it('calls next(AppError) when user lacks permission', () => {
-    const req  = makeReq('cashier') as Request;
-    const res  = {} as Response;
-    const next = jest.fn() as NextFunction;
+  it('throws AppError 403 when the user lacks the permission', async () => {
+    const { app, captured } = buildPermissionApp('cashier', 'finance:journal');
 
-    requirePermission('finance:journal')(req, res, next);
+    await app.request('/guarded');
 
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
+    expect(captured.error).toBeInstanceOf(AppError);
+    expect(captured.error).toMatchObject({ statusCode: 403 });
+    expect(captured.handlerRan).toBe(false);
   });
 
-  it('calls next(AppError 401) when req.user is missing', () => {
-    const req  = { user: undefined } as unknown as Request;
-    const res  = {} as Response;
-    const next = jest.fn() as NextFunction;
+  it('throws AppError 401 when there is no user on the context', async () => {
+    const { app, captured } = buildPermissionApp(undefined, 'products:read');
 
-    requirePermission('products:read')(req, res, next);
+    await app.request('/guarded');
 
-    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 401 }));
+    expect(captured.error).toBeInstanceOf(AppError);
+    // 401 not 403: missing authentication is a different failure from a denied
+    // permission, and the middleware distinguishes them.
+    expect(captured.error).toMatchObject({ statusCode: 401 });
+    expect(captured.handlerRan).toBe(false);
   });
 });

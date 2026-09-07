@@ -1,11 +1,33 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, CheckCircle, Save, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
+
+/**
+ * Only the fields this screen actually reads. Typed so the query result is not
+ * `unknown` — without it every `count.status` / `count.lines` access below is a
+ * compile error, which is what broke the production build.
+ */
+interface CountLine {
+  id:           string;
+  system_qty:   number;
+  counted_qty:  number | null;
+  product?:     { name?: string; sku?: string } | null;
+  variant?:     { sku_variant?: string; attributes?: Record<string, string> | null } | null;
+  location?:    { code?: string; zone?: { warehouse?: { name?: string } | null } | null } | null;
+}
+
+interface InventoryCount {
+  id:        string;
+  reference: string;
+  notes:     string | null;
+  status:    string;
+  lines:     CountLine[];
+}
 
 export default function CountDetailPage() {
   const { id } = useParams();
@@ -15,17 +37,24 @@ export default function CountDetailPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState('');
 
-  const { data: count, isLoading } = useQuery({
+  const { data: count, isLoading } = useQuery<InventoryCount>({
     queryKey: ['inventory-count', id],
     queryFn: () => api.get(`/inventory-counts/${id}`).then(r => r.data.data),
-    onSuccess: (data: any) => {
-      const initial: Record<string, number | ''> = {};
-      data.lines.forEach((l: any) => {
-        initial[l.id] = l.counted_qty ?? '';
-      });
-      setCounts(initial);
-    },
   });
+
+  // TanStack Query v5 removed the `onSuccess` option this used to seed the
+  // editable quantities from, so the seeding moved here. It re-runs whenever a
+  // fetch yields a new object — which is what keeps the inputs in step with the
+  // server after `updateLine` or `finalize` invalidates the query. It sets state
+  // from `count` and never writes to `count`, so it cannot loop.
+  useEffect(() => {
+    if (!count) return;
+    const initial: Record<string, number | ''> = {};
+    (count.lines ?? []).forEach((l) => {
+      initial[l.id] = l.counted_qty ?? '';
+    });
+    setCounts(initial);
+  }, [count]);
 
   const updateLine = async (lineId: string, val: number) => {
     setSaving(lineId);

@@ -45,7 +45,11 @@ export default function OrderDetailPage() {
     onError: (err: any) => setInvoiceError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Failed to issue invoice'),
   });
 
-  const confirm = useMutation({
+  // Named `confirmOrder`, not `confirm`: the old name shadowed the global
+  // `window.confirm`, so the cancel button below was calling this mutation object
+  // as if it were a function. TypeScript caught it — the object is not callable —
+  // and it would have thrown at runtime the first time anyone pressed Cancel.
+  const confirmOrder = useMutation({
     mutationFn: () => api.post(`/sales/orders/${id}/confirm`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sales-order', id] }),
   });
@@ -137,9 +141,9 @@ export default function OrderDetailPage() {
           <div className="flex flex-wrap gap-2 items-center">
             <SalesOrderPDFButton order={order} />
             {order.status === 'DRAFT' && (
-              <button onClick={() => confirm.mutate()} disabled={confirm.isPending}
+              <button onClick={() => confirmOrder.mutate()} disabled={confirmOrder.isPending}
                 className="flex items-center gap-1.5 text-sm bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-lg font-medium disabled:opacity-50 transition-colors">
-                <CheckCircle className="h-4 w-4" /> {confirm.isPending ? 'Confirming...' : 'Confirm'}
+                <CheckCircle className="h-4 w-4" /> {confirmOrder.isPending ? 'Confirming...' : 'Confirm'}
               </button>
             )}
             {order.status === 'CONFIRMED' && (
@@ -155,7 +159,7 @@ export default function OrderDetailPage() {
               </button>
             )}
             {['DRAFT', 'CONFIRMED'].includes(order.status) && (
-              <button onClick={() => { if (confirm(`Cancel order ${order.order_number}?`)) cancel.mutate(); }}
+              <button onClick={() => { if (window.confirm(`Cancel order ${order.order_number}?`)) cancel.mutate(); }}
                 className="flex items-center gap-1.5 text-sm border border-red-200 text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg font-medium transition-colors">
                 <XCircle className="h-4 w-4" /> Cancel
               </button>
