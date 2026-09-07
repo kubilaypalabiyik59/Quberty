@@ -33,7 +33,7 @@ and is architected as a future multi-tenant SaaS product ($5,000+/year contracts
 
 ```
 skarpine/
-├── backend/              ← Node.js + Express + Prisma
+├── backend/              ← Node.js + Hono + Prisma
 │   └── src/
 │       ├── modules/
 │       │   ├── auth/

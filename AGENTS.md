@@ -1,6 +1,6 @@
-# CLAUDE.md — Skarpine / Quberty ERP
+# AGENTS.md — Skarpine / Quberty ERP
 
-Project-specific instructions. Complements the global `~/.claude/CLAUDE.md`; does not replace it.
+Project-specific instructions. Complements the global `~/.Codex/AGENTS.md`; does not replace it.
 Read `HANDOVER.md` for current status before starting work.
 
 ---

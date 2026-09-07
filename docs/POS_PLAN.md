@@ -148,7 +148,9 @@ This is the heart of the POS. One HTTP request, one database transaction, all-or
 ## 5. React Native App Structure
 
 ```
-skarpine-pos/               ← separate directory, same repo or sibling
+skarpine-pos/               ← physically nested, independently versioned: its own Git
+                              repository with its own remote (Quberty-POS), NOT tracked
+                              by the parent repository (updated 2026-09-07)
 ├── app/
 │   ├── _layout.tsx         ← root layout, auth guard
 │   ├── login.tsx           ← screen 1

@@ -231,7 +231,13 @@ mock) — untouched by any of this work. Frontend type-check: 6 errors, all in f
    negotiates net, that is a label change, not an engine change.
 4. **Per-store P&L** — every day without financial dimensions is a day of transactions whose store
    attribution cannot be recovered.
-5. `skarpine-pos` still has uncommitted content. Separate repo, untouched.
+5. **`skarpine-pos` — Git recoverability is resolved; the application is not.** Updated 2026-09-07.
+   This item previously read "still has uncommitted content". That is no longer true: the POS was
+   committed to `codex/wip-incomplete-pos-2026-09-06` (`09fa4de`) and pushed to its own private
+   remote `Quberty-POS`, and the parent's unregistered gitlink was removed, so it is a fully
+   independent nested repository. What remains open is a product question, not a Git one: the POS
+   application is **functionally incomplete** and its type-check still reports **five known
+   TypeScript errors**. It stays out of scope until Kubi scopes POS work.
 
 ---
 

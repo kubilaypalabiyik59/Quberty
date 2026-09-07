@@ -2,6 +2,11 @@
 
 > Living context document. Read this first in a new session.
 >
+> **Codex/Claude collaboration:** after this file, read
+> [docs/collaboration/CODEX_MEMORY.md](docs/collaboration/CODEX_MEMORY.md) and
+> [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md) before
+> continuing an active shared work item.
+>
 > **Smoke-testing the 2026-08-16 session? Start at [docs/SMOKE_TEST.md](docs/SMOKE_TEST.md)** —
 > what to click, what to expect, and the four things that need Kubi rather than me.
 >
@@ -20,6 +25,15 @@
 >    itself — a boolean that will later want three values is an enum from the start.
 > 5. **Verify everything through Microsoft.** Cite the Learn page. Where none exists, label it
 >    **[REC]** and say so.
+>
+> **Added 2026-09-07 — Kubi's permanent product rule.** It restates rules 1, 3 and 4 as one
+> standing decision and adds the part that was missing:
+> 6. **Existing hard-coding is remediated incrementally, when its process is next touched.** This is
+>    not authorisation for a sweeping refactor. It means a process is not finished while the code
+>    path being changed still resolves configuration with an `if`. Full text, including the schema-
+>    hook obligation, in
+>    [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md) §4.1.
+>    **It must be carried into every future implementation prompt.**
 >
 > The registry of what each module owns, what is built and what is missing:
 > [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
@@ -54,7 +68,7 @@ Microsoft Dynamics 365 F&O (waves, work templates, location directives, journal-
 finance).
 
 **Stack**
-- `backend/` — Node.js + Express + Prisma
+- `backend/` — Node.js + Hono + Prisma
 - `frontend/` — Next.js 14 (App Router, Pages under `src/app/(erp)` and `src/app/(store)`),
   Tailwind 3, TanStack Query + Table, Zustand, Radix primitives, Recharts, Framer Motion,
   Playwright for E2E
@@ -66,7 +80,13 @@ finance).
   **Where production runs, if anywhere, is not recorded anywhere in this repo — still to confirm.**
   `schema.prisma` uses the Supabase pooler pattern; migrations must run against `DIRECT_URL`, not the
   pooled `DATABASE_URL`. Postgres RLS is available, which matters for the multi-tenancy gap.
-- `skarpine-pos/` — separate nested repo (mobile/terminal POS). NOT a submodule — there is no `.gitmodules`; commit from inside that directory.
+- `skarpine-pos/` — separate nested Git repository (mobile/terminal POS) with its own remote
+  (`Quberty-POS`), **not tracked by this repository at all** since 2026-09-07. It was never
+  *configured* as a Git submodule, because no `.gitmodules` entry ever existed — but the parent
+  index nevertheless **represented it as an unregistered gitlink**, a pinned SHA that `git status`
+  reported while `git submodule` could not see it. That is why older documents call it a submodule.
+  The V1 reconstruction commit removes the gitlink. The directory remains physically present,
+  committed and clean. Commit it from inside that directory; never from the parent.
 - `docs/`, `alm/` — documentation and lifecycle material
 
 **Overall stage**: BETA / MVP. See `Roadmap_Improvement_Prod.md` for the production audit
@@ -85,9 +105,12 @@ reconciliation, COA templates).
 Most recent commit before this session added a Spanish end-user PDF manual plus
 accumulated module work.
 
-**Open working-tree state**: the `skarpine-pos` submodule has uncommitted/untracked
-content. It is a separate repository — commit it from inside that directory, not from
-the parent repo.
+**Working-tree state, corrected 2026-09-07**: this section previously reported the POS as having
+uncommitted content. That is no longer true. The POS work was committed on its own branch
+`codex/wip-incomplete-pos-2026-09-06` (`09fa4de`) and pushed to the private remote `Quberty-POS`;
+its tree is clean. The commit is a **preservation snapshot of an incomplete application**, not a
+completion claim — a POS type-check still reports five known TypeScript errors. Commit it from
+inside that directory, never from the parent.
 
 ---
 
@@ -455,8 +478,9 @@ purchase total in the system — that is a decision, not a bug fix.
 - Bare `@unique` on `sales_orders.order_number` / `purchase_orders.po_number` is still not
   tenant-scoped (NOW-list item 11). All **new** tables are scoped correctly; the old two need their
   own migration and were left alone deliberately.
-- `skarpine-pos` still has uncommitted content. It is a separate repo and unrelated to this work —
-  left untouched.
+- ~~`skarpine-pos` still has uncommitted content. It is a separate repo and unrelated to this work —
+  left untouched.~~ **Resolved 2026-09-06:** committed on its own branch and pushed to the private
+  remote `Quberty-POS`; the tree is clean. See §5.
 
 ---
 
@@ -1783,8 +1807,16 @@ be an empty shell. **Shipment lines + a Load model + outbound work come first.**
 
 ## 5. Key Decisions
 
-- **POS lives in its own repository** (`skarpine-pos`), not in the monorepo. Note: older docs call
-  it a git submodule; there is no `.gitmodules` — it is a nested independent repo.
+- **POS lives in its own repository** (`skarpine-pos`), not in the monorepo, and since 2026-09-07
+  this repository does not track it at all. It was never **configured** as a Git submodule, because
+  no `.gitmodules` entry ever existed — but the parent index nevertheless **represented it as an
+  unregistered gitlink**, a pinned SHA that `git status` reported while `git submodule` could not
+  see it. That half-state is the source of every older document that calls it a submodule. The
+  gitlink was removed in the V1 reconstruction commit.
+  *History, for the record:* the POS tree was uncommitted until 2026-09-06,
+  when it was committed to `codex/wip-incomplete-pos-2026-09-06` (`09fa4de`) and pushed to the
+  private remote `Quberty-POS`. That commit preserves an **incomplete** application — five known
+  TypeScript errors remain — and is not a completion claim.
 - **D365 F&O patterns are deliberate** in the warehouse and finance modules — waves, work
   templates, location directives, journal-based posting. Do not "simplify" these away;
   they are the product's differentiator and match Kubi's domain expertise.
@@ -1840,8 +1872,10 @@ next action.**
   `Roadmap_Improvement_Prod.md` for the gap list. Not yet closed.
 - Frontend has no design system (section 4).
 - Inverted KPI trend colours on the dashboard (section 4).
-- `skarpine-pos` has uncommitted content in the working tree. Separate repo, unrelated to the
-  process-chain work; deliberately left untouched.
+- ~~`skarpine-pos` has uncommitted content in the working tree.~~ **Closed 2026-09-06** — committed
+  and pushed to `Quberty-POS`, tree clean. What remains open is not a Git issue: the POS
+  application is functionally incomplete and its type-check reports five known errors. It is out of
+  scope until Kubi scopes POS work.
 - ~~Purchase tax arithmetic is incoherent~~ — **fixed 2026-08-16** (§3c). What remains open is the
   historical Bs 637,47 and the Ley 1733 decree status.
 - **Silent-failure dialogs** — the first three dialogs written for the process chain rendered their

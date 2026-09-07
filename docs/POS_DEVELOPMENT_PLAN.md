@@ -5,6 +5,28 @@
 
 ---
 
+> ## Current status — added 2026-09-07
+>
+> **This document is the original implementation plan and is preserved as such.** Its checklists
+> describe what was *planned*, not what is finished. Nothing below is marked complete by this note.
+>
+> What is true today:
+>
+> - An **incomplete** POS implementation exists. It is not finished and must not be reported as
+>   delivered.
+> - It is preserved in its own private remote repository, `Quberty-POS`, on branch
+>   `codex/wip-incomplete-pos-2026-09-06` at `09fa4de`. Git recoverability is therefore resolved.
+> - `skarpine-pos/` is physically nested inside the ERP checkout but **independently versioned**.
+>   The parent repository no longer tracks it: it was never *configured* as a Git submodule (no
+>   `.gitmodules` entry ever existed), but the parent index did represent it as an unregistered
+>   gitlink, and that gitlink was removed in the V1 reconstruction commit.
+> - The POS type-check still reports **five known TypeScript errors**: one missing argument in
+>   `app/pos.tsx`, one missing `CartLine.key` in `VariantPicker.tsx`, and three Zustand
+>   persist-storage type incompatibilities.
+> - POS work is **out of scope** until Kubi explicitly scopes it.
+
+---
+
 ## Architecture Decisions (Final)
 
 | Concern | Choice | Reason |
