@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { formatRate, type TaxPreview } from '@/lib/useTaxPreview';
 
 const STATUS_ES: Record<string, string> = {
   DRAFT: 'Borrador', CONFIRMED: 'Confirmado', PICKING: 'En Preparación',
@@ -91,6 +92,15 @@ interface SalesOrderPDFProps {
     customer?: { first_name: string; last_name: string; code?: string; email?: string } | null;
     lines: OrderLine[];
   };
+  /**
+   * Resolved by the caller from the backend tax engine — see lib/useTaxPreview.
+   *
+   * REQUIRED, and with no default. A react-pdf document cannot fetch, so if this
+   * were optional the component would need a fallback, and the only fallback
+   * available is zero — which is the exact thing that must never be printed on a
+   * document a customer keeps.
+   */
+  tax: TaxPreview;
 }
 
 function variantLabel(line: OrderLine): string {
@@ -102,11 +112,18 @@ function variantLabel(line: OrderLine): string {
   return ` (${line.variant.sku_variant})`;
 }
 
-export function SalesOrderPDF({ order }: SalesOrderPDFProps) {
-  const total    = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva      = total - subtotal;
-  const it       = subtotal * 0.03;
+/**
+ * The tax figures are a PROP, not something this component works out.
+ *
+ * It used to run `total / 1.13` and `subtotal * 0.03` here — the arithmetic the
+ * backend tax test records as a defect — so the PDF the customer keeps could
+ * disagree with the ledger about the same order. A react-pdf document cannot
+ * fetch, so the caller (SalesOrderPDFButton) asks the engine and passes the
+ * answer down; that also keeps this component pure, which is what react-pdf
+ * wants.
+ */
+export function SalesOrderPDF({ order, tax }: SalesOrderPDFProps) {
+  const total = Number(order.total_amount);
   const customerName = order.customer
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : 'Walk-in Customer';
@@ -183,17 +200,40 @@ export function SalesOrderPDF({ order }: SalesOrderPDFProps) {
         <View style={styles.totalsBlock}>
           <View style={styles.totalsInner}>
             <View style={styles.totalsRow}>
-              <Text style={styles.totalsLabel}>Subtotal (sin IVA)</Text>
-              <Text style={styles.totalsValue}>{fmt(subtotal)}</Text>
+              <Text style={styles.totalsLabel}>Subtotal</Text>
+              <Text style={styles.totalsValue}>{fmt(tax.subtotal)}</Text>
             </View>
-            <View style={styles.totalsRow}>
-              <Text style={styles.totalsLabel}>IVA 13%</Text>
-              <Text style={styles.totalsValue}>{fmt(iva)}</Text>
-            </View>
-            <View style={styles.totalsRow}>
-              <Text style={styles.totalsLabel}>IT 3%</Text>
-              <Text style={styles.totalsValue}>{fmt(it)}</Text>
-            </View>
+            {/* One row per tax code that actually applied, labelled and rated
+                from the code itself. The literal "IVA 13%" / "IT 3%" this
+                replaced would have kept printing 13% on a customer's document
+                after a configured rate changed, and asserted a turnover tax on
+                every tenant whether or not one applies. */}
+            {tax.lines.length > 0
+              ? tax.lines.map((l) => (
+                  <View style={styles.totalsRow} key={l.code}>
+                    <Text style={styles.totalsLabel}>{l.code} {formatRate(l.rate)}</Text>
+                    <Text style={styles.totalsValue}>{fmt(l.amount)}</Text>
+                  </View>
+                ))
+              : (
+                // The LEGACY fallback returns amounts with no line detail. Each
+                // row is printed only when it carries a figure, so an
+                // unprovisioned tenant is never told it has a tax it does not.
+                <>
+                  {tax.vat > 0 && (
+                    <View style={styles.totalsRow}>
+                      <Text style={styles.totalsLabel}>IVA</Text>
+                      <Text style={styles.totalsValue}>{fmt(tax.vat)}</Text>
+                    </View>
+                  )}
+                  {tax.turnover > 0 && (
+                    <View style={styles.totalsRow}>
+                      <Text style={styles.totalsLabel}>IT</Text>
+                      <Text style={styles.totalsValue}>{fmt(tax.turnover)}</Text>
+                    </View>
+                  )}
+                </>
+              )}
             <View style={styles.totalsRowFinal}>
               <Text style={styles.totalsFinalLabel}>TOTAL</Text>
               <Text style={styles.totalsFinalValue}>{fmt(total)}</Text>

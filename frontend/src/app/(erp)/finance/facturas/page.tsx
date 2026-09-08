@@ -12,6 +12,7 @@ import {
   manualFacturaNumberPayload,
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
+import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
 
 export default function FacturasPage() {
   const qc = useQueryClient();
@@ -55,10 +56,14 @@ export default function FacturasPage() {
     onError: (err: any) => alert(err.response?.data?.message ?? 'Failed to cancel'),
   });
 
+  // The engine that will post this factura works out its own tax. This screen
+  // used to run `total / 1.13` and `subtotal * 0.03`, the arithmetic the backend
+  // tax test records as a defect: it under-reported IVA on every preview and
+  // hardcoded Bolivia into a screen the product is meant to sell elsewhere.
+  //
+  // Asked for only while the form is open — the list itself issues nothing.
   const total = Number(form.total_amount) || 0;
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
+  const taxPreview = useTaxPreview(total, { enabled: showForm });
 
   const invoiceLabel = (facturasData?.facturas?.[0] as any)?.invoice_metadata?.invoice_label ?? 'Factura';
 
@@ -105,18 +110,54 @@ export default function FacturasPage() {
 
           {total > 0 && (
             <div className="bg-gray-50 rounded-xl p-4 mb-4 text-sm space-y-1">
-              <div className="flex justify-between text-gray-500">
-                <span>Subtotal (sin IVA)</span>
-                <span>Bs. {subtotal.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-gray-500">
-                <span>IVA 13% (incluido)</span>
-                <span>Bs. {iva.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-gray-500">
-                <span>IT 3% (sobre subtotal)</span>
-                <span>Bs. {it.toFixed(2)}</span>
-              </div>
+              {/* Never rendered as zero while unknown: this is the breakdown of a
+                  legal document, and "IVA Bs. 0.00" is a claim, not a placeholder. */}
+              {taxPreview.tax ? (
+                <>
+                  <div className="flex justify-between text-gray-500">
+                    <span>Subtotal</span>
+                    <span>Bs. {taxPreview.tax.subtotal.toFixed(2)}</span>
+                  </div>
+                  {taxPreview.tax.lines.length > 0
+                    ? taxPreview.tax.lines.map(l => (
+                        <div key={l.code} className="flex justify-between text-gray-500">
+                          <span>{l.code} {formatRate(l.rate)}</span>
+                          <span>Bs. {l.amount.toFixed(2)}</span>
+                        </div>
+                      ))
+                    : (
+                      // LEGACY fallback: amounts without line detail. A row appears
+                      // only when it carries a figure.
+                      <>
+                        {taxPreview.tax.vat > 0 && (
+                          <div className="flex justify-between text-gray-500">
+                            <span>IVA</span><span>Bs. {taxPreview.tax.vat.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {taxPreview.tax.turnover > 0 && (
+                          <div className="flex justify-between text-gray-500">
+                            <span>IT</span><span>Bs. {taxPreview.tax.turnover.toFixed(2)}</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                </>
+              ) : taxPreview.status === 'error' ? (
+                <div className="flex items-start gap-2 text-amber-800">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p>{taxPreview.error}</p>
+                    <button onClick={taxPreview.retry} className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline">
+                      <RefreshCw className="h-3 w-3" /> Try again
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-between text-gray-400">
+                  <span>Tax breakdown</span>
+                  <span>{taxPreview.status === 'loading' ? 'calculating…' : '—'}</span>
+                </div>
+              )}
               <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-1">
                 <span>Total</span>
                 <span>Bs. {total.toFixed(2)}</span>

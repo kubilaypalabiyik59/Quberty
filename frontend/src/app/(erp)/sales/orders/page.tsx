@@ -11,6 +11,7 @@ import {
   manualFacturaNumberPayload,
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
+import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
 
 /**
  * Two surfaces on this page issue a legal invoice number: the invoice modal and
@@ -164,10 +165,12 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : (order.shipping_address as any)?.name ?? 'Cliente Mostrador';
 
+  // Asked of the engine that will post this invoice, so the figure in this dialog
+  // is the figure that reaches the ledger. The `total / 1.13` this replaced is
+  // the arithmetic the backend tax test records as a defect. The modal exists
+  // only while it is open, so mounting is opening.
   const total = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
+  const taxPreview = useTaxPreview(total, { partyId: order.customer_id ?? null });
 
   const create = useMutation({
     mutationFn: () => api.post(`/sales/orders/${order.id}/invoice`, {
@@ -221,9 +224,56 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
               placeholder={`Factura por Orden ${order.order_number}`} value={notes} onChange={e => setNotes(e.target.value)} />
           </div>
           <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-2 text-sm">
-            <div className="flex justify-between text-gray-600"><span>Subtotal neto (sin IVA)</span><span>Bs. {subtotal.toFixed(2)}</span></div>
-            <div className="flex justify-between text-blue-700"><span>IVA 13% (incluido)</span><span>Bs. {iva.toFixed(2)}</span></div>
-            <div className="flex justify-between text-orange-600"><span>IT 3% (sobre neto)</span><span>Bs. {it.toFixed(2)}</span></div>
+            {/* Labelled from the tax codes that applied, not from a literal
+                "13%" that would keep saying 13% after a rate change. Never shown
+                as zero while unknown. */}
+            {taxPreview.tax ? (
+              <>
+                <div className="flex justify-between text-gray-600">
+                  <span>Subtotal</span><span>Bs. {taxPreview.tax.subtotal.toFixed(2)}</span>
+                </div>
+                {taxPreview.tax.lines.length > 0
+                  ? taxPreview.tax.lines.map(l => (
+                      <div key={l.code} className="flex justify-between text-blue-700">
+                        <span>{l.code} {formatRate(l.rate)}</span>
+                        <span>Bs. {l.amount.toFixed(2)}</span>
+                      </div>
+                    ))
+                  : (
+                    <>
+                      {taxPreview.tax.vat > 0 && (
+                        <div className="flex justify-between text-blue-700">
+                          <span>IVA</span><span>Bs. {taxPreview.tax.vat.toFixed(2)}</span>
+                        </div>
+                      )}
+                      {taxPreview.tax.turnover > 0 && (
+                        <div className="flex justify-between text-orange-600">
+                          <span>IT</span><span>Bs. {taxPreview.tax.turnover.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+              </>
+            ) : taxPreview.status === 'error' ? (
+              <div className="flex items-start gap-2 text-amber-800">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p>{taxPreview.error}</p>
+                  <p className="mt-0.5 text-xs text-gray-600">
+                    The factura is still calculated and posted by the server when it is issued;
+                    only this preview is unavailable.
+                  </p>
+                  <button onClick={taxPreview.retry} className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline">
+                    <RefreshCw className="h-3 w-3" /> Try again
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between text-gray-400">
+                <span>Tax breakdown</span>
+                <span>{taxPreview.status === 'loading' ? 'calculating…' : '—'}</span>
+              </div>
+            )}
             <div className="flex justify-between font-bold text-gray-900 border-t border-blue-200 pt-2"><span>Total</span><span>Bs. {total.toFixed(2)}</span></div>
           </div>
           <SequenceBlockedNote sequence={sequence} />

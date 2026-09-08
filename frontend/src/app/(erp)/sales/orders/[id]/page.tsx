@@ -18,6 +18,7 @@ import {
   manualFacturaNumberPayload,
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
+import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
 
 const STATUS_COLORS = {
   DRAFT: 'gray', CONFIRMED: 'blue', PICKING: 'yellow',
@@ -96,6 +97,25 @@ export default function OrderDetailPage() {
   // shared `showInvoiceForm || showReturnForm` flag would let the return inherit
   // an answer fetched for the invoice form instead of revalidating for itself.
   const returnSequence = useFacturaSequence(showReturnForm);
+
+  // ── Called HERE, above the loading and not-found returns ──────────────────
+  //
+  // React requires the same hooks in the same order on every render. This call
+  // used to sit below those guards, so the first (loading) render returned
+  // before reaching it and the loaded render invoked one hook more than the
+  // render before it — a Rules of Hooks violation that can desynchronise every
+  // subsequent hook on the page.
+  //
+  // `order` is undefined on that first render, so the arguments are written to
+  // be safe with no order at all, and `enabled` keeps a request from being sent
+  // until there IS an order and the invoice form is open. `useTaxPreview` also
+  // refuses a non-positive amount on its own, so the zero stand-in below can
+  // never reach the API.
+  const total = Number(order?.total_amount ?? 0);
+  const taxPreview = useTaxPreview(total, {
+    partyId: order?.customer_id ?? null,
+    enabled: !!order && showInvoiceForm,
+  });
   const returnNumberError =
     returnSequence.manual === true ? manualFacturaNumberError(returnFacturaNumber) : null;
 
@@ -145,11 +165,11 @@ export default function OrderDetailPage() {
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
     : (order.shipping_address as any)?.name ?? 'Walk-in Customer';
 
-  const total = Number(order.total_amount);
-  const subtotal = total / 1.13;
-  const iva = total - subtotal;
-  const it = subtotal * 0.03;
-
+  // NOTE on the preview declared above: it previews the tax an invoice WOULD
+  // carry. The issued-factura panel further down reads
+  // `order.factura.iva_amount` / `it_amount` — the split stored when the
+  // document was issued — and must keep doing so. A factura issued under an
+  // older rate is never redisplayed with today's.
   const isInvoiceable = INVOICEABLE_STATUSES.includes(order.status);
   const hasInvoice = !!order.invoice_id && !!order.factura;
 
@@ -417,24 +437,65 @@ export default function OrderDetailPage() {
               />
             </div>
 
-            {/* Tax breakdown */}
-            <div className="bg-red-50/40 border border-red-100 rounded-xl p-4 grid grid-cols-4 gap-4 text-sm text-center">
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Subtotal neto</p>
-                <p className="font-bold text-gray-900">Bs. {subtotal.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-red-500 mb-1">IVA 13%</p>
-                <p className="font-bold text-red-700">Bs. {iva.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-orange-600 mb-1">IT 3%</p>
-                <p className="font-bold text-orange-600">Bs. {it.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Total</p>
-                <p className="font-black text-gray-900">Bs. {total.toFixed(2)}</p>
-              </div>
+            {/* Tax breakdown — from the engine that will post this invoice.
+                Rows come from the tax codes that applied, so the labels stay
+                correct when a rate changes or a tenant has a different set of
+                taxes. Never rendered as zero while unknown. */}
+            <div className="bg-red-50/40 border border-red-100 rounded-xl p-4 text-sm">
+              {taxPreview.tax ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Subtotal neto</p>
+                    <p className="font-bold text-gray-900">Bs. {taxPreview.tax.subtotal.toFixed(2)}</p>
+                  </div>
+                  {taxPreview.tax.lines.length > 0
+                    ? taxPreview.tax.lines.map(l => (
+                        <div key={l.code}>
+                          <p className="text-xs text-red-500 mb-1">{l.code} {formatRate(l.rate)}</p>
+                          <p className="font-bold text-red-700">Bs. {l.amount.toFixed(2)}</p>
+                        </div>
+                      ))
+                    : (
+                      <>
+                        {taxPreview.tax.vat > 0 && (
+                          <div>
+                            <p className="text-xs text-red-500 mb-1">IVA</p>
+                            <p className="font-bold text-red-700">Bs. {taxPreview.tax.vat.toFixed(2)}</p>
+                          </div>
+                        )}
+                        {taxPreview.tax.turnover > 0 && (
+                          <div>
+                            <p className="text-xs text-orange-600 mb-1">IT</p>
+                            <p className="font-bold text-orange-600">Bs. {taxPreview.tax.turnover.toFixed(2)}</p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Total</p>
+                    <p className="font-black text-gray-900">Bs. {total.toFixed(2)}</p>
+                  </div>
+                </div>
+              ) : taxPreview.status === 'error' ? (
+                <div className="flex items-start gap-2 text-amber-800">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p>{taxPreview.error}</p>
+                    <p className="mt-0.5 text-xs text-gray-600">
+                      The factura itself is still calculated and posted by the server when it is
+                      issued; only this preview is unavailable.
+                    </p>
+                    <button onClick={taxPreview.retry} className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-amber-900 underline">
+                      <RefreshCw className="h-3 w-3" /> Try again
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between text-gray-400">
+                  <span>Tax breakdown</span>
+                  <span>{taxPreview.status === 'loading' ? 'calculating…' : '—'}</span>
+                </div>
+              )}
             </div>
 
             {/* Fail closed: never assume automatic while the answer is unknown. */}

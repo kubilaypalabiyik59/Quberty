@@ -1353,3 +1353,314 @@ number; Bolivia's credit-note series remains legally unverified; a fiscal-year a
 still needs a year/legal-entity-aware history design; the repeated web control should later become a
 shared component; and `backend/scripts/` remains outside the compiler gate. None authorizes V3 or a
 database change.
+
+### WORK-009 — Reconstruct V3: safe server-driven tax preview
+
+- Priority: P0 reconstruction (final reconstruction slice)
+- Status: IMPLEMENTED — awaiting Codex independent review
+- Owner: Claude (execution); Codex (independent review and acceptance)
+- Relevant catalog entry: `65.20 Manage sales orders`. The catalog locates this work; it is not a
+  feature-parity claim. Scope status `CORE_NOW`; implementation status after this item
+  `IMPLEMENTED_UNVERIFIED` — the backend contract has automated coverage, the frontend has
+  compilation and code review only, and no browser or database run was performed.
+- Parameter owner: the tax engine already owns every rate and side (`TaxCode`, `TaxGroup`,
+  `ItemTaxGroup`, resolved through `SalesParameters` defaults). This item adds no new parameter and
+  moves configuration OUT of client code rather than introducing more.
+- Schema hook decision: **NONE_REQUIRED for this item, and none added.** The route is read-only and
+  additive. The hooks the residuals need already exist and are deliberately not used here — see
+  "Residual limitations" below.
+- Localization effect: Bolivia's IVA 13% *por dentro* and IT 3% behaviour is unchanged; it is now
+  read from the engine that already implements Ley 843 art. 5 and art. 74 instead of being
+  re-derived, wrongly, in the browser. No client renders a rate literal any more.
+
+#### Claude implementation report — WORK-009 — 2026-09-08
+
+**What the defect was.** Seven client surfaces each computed tax with `total / 1.13` for IVA and
+`subtotal * 0.03` for IT. `backend/src/__tests__/tax.service.test.ts` records that arithmetic as a
+DEFECT: Bolivian IVA is *por dentro*, so on Bs 1 299 the client yields 149,44 / 34,49 where the
+configured engine yields 168,87 / 38,97. The till display, the PDF the customer keeps and the
+general ledger could each describe one sale differently, and every one of those screens hardcoded
+Bolivia into a product meant to be sold elsewhere.
+
+**Backend.** `GET /finance/tax/preview` — authenticated, tenant-scoped, read-only. It validates,
+calls the existing `computeDocumentTax`, and returns that result verbatim including `lines` and
+`source`. It contains no tax arithmetic of its own.
+
+Validation lives in `TaxPreviewQuerySchema` (`shared/schemas/index.ts`), which is pure and tested
+without a database. The body-only `validate()` middleware was neither reused nor widened: it reads
+`c.req.json()`, which a GET has no business having. Two refusals correct the snapshot's design:
+
+- `amount` must be finite AND strictly positive. The snapshot checked only `Number.isFinite`, so
+  `?amount=0` and `?amount=-500` reached the tax engine.
+- `side` is a `z.enum`. The snapshot read `side === 'PURCHASE' ? 'PURCHASE' : 'SALES'`, so a typo
+  became a SALES preview — which in Bolivia silently adds a turnover tax that Ley 843 art. 74 puts
+  on sales only.
+
+Optional identifiers are validated as UUIDs. An EMPTY identifier parameter is normalised to absent
+before that check, because a query string cannot distinguish "absent" from "empty"; an empty `side`
+is refused, because that is a caller who thinks it chose one.
+
+**Frontend.** `frontend/src/lib/useTaxPreview.ts` corrects the snapshot hook's three defects:
+
+1. **A request per keystroke.** The snapshot put `amount` in the query key and relied on
+   `staleTime`, which only helps a key already fetched — every new amount is a new key. The amount
+   is now debounced (`TAX_PREVIEW_DEBOUNCE_MS = 300`) before it reaches the key.
+2. **A false zero on failure.** The snapshot returned `q.data ?? {all zeros}`, so an API error
+   produced a settled-looking "no tax on this sale" that could reach a customer's PDF. `tax` is now
+   NULL unless the preview actually succeeded, so a consumer cannot render zeros by forgetting to
+   check — it is a type error, not a runtime surprise.
+3. **A stale amount's answer against a new amount.** Between a keystroke and the debounce firing,
+   the last result describes the PREVIOUS amount. The hook reports `ready` only while the debounced
+   amount still equals the amount being asked about.
+
+Status is a four-value union — `idle` / `loading` / `ready` / `error` — so "no amount to price",
+"still working" and "could not be calculated" are distinguishable, and `retry` is exposed.
+
+**Consumers.** POS cart store and till, sales-order PDF and its button, the manual factura form, the
+sales-order detail invoice dialog, and the sales-order list invoice modal. All client tax arithmetic
+is gone from those surfaces (`grep` for `1.13` / `* 0.03` over `frontend/src` returns comments
+only). Breakdown rows are built from `tax.lines` — code and rate from the code itself — with a
+non-zero-only fallback for the LEGACY source, which returns amounts but no line detail.
+
+- The sales-order PDF view and download are unavailable while tax is loading or failed, with a
+  visible reason and a retry. The document takes `tax` as a REQUIRED prop with no default, so there
+  is no zero to fall back to.
+- POS keeps computing the cart merchandise total locally — a till must price a basket without a
+  round trip — and takes only the split from the server. The sale is deliberately NOT blocked on a
+  preview failure: the amount charged is the merchandise total, and the factura's tax is computed
+  server-side at posting time, so blocking would stop the till trading over a display concern.
+- Issuing an invoice is likewise not blocked on a preview failure, for the same reason. Only the
+  preview is unavailable, and the screen says so.
+
+**V2 preserved.** Manual and automatic FACTURA numbering, fail-closed sequence handling, the
+customer-return issuance path, the sales-list issuance path, the FISCAL_YEAR resumption refusal and
+the request-local acknowledgement reset are untouched; the diff adds no change to any of those
+blocks.
+
+**Historical tax is not previewed.** Issued facturas continue to read their stored `iva_amount` and
+`it_amount` — the factura list table and the issued-factura panel on the order detail page were not
+changed. Today's rates must never redisplay a document issued under an older one.
+
+#### Verification — WORK-009
+
+```
+backend  npx tsc --noEmit   -> clean
+backend  npx jest --runInBand -> 13 suites, 285 tests, all passed
+frontend npx tsc --noEmit   -> clean
+frontend npm run build      -> compiled, type-checked, 67/67 static pages
+git diff --check            -> clean
+```
+
+`taxPreviewRoute.test.ts` adds 21 tests driving the real router through a one-route Hono app with
+the Prisma client and the tax engine mocked. No database was contacted, and no migration, seed,
+provisioning script, `prisma generate`, Playwright run or dependency change was executed.
+
+#### Residual limitations — WORK-009
+
+These are disclosed limits, not defects introduced here.
+
+1. **Header-level only.** `computeDocumentTax` prices a document total, not lines. Correct for
+   Bolivia, where one rate applies to everything the anchor customer sells; wrong for Turkey
+   (KDV 20/10/1) or Germany (USt 19/7). **WORK-009 does not provide multi-rate or per-line tax
+   correctness and must not be described as doing so.** The hook exists — `item_tax_group_id` and
+   per-line tax columns on five line tables since migration 004 — so this is a service refactor, not
+   a migration.
+2. **POS supplies customer context for the whole cart** and cannot yet express different item tax
+   groups per line. Same root cause as (1).
+3. **`SalesOrder.tax_amount` is a single column and cannot store a split**, which is why the order
+   screens preview instead of reading stored figures, and why a tax-transaction line table (D365's
+   TaxTrans) is the next schema step. Deliberately not added here.
+4. **Issued `Factura` stores Bolivia-specific header fields** (`iva_amount`, `it_amount`). Those are
+   what the historical screens read, and they cannot represent a third tax or a non-Bolivian split.
+5. **`frontend/src/app/pos/receipt/page.tsx` still carries fixed "IVA 13%" / "IT 3%" labels.** Its
+   AMOUNTS are already server-issued, so this is a presentation/localisation residual only. It is
+   outside the approved change scope for this item and was not touched.
+6. **`frontend/src/app/(store)/checkout/page.tsx` holds `const IVA_RATE = 0.13`** and extracts IVA
+   in the browser — the same defect class as the surfaces fixed here, on the customer-facing
+   storefront. It is NOT in the approved WORK-009 consumer list, so it was reported rather than
+   changed. It should be a separately scoped work item.
+7. **Fixed "IVA 13%" / "IT 3%" column headers remain** on the factura list, the IVA report, the
+   quotation detail and the IVA report PDF. Those label STORED historical figures, so correcting
+   them needs the per-document rate that is not stored — see (3) and (4).
+8. **A zero-total sales order no longer produces a PDF** (it previously produced one with a zero tax
+   line). Deliberately not special-cased back, because a constructed zero tax object is
+   indistinguishable from the failure fallback this item exists to remove.
+9. **The frontend has no unit-test runner**, so the hook's debounce, staleness and failure semantics
+   are verified by compilation and code review only. No runner was introduced for this item.
+10. **`backend/scripts/` remains outside the compiler gate** (K-3), unchanged by this item.
+
+#### Codex review — WORK-009 — CHANGES_REQUESTED — 2026-09-08
+
+The backend route, its validation, the tenant-scoped engine delegation and the backend tests were
+reviewed and accepted. Three frontend findings were raised and are corrected below. Codex's review
+of the accepted backend surface is not repeated here.
+
+#### Claude Correction 1 report — WORK-009 — 2026-09-08
+
+**Finding 1 — React hook order.** `useTaxPreview` was called in
+`frontend/src/app/(erp)/sales/orders/[id]/page.tsx` BELOW the `isLoading` and `!order` early
+returns. On a cold load the first render exited before reaching it and the loaded render invoked one
+hook more than the render before it — a Rules of Hooks violation that can desynchronise every
+subsequent hook on the page. Real defect, introduced by this work item.
+
+Corrected by moving the call up beside the other hooks, above every conditional return. It reads
+`order?.total_amount ?? 0` and `order?.customer_id ?? null` so it is safe with no order at all, and
+`enabled: !!order && showInvoiceForm` keeps a request from being issued until an order exists and the
+invoice form is open. `useTaxPreview` independently refuses a non-positive amount, so the zero
+stand-in can never reach the API. Loading and not-found rendering are unchanged.
+
+**Finding 2 — tenant/session cache isolation.** The query key carried amount, party, product and
+side but not the tenant. The QueryClient is created once at module scope in
+`components/Providers.tsx` and survives a client-side logout and login, so within the five-minute
+`staleTime` React Query could serve tenant A's figure to tenant B without calling the API.
+
+Corrected by adding a reactive, non-secret `tenantId` to `stores/authStore.ts` — set on login,
+resolved from the same `localStorage` value the API client sends as `X-Tenant-ID` on `loadUser`, and
+cleared on logout — and making it the FIRST element of the tax-preview query key. The query is
+disabled while it is null, and `deriveTaxPreviewState` additionally refuses to report `ready` without
+a resolved tenant, so key discipline is not the only thing standing between two sessions. The access
+token is not read and never reaches a cache key. No broader authentication change was made; cache
+eviction on logout was considered and rejected because reaching the QueryClient from the auth store
+would require moving it out of `Providers.tsx` to break an import cycle, which is wider than this
+correction.
+
+**Finding 3 — refetch failure must fail closed.** The hook evaluated cached `q.data` before
+`q.isError`. React Query RETAINS data when a later refetch fails — the status becomes `error` while
+the previous result stays in the cache — so a failed refresh was reported as `ready`, the error was
+hidden, and `SalesOrderPDFButton` could build a customer-facing PDF from stale tax.
+
+Corrected by evaluating the error branch FIRST and returning `tax: null` regardless of what the
+cache holds, with the message and `retry` still exposed. `retry` is now guarded: it is a no-op unless
+a request is legitimate right now, so it can never refresh the previous amount's query while a new
+amount is still inside the debounce window.
+
+**Supporting change.** The state rules moved into `frontend/src/lib/taxPreviewState.ts`, which
+imports NOTHING — the same split as `backend/src/shared/services/numberSequenceRules.ts`. This is
+what makes the fail-closed rule executable evidence rather than an assertion: the decision can be run
+without React, React Query, a browser or a network. `useTaxPreview.ts` keeps the effects (debounce,
+query, guarded retry) and re-exports the shapes, so no consumer import changed.
+
+#### Correction 1 verification — what was EXECUTED and what was not
+
+```
+backend  npx tsc --noEmit                      -> clean
+backend  npx jest --runInBand                  -> 13 suites, 285 tests, all passed
+frontend npx tsc --noEmit --incremental false  -> clean
+frontend npm run build                         -> compiled, 67/67 static pages
+git diff --check                               -> clean
+```
+
+**Executed against the real source, with no new dependency:**
+
+- A state-rule harness compiled by the frontend's installed TypeScript and run under node against
+  `taxPreviewState.ts`: **48 checks, 48 passed**. It covers evidence items 2 through 7 — a disabled
+  or absent order issues no request; an unresolved or cleared tenant never yields a figure and two
+  tenants produce different query keys; a mid-debounce amount change neither displays nor retries the
+  previous amount; success followed by a retained-data refetch failure yields `error` with
+  `tax: null`; PDF availability tracks the same rule; and a successful retry returns to `ready`.
+- A hook-order scanner run over the six consumer files: **13 components, 0 violations**. Its ability
+  to detect the real defect was proved by running it against the pre-correction file from
+  `0033aa9d`, where it reports the violation at the exact line of the misplaced `useTaxPreview` call.
+
+**The harness found a real defect in the correction itself.** Its first run reported 2 failures: with
+`tenantId` null and data still in hand, `deriveTaxPreviewState` returned `ready`. The hook would not
+have produced that combination today, because changing the tenant changes the key, but the rule was
+depending on that key discipline for its safety. A tenant precondition was added to the `ready`
+branch and both checks pass. This is the argument for the pure module in one line.
+
+**NOT executed, and not claimed as executed:**
+
+- No browser render. React's actual hook-ordering behaviour, React Query's own cache keying and
+  eviction, the `setTimeout` debounce timing, and axios error shapes in a live app are established by
+  compilation, the production build and code inspection — not by running the application.
+- ESLint and `react-hooks/rules-of-hooks` are NOT configured in this repository. Installing them is
+  out of scope, so the scanner above is a narrow text-based substitute, not a linter. It reads source
+  text rather than an AST and is conservative: it can over-report, never under-report a hook that
+  follows an early exit.
+- The harness and the scanner live in the session scratchpad and are NOT committed. They add no
+  dependency and no repository path; the report records their exact results.
+- No database, migration, seed, provisioning, `prisma generate` or Playwright command was run.
+
+#### Claude Correction 2 report — WORK-009 — 2026-09-08
+
+**The finding, confirmed.** `useTaxPreview` never passed React Query's actual fetching state into
+the pure decision, and `deriveTaxPreviewState` returned `ready` whenever settled data existed. React
+Query retains the previous result while it refetches, so a window-focus refresh once `staleTime` had
+elapsed, a remount, an invalidation or a manual retry all left the OLD tax exposed — and therefore
+left `SalesOrderPDFButton` willing to generate a customer-facing PDF from a figure that was at that
+moment being re-asked, and might come back different or fail outright. Correction 1 closed the
+*failed* refetch; this closes the *unresolved* one.
+
+**Correction.** `TaxPreviewInputs` gains `queryIsFetching`, fed from `q.isFetching`
+(equivalently `fetchStatus === 'fetching'`), and `deriveTaxPreviewState` checks it BEFORE both the
+error flag and any data:
+
+- while a request is in flight the status is `loading`, `tax` is `null`, and the PDF stays
+  unavailable — the existing loading UI is what every consumer already renders for that state;
+- when the refresh fails, `isFetching` drops and the status becomes `error` with `tax` still null and
+  the visible retry still available;
+- after a successful retry the status returns to `ready`, exposing only the NEW result.
+
+In flight is checked ahead of `error` deliberately: while a retry runs, the previous failure is no
+longer the current truth. Both branches expose `tax: null`, so no safety property turns on which
+wins.
+
+Preserved unchanged: the hook-order correction, tenant/session cache isolation, the amount debounce
+and stale-amount protection, the guarded retry, historical stored Factura tax, V2 numbering, the
+header-only/multi-rate limitation, and every accepted backend behaviour. No consumer file changed —
+the existing `!preview.tax` gates already produce the required behaviour once the decision is
+correct.
+
+#### Correction 2 verification — what was EXECUTED
+
+```
+backend  npx tsc --noEmit                      -> clean
+backend  npx jest --runInBand                  -> 13 suites, 285 tests, all passed
+frontend npx tsc --noEmit --incremental false  -> clean
+frontend npm run build                         -> compiled, 67/67 static pages
+git diff --check                               -> clean
+```
+
+**Real React Query evidence — 43 checks, 43 passed.** A harness drives the genuine
+`QueryClient` + `QueryObserver` from the installed `@tanstack/query-core` 5.95.2 — the same module
+`@tanstack/react-query` v5 uses internally — and feeds each observer result into the real
+`taxPreviewState.ts`. Nothing about the query state is fabricated: `isFetching`, `isError`, `error`
+and `data` all come from React Query's own reducer, driven by a queryFn whose promise the harness
+resolves or rejects on demand. The proved sequence is:
+
+1. ordinary initial loading — fetching, no data, `loading`, PDF unavailable;
+2. first result succeeds — `ready`, PDF available;
+3. a deferred refetch starts — React Query STILL holds the old data and reports fetching, while the
+   decision is `loading` with `tax: null` and the PDF is unavailable;
+4. that refetch rejects — `error`, `tax: null`, the server message surfaced, retry available;
+5. retry starts — `loading`, `tax: null`, PDF unavailable;
+6. retry succeeds with a DIFFERENT result — `ready`, exposing the new value and not the stale one;
+7. a second observer on the same key with `staleTime: 0` — the shape of a remount or focus refresh —
+   is served from cache AND starts a background fetch; the decision is `loading`, not `ready`, and
+   returns to `ready` only once that fetch settles.
+
+**The harness is not vacuous.** Step 3 also computes the decision from that same real observer state
+with the fetching input withheld — precisely the pre-correction behaviour — and confirms it reports
+`ready` and would have generated the PDF.
+
+Reproduction, run from `frontend/`:
+
+```
+cp frontend/src/lib/taxPreviewState.ts <scratch>/rq/taxPreviewState.ts   # sha256 verified identical
+npx tsc -p <scratch>/rq/tsconfig.json
+NODE_PATH=<repo>/frontend/node_modules node <scratch>/rq/out/rqharness.js
+```
+
+The copied module's sha256 was compared against the repository file for this run
+(`a0c8dccc4b66c91af322a654fb2cbe64164a57759ad2026a73632fd81da78518`, identical), so the evidence is
+against the shipped rules and not a paraphrase.
+
+The Correction 1 harness was updated for the new input and re-run: **48 checks, 48 passed.** The
+hook-order scanner was re-run: **13 components, 0 violations.**
+
+**NOT executed, and not claimed:** no browser render. React's own hook ordering, the `setTimeout`
+debounce timing, and axios error shapes in a live app remain established by compilation, the
+production build and code inspection. `QueryObserver` is framework-agnostic, so what the harness
+proves is the cache/decision contract, not rendering. The harnesses live in the session scratchpad
+and are not committed; they add no dependency and no repository path. No database, migration, seed,
+provisioning, `prisma generate` or Playwright command was run.

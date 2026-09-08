@@ -150,6 +150,65 @@ export const CreateManualFacturaSchema = z.object({
   factura_number: ManualDocumentNumber,
 });
 
+// ── Finance: tax preview ──────────────────────────────────────────────────────
+
+/**
+ * An optional identifier arriving as a QUERY parameter.
+ *
+ * A query string cannot express "absent" and "empty" differently — a client that
+ * always appends `&party_id=` sends the empty string. That is not a wrong value,
+ * it is no value, so it is normalised to `undefined` BEFORE the UUID check.
+ * Anything else present is validated strictly: a malformed identifier is a 400,
+ * never a silently-dropped filter that would preview the wrong party's tax.
+ */
+const OptionalQueryUuid = (field: string) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.string().uuid(`${field} must be a UUID`).optional(),
+  );
+
+/**
+ * `GET /finance/tax/preview`.
+ *
+ * Every value here arrives as a string, so the numeric rules are spelled out
+ * rather than delegated to a coercion that treats `''` as 0 and `'abc'` as NaN.
+ *
+ * ── Why each refusal exists ────────────────────────────────────────────────
+ * `amount` must be finite and strictly positive. Zero is not a document anybody
+ * previews, and a negative or `NaN` amount would be handed to the same engine
+ * that posts the ledger. The earlier version of this route checked only
+ * `Number.isFinite`, so `?amount=0` and `?amount=-500` both reached the tax
+ * engine and returned a confident answer.
+ *
+ * `side` is an enum, NOT a comparison against `'PURCHASE'`. The earlier version
+ * read `side === 'PURCHASE' ? 'PURCHASE' : 'SALES'`, which silently turned a
+ * typo — `?side=PURCHSE` — into a SALES preview. In Bolivia that is the
+ * difference between a figure carrying IT and one that must not: Ley 843 art. 74
+ * puts IT on sales only, so a mis-sided preview is a wrong number, not a
+ * fallback.
+ *
+ * Unknown query keys are STRIPPED rather than refused. Unlike a document
+ * request, a GET preview legitimately picks up cache-busters and analytics
+ * parameters, and refusing those would break the screen without protecting
+ * anything: no value here decides a legal number.
+ */
+export const TaxPreviewQuerySchema = z.object({
+  amount: z
+    .string({ required_error: 'amount is required' })
+    .trim()
+    .min(1, 'amount is required')
+    .refine((v) => Number.isFinite(Number(v)), 'amount must be a finite number')
+    .transform(Number)
+    .refine((v) => v > 0, 'amount must be greater than zero'),
+
+  party_id:   OptionalQueryUuid('party_id'),
+  product_id: OptionalQueryUuid('product_id'),
+
+  // Default applied only when the parameter is ABSENT. A present-but-invalid
+  // value fails; it is never defaulted.
+  side: z.enum(['SALES', 'PURCHASE']).optional().default('SALES'),
+});
+
 // ── Purchase ──────────────────────────────────────────────────────────────────
 
 const PurchaseLineSchema = z.object({

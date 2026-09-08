@@ -5,7 +5,7 @@ import { requireRole } from '../../shared/middleware/authMiddleware';
 
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message, paginated } from '../../shared/response';
-import { CreateJournalEntrySchema, CreateManualFacturaSchema } from '../../shared/schemas';
+import { CreateJournalEntrySchema, CreateManualFacturaSchema, TaxPreviewQuerySchema } from '../../shared/schemas';
 import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
@@ -362,6 +362,84 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
     });
   });
   return created(c, factura);
+});
+
+// ── Tax preview ───────────────────────────────────────────────────────────────
+
+/**
+ * What the tax on this amount would be, according to the engine that will post
+ * it.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * Several customer-facing surfaces each did their own arithmetic on the way to
+ * showing somebody a number: the POS cart, the sales-order PDF, the sales-order
+ * list and detail screens, and the manual factura form. All of them ran
+ * `total / 1.13` for IVA and `subtotal * 0.03` for IT — the exact arithmetic
+ * `src/__tests__/tax.service.test.ts` records as a DEFECT. Bolivian IVA is *por
+ * dentro*: Ley 843 art. 5 makes the tax part of the invoiced price, so it is 13%
+ * OF that price, not 13% added to a back-computed net. On Bs 1 299 the client
+ * arithmetic yields 149,44 / 34,49 where the engine yields 168,87 / 38,97.
+ *
+ * So the till display, the PDF the customer keeps, and the general ledger could
+ * each describe one sale differently.
+ *
+ * Those screens were not simply reading a stored figure, because in most of
+ * those cases nothing is stored yet — a cart, or an invoice dialog on an order
+ * that has not been invoiced. What each of them needs is this question, answered
+ * by the same code that will post the journal.
+ *
+ * It also hardcoded Bolivia into every client. Rates live in `TaxCode` rows,
+ * date-effective, resolved by tax group (party) ∩ item tax group (product) — so
+ * another jurisdiction, or Bolivia itself after Ley 1733, is a configuration
+ * change those screens would have silently ignored.
+ *
+ * ── What this does NOT solve ───────────────────────────────────────────────
+ * It previews under TODAY's tax codes, at DOCUMENT-HEADER level.
+ *
+ * Redisplaying a document issued under an older rate still needs the split
+ * stored on the document. `Factura` stores `iva_amount` / `it_amount` and its
+ * screens read those directly — this route must not be used there.
+ * `SalesOrder.tax_amount` is a single column that cannot hold a split, which is
+ * why the order screens preview instead, and why a tax-transaction line table
+ * (D365's TaxTrans) is the next schema step. That is deliberately not made here.
+ *
+ * Header-level also means it cannot represent a document mixing rates. Correct
+ * for Bolivia, where one rate applies to everything the anchor customer sells;
+ * wrong for Turkey (KDV 20/10/1) or Germany (USt 19/7). See the standing
+ * limitation on `computeDocumentTax`.
+ *
+ * ── Validation ─────────────────────────────────────────────────────────────
+ * Every refusal lives in `TaxPreviewQuerySchema`, which is pure and tested
+ * without a database. This handler contributes no tax arithmetic of its own: it
+ * validates, calls the engine, and returns exactly what the engine said —
+ * including `lines` and `source`, so a client can label a row from the code that
+ * actually applied instead of a hardcoded "IVA 13%".
+ *
+ * The body-only `validate()` middleware is deliberately NOT reused or widened
+ * for this: it reads `c.req.json()`, which a GET has no business having.
+ */
+app.get('/tax/preview', async (c) => {
+  const parsed = TaxPreviewQuerySchema.safeParse(c.req.query());
+  if (!parsed.success) {
+    throw new AppError(
+      parsed.error.errors
+        .map((e) => `${e.path.join('.') || 'query'}: ${e.message}`)
+        .join('; '),
+      400,
+      'VALIDATION_ERROR',
+    );
+  }
+
+  const { amount, party_id, product_id, side } = parsed.data;
+
+  const tax = await computeDocumentTax(c.get('tenantId'), amount, {
+    partyId:      party_id ?? null,
+    productId:    product_id ?? null,
+    side,
+    legacyConfig: c.get('taxConfig'),
+  });
+
+  return ok(c, tax);
 });
 
 app.post('/facturas/:id/cancel', requireRole('admin'), async (c) => {

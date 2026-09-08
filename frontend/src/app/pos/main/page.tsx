@@ -10,6 +10,7 @@ import { VariantPicker } from '@/components/pos/VariantPicker';
 import { CustomerSearch } from '@/components/pos/CustomerSearch';
 import { PaymentModal } from '@/components/pos/PaymentModal';
 import { api } from '@/lib/api';
+import { formatRate } from '@/lib/useTaxPreview';
 
 async function searchProducts(query: string) {
   const res = await api.get('/products', {
@@ -30,7 +31,7 @@ export default function PosMainPage() {
   const session      = usePosSessionStore((s) => s.session);
   const clearSession = usePosSessionStore((s) => s.clearSession);
   const { lines, customer, removeLine, updateQty, clearCart } = usePosCartStore();
-  const { subtotal, iva, it, total, lineCount } = usePosCartTotals();
+  const { total, lineCount, tax, taxPreview } = usePosCartTotals();
 
   const [search,          setSearch]          = useState('');
   const [debouncedQ,      setDebouncedQ]      = useState('');
@@ -284,20 +285,73 @@ export default function PosMainPage() {
             ))}
           </div>
 
-          {/* Totals */}
+          {/* Totals ─────────────────────────────────────────────────────────
+              The TOTAL is arithmetic on the cart and is always shown: it is what
+              the customer is charged, and the till must be able to price a
+              basket without a round trip.
+
+              The SPLIT comes from the tax engine, so it can be briefly in flight
+              or unavailable. It is never rendered as zero — "Bs. 0.00 IVA" is a
+              claim that this sale carries no tax, which is a different and much
+              worse statement than "not known yet".
+
+              Rows are built from the tax codes that actually applied, so a
+              tenant with one tax, three taxes, or a rate that changed next
+              January renders correctly without a code change. The literal
+              "IVA 13%" / "IT 3%" labels this replaced would have kept saying 13%
+              after Ley 1733. */}
           <div className="border-t border-slate-200 px-4 pt-3 pb-2 space-y-1 bg-slate-50/60">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">Subtotal (sin IVA)</span>
-              <span className="text-slate-700">Bs. {subtotal.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">IVA 13%</span>
-              <span className="text-slate-700">Bs. {iva.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-500">IT 3%</span>
-              <span className="text-slate-700">Bs. {it.toFixed(2)}</span>
-            </div>
+            {tax ? (
+              <>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Subtotal</span>
+                  <span className="text-slate-700">Bs. {tax.subtotal.toFixed(2)}</span>
+                </div>
+                {tax.lines.length > 0
+                  ? tax.lines.map((l) => (
+                      <div key={l.code} className="flex justify-between text-sm">
+                        <span className="text-slate-500">{l.code} {formatRate(l.rate)}</span>
+                        <span className="text-slate-700">Bs. {l.amount.toFixed(2)}</span>
+                      </div>
+                    ))
+                  : (
+                    // The LEGACY fallback answers with amounts but no line detail.
+                    // Each row appears only when it carries a figure, so a tenant
+                    // without a turnover tax is not told it has one.
+                    <>
+                      {tax.vat > 0 && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">IVA</span>
+                          <span className="text-slate-700">Bs. {tax.vat.toFixed(2)}</span>
+                        </div>
+                      )}
+                      {tax.turnover > 0 && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">IT</span>
+                          <span className="text-slate-700">Bs. {tax.turnover.toFixed(2)}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+              </>
+            ) : taxPreview.status === 'error' ? (
+              <div className="flex items-start justify-between gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                <span className="flex-1">{taxPreview.error}</span>
+                <button
+                  onClick={taxPreview.retry}
+                  className="shrink-0 font-semibold text-amber-900 underline"
+                >
+                  Reintentar
+                </button>
+              </div>
+            ) : (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Impuestos</span>
+                <span className="text-slate-400">
+                  {taxPreview.status === 'loading' ? 'calculando…' : '—'}
+                </span>
+              </div>
+            )}
             <div className="flex justify-between items-center pt-1.5 border-t border-slate-200 mt-1">
               <span className="text-slate-900 font-bold text-base">TOTAL</span>
               <span className="text-indigo-600 font-black text-xl">Bs. {total.toFixed(2)}</span>
