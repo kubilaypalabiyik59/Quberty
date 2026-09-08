@@ -92,9 +92,7 @@
   separate facts; only the first still holds.
 - While WORK-001 is pending, Kubi requested a future configurable security foundation inspired by D365 Role -> Duty -> Privilege -> Permission, including UI/action authorization and scoped data access. Codex completed a Microsoft Learn + repo analysis in `docs/analysis/SECURITY_AUTHORIZATION_GAP_ANALYSIS.md`. Kubi approved the analysis and recommended starting assumptions, but not implementation. After WORK-001 is accepted, the next security step may be a separate read-only route/permission audit; it must not be added to Claude's current WORK-001 scope.
 
-## Resume checkpoint — 2026-09-07
-
-**Start a new session here.**
+## Resume checkpoint — 2026-09-07 (SUPERSEDED by the 2026-09-08 checkpoint below)
 
 - **WORK-002 is COMPLETE and independently ACCEPTED by Codex.** The valid dirty parent tree is
   preserved off-machine on `origin/codex/wip-full-snapshot-2026-09-06`.
@@ -116,7 +114,7 @@
   - V1 — governance, documentation, `.gitignore`, `.gitattributes`, gitlink removal. **WORK-004.**
   - V2 — factura numbering via `NumberSequence` (migration 023, schema, backend, Setup UI, tests).
   - V3 — server-driven tax preview (`useTaxPreview`, the `GET /finance/tax/preview` route hunk, and
-    the POS/PDF/list consumers).
+    the POS/PDF/list consumers). **Delivered and published; see the 2026-09-08 checkpoint.**
 - **Rebuild branch: `codex/rebuild-2026-09-07`**, created from `0a8bdf2` in a **separate worktree**
   at the sibling path `../skarpine-rebuild`. The snapshot checkout is never switched, restored into,
   or cleaned.
@@ -141,7 +139,11 @@
   items P0.3 migration baselining, P0.4 checksum ledger, P0.5 CI drift checks, P0.6 parallel-
   developer rules.
 
-### Resume checkpoint addendum — 2026-09-07 after WORK-007 review
+### Resume checkpoint addendum — 2026-09-07 after WORK-007 review (HISTORICAL)
+
+> Everything below describes the state at the time of the WORK-007 review. It is kept as a record
+> and is no longer current: V3 has since been delivered, accepted and published. See the 2026-09-08
+> checkpoint.
 
 - V1 governance (`a713a53`) and the WORK-006 clean baseline (`cef88c9`) are pushed and accepted on
   `origin/codex/rebuild-2026-09-07`.
@@ -152,7 +154,7 @@
 - **V2 is published.** `origin/codex/rebuild-2026-09-07` contains the V2 checkpoint
   `fcc008e9bf00b09ae450cdbe17d281561566cf48`, pushed 2026-09-08 and confirmed with `git ls-remote`.
   The Business Process Catalog documentation is integrated on top of it by the commit this bullet
-  belongs to. The next reconstruction slice is V3; **V3 has not started.**
+  belongs to. The next reconstruction slice was V3, which at that point had not started.
 - WORK-007's accepted behaviour covers automatic/manual FACTURA numbering across the parent web
   surfaces, including customer returns, and fails closed on unsupported fiscal-year resumption.
 - Residuals remain separate work: Android POS manual-number support; the Bolivian credit-note series
@@ -162,6 +164,38 @@
   `codex/business-process-catalog-framework-2026-09-07` and applied to the rebuild branch by
   cherry-pick — never by merge — only after the V2 remote checkpoint had been verified. That branch
   and its worktree remain in place; they were not deleted.
+
+## Resume checkpoint — 2026-09-08 — RECONSTRUCTION COMPLETE
+
+**Start a new session here.**
+
+- **The reconstruction is finished and fully published.** `origin/codex/rebuild-2026-09-07` carries,
+  in order: V1 governance `a713a53`, the WORK-006 green baseline `cef88c9`, V2 factura numbering
+  `fcc008e9`, the Business Process Catalog documentation `2177d36a`, and V3
+  `c362cdc0be37b4a1285469a32989cadc5c369de4`.
+- **WORK-009 / V3 is independently ACCEPTED by Codex and PUBLISHED.** It provides a server-driven
+  tax preview for the approved web ERP and POS surfaces: those screens now obtain their tax split
+  from the same configured engine that posts the journal, instead of computing it in the browser.
+- V3's final correction closes seven safety properties — React hook-order safety; tenant/session
+  query-cache isolation; stale amount and debounce safety; fail-closed initial loading; fail-closed
+  background refetch; fail-closed error and retry states; and PDF gating until a current successful
+  tax result exists.
+- **Independent verification** by Codex included a real `QueryClient`/`QueryObserver` state-chain
+  check and a frontend type-check. The backend remained at the independently verified
+  **13 suites / 285 passing tests**.
+- **Verification debt, recorded deliberately.** Claude's scratch harnesses are uncommitted; their
+  totals were NOT independently reproduced as artifacts and must never be represented as permanent
+  regression tests. **No frontend unit-test runner and no browser-render regression suite exists**,
+  so the tax-preview state machine has no standing automated guard in the repository. This is the
+  first thing a reviewer should look for the next time these surfaces change.
+- **No next Core ERP implementation item has started.** The next action is a fresh, catalog-aligned
+  assessment of the remaining Core ERP gaps — anchored on the framework in
+  `docs/process/CORE_ERP_PROCESS_CATALOG.md` — before any bounded implementation item is selected.
+  The catalog remains a navigation spine, not a D365 feature-parity promise.
+- Carried forward unchanged: the `backend/scripts/` type-check gap (K-3); the Android POS manual
+  FACTURA number gap; the unverified Bolivian credit-note series decision; the year/legal-entity
+  aware FACTURA history model; the header-level/per-line tax limitation; and backlog items P0.3–P0.6
+  plus the security module, none of which has started.
 
 ## Maintenance rule
 

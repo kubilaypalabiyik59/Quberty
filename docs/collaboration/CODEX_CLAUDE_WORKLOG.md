@@ -1357,7 +1357,9 @@ database change.
 ### WORK-009 — Reconstruct V3: safe server-driven tax preview
 
 - Priority: P0 reconstruction (final reconstruction slice)
-- Status: IMPLEMENTED — awaiting Codex independent review
+- Status: **ACCEPTED and PUBLISHED** — accepted at
+  `c362cdc0be37b4a1285469a32989cadc5c369de4` after two corrections; pushed 2026-09-08 and the
+  remote SHA verified with `git ls-remote`.
 - Owner: Claude (execution); Codex (independent review and acceptance)
 - Relevant catalog entry: `65.20 Manage sales orders`. The catalog locates this work; it is not a
   feature-parity claim. Scope status `CORE_NOW`; implementation status after this item
@@ -1664,3 +1666,57 @@ production build and code inspection. `QueryObserver` is framework-agnostic, so 
 proves is the cache/decision contract, not rendering. The harnesses live in the session scratchpad
 and are not committed; they add no dependency and no repository path. No database, migration, seed,
 provisioning, `prisma generate` or Playwright command was run.
+
+#### Codex independent review — WORK-009 — ACCEPTED — 2026-09-08
+
+**Status: ACCEPTED.** Accepted commit `c362cdc0be37b4a1285469a32989cadc5c369de4`, parent
+`2177d36a96bff53bc3e8dc1c36b0d208e051df98`.
+
+V3 provides a server-driven tax preview for the approved web ERP and POS surfaces: those screens now
+obtain their tax split from the same configured engine that posts the journal, rather than computing
+it in the browser.
+
+The final correction closes seven safety properties:
+
+1. React hook-order safety;
+2. tenant/session query-cache isolation;
+3. stale amount and debounce safety;
+4. fail-closed initial loading;
+5. fail-closed background refetch;
+6. fail-closed error and retry states;
+7. PDF gating until a current successful tax result exists.
+
+Independent verification by Codex included a real `QueryClient`/`QueryObserver` state-chain check and
+a frontend type-check. The backend remained at the independently verified **13 suites / 285 passing
+tests**.
+
+**Two limits on this acceptance, recorded so they are not read as more than they are.**
+
+- Claude's uncommitted scratch harness totals (48, 43 and the hook-order scan) were **not
+  independently reproduced as artifacts**. They are working evidence produced during implementation
+  and **must not be represented as permanent regression tests.**
+- **No frontend unit-test runner and no browser-render regression suite exists.** The tax-preview
+  state machine therefore has no standing automated guard in the repository. This is verification
+  debt, carried forward deliberately rather than closed here.
+
+#### WORK-010 — Publish V3 and record the reconstruction checkpoint
+
+- Priority: P0 reconstruction (closing action)
+- Status: COMPLETE
+- Owner: Claude (execution); Codex (acceptance already given above)
+- Explicitly deferred: all implementation. This item published an already-accepted commit and updated
+  three documents. No runtime code, schema, migration, SQL, environment or generated file was
+  touched, and no build, test, database or Playwright command was run.
+
+**Publication.** `c362cdc0be37b4a1285469a32989cadc5c369de4` was pushed to
+`origin/codex/rebuild-2026-09-07` as a normal fast-forward from `2177d36a`, and the remote SHA was
+verified independently with `git ls-remote`. No force-push, merge or rebase.
+
+**The reconstruction is complete.** `origin/codex/rebuild-2026-09-07` now carries, in order: V1
+governance `a713a53`, the WORK-006 green baseline `cef88c9`, V2 factura numbering `fcc008e9`, the
+Business Process Catalog documentation `2177d36a`, and V3 `c362cdc0`.
+
+**No next Core ERP implementation item has started.** The next action is a fresh, catalog-aligned
+assessment of the remaining Core ERP gaps, anchored on `docs/process/CORE_ERP_PROCESS_CATALOG.md`,
+before any bounded implementation item is selected. That assessment is analysis work; the catalog
+stays a navigation spine and is not a D365 feature-parity promise.

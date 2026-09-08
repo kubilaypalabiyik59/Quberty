@@ -102,19 +102,38 @@ finance).
 
 ## 2. Current Status
 
-### Reconstruction checkpoint — 2026-09-08
+### Reconstruction checkpoint — 2026-09-08 — RECONSTRUCTION COMPLETE
 
-- V1 `a713a53` and the WORK-006 baseline `cef88c9` are accepted and pushed on
-  `origin/codex/rebuild-2026-09-07`.
-- WORK-007 / V2 is independently accepted at commit `fcc008e9`, and it is now **published**:
-  `origin/codex/rebuild-2026-09-07` contains the V2 checkpoint, verified with `git ls-remote`
-  after the push.
-- The July 2026 Business Process Catalog framework is being integrated by this documentation
-  commit, applied on top of the published V2 checkpoint.
-- The next reconstruction slice is V3. **V3 has not started** and must remain a separate,
-  separately reviewed checkpoint.
-- Detailed evidence and residual risks are in
+All five reconstruction slices are independently accepted by Codex and published on
+`origin/codex/rebuild-2026-09-07`:
+
+| Slice | Commit | What it is |
+|---|---|---|
+| V1 | `a713a53` | Governance, documentation, repository hygiene, gitlink removal |
+| Green baseline | `cef88c9` | WORK-006 clean build and test baseline |
+| V2 | `fcc008e9` | Factura numbering via `NumberSequence` (migration 023, Setup UI, tests) |
+| Catalog docs | `2177d36a` | July 2026 Business Process Catalog framework |
+| **V3** | **`c362cdc0be37b4a1285469a32989cadc5c369de4`** | **Server-driven tax preview** |
+
+- **WORK-009 / V3 is independently ACCEPTED and PUBLISHED.** The remote branch was verified with
+  `git ls-remote` after a normal fast-forward push.
+- V3 gives the approved web ERP and POS surfaces a tax preview computed by the same configured
+  engine that posts the journal, replacing the `total / 1.13` and `subtotal * 0.03` arithmetic that
+  `backend/src/__tests__/tax.service.test.ts` records as a defect. It is header-level and previews
+  under today's tax codes — see the standing limitation below and in
+  [docs/process/S2P_O2C_STATUS.md](docs/process/S2P_O2C_STATUS.md).
+- Its final correction closes seven safety properties: React hook-order safety; tenant/session
+  query-cache isolation; stale amount and debounce safety; fail-closed initial loading; fail-closed
+  background refetch; fail-closed error and retry states; and PDF gating until a current successful
+  tax result exists.
+- **Reconstruction is complete.** No next Core ERP implementation item has started.
+- The next action is a fresh, catalog-aligned assessment of the remaining Core ERP gaps, before any
+  bounded implementation item is selected.
+- Detailed evidence, verification debt and residual risks are in
   [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md).
+
+> **Historical, superseded:** earlier revisions of this section said V2 was local-only and that V3
+> had not started. Both were true when written and are not true now.
 
 Backend and frontend modules are broadly at MVP: sales, purchase, inventory, warehouse,
 CRM, HR, reporting, data import, storefront, and a fairly deep finance module (chart of
