@@ -1312,3 +1312,44 @@ Recorded by Claude under WORK-004 on Codex's instruction.
   the original checkout or to the POS repository.
 - Schema hook: not applicable — no schema behaviour changes.
 - Claude implementation report: recorded below.
+
+### WORK-007 — Reconstruct V2: factura numbering via NumberSequence
+
+- Priority: P0 reconstruction
+- Status: **ACCEPTED and PUBLISHED** — pushed 2026-09-08; `origin/codex/rebuild-2026-09-07` contains `fcc008e9`, confirmed with `git ls-remote`.
+- Owner: Claude (execution); Codex (independent review and acceptance)
+- Relevant catalog entries: `99.20.040.000` Configure and monitor system generated numbers;
+  `65.20.400.000` Process customer returns and exchanges.
+- Accepted commit: `fcc008e9bf00b09ae450cdbe17d281561566cf48`, parent
+  `cef88c93877d01b4c72e946b66c17adacc9feb2c`.
+- Remote state at acceptance: `origin/codex/rebuild-2026-09-07` remains `cef88c9`; V2 is not pushed.
+- V3 status: not started.
+
+#### Codex independent review — WORK-007 — 2026-09-07
+
+**Status update: ACCEPTED.**
+
+Codex inspected the actual amended repository diff through Correction 4. The final correction closes
+the missed customer-return and sales-list issuance surfaces in manual FACTURA mode, validates the
+return request, keeps allocation inside the existing transaction, and preserves the deliberately
+unresolved decision that credit notes currently draw from the FACTURA series. The Setup API now
+removes the silent `FISCAL_YEAR` bypass: fiscal-year automatic resumption is explicitly reported as
+unsupported and a manual-to-automatic transition is refused with
+`NUMBER_SEQUENCE_FISCAL_YEAR_RESUME_UNSUPPORTED`; acknowledgement cannot override it. Request-local
+acknowledgement state is reset when its sequence subject changes.
+
+Independent verification performed by Codex:
+
+```
+backend:  npx jest --runInBand  -> 12 suites, 264 tests, all passed
+frontend: npm run build         -> compiled, type-checked, 67/67 static pages
+git diff --check cef88c9..HEAD   -> clean
+rebuild HEAD                     -> fcc008e9bf00b09ae450cdbe17d281561566cf48
+remote rebuild branch           -> cef88c93877d01b4c72e946b66c17adacc9feb2c
+```
+
+Accepted residuals are not completion claims: Android POS still cannot supply a manual FACTURA
+number; Bolivia's credit-note series remains legally unverified; a fiscal-year automatic FACTURA
+still needs a year/legal-entity-aware history design; the repeated web control should later become a
+shared component; and `backend/scripts/` remains outside the compiler gate. None authorizes V3 or a
+database change.

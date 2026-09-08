@@ -34,6 +34,11 @@
 >    hook obligation, in
 >    [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md) §4.1.
 >    **It must be carried into every future implementation prompt.**
+> 7. **The July 2026 Microsoft Dynamics 365 Business Process Catalog is the process backbone, not
+>    the feature backlog.** Use its six-level hierarchy and stable IDs to locate work, then apply
+>    Skarpine's own SME scope, parameter, schema-hook, localization, and verification overlay. See
+>    [docs/process/CORE_ERP_PROCESS_CATALOG.md](docs/process/CORE_ERP_PROCESS_CATALOG.md). Carry the
+>    relevant catalog IDs into every future analysis and implementation prompt.
 >
 > The registry of what each module owns, what is built and what is missing:
 > [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
@@ -97,6 +102,20 @@ finance).
 
 ## 2. Current Status
 
+### Reconstruction checkpoint — 2026-09-08
+
+- V1 `a713a53` and the WORK-006 baseline `cef88c9` are accepted and pushed on
+  `origin/codex/rebuild-2026-09-07`.
+- WORK-007 / V2 is independently accepted at commit `fcc008e9`, and it is now **published**:
+  `origin/codex/rebuild-2026-09-07` contains the V2 checkpoint, verified with `git ls-remote`
+  after the push.
+- The July 2026 Business Process Catalog framework is being integrated by this documentation
+  commit, applied on top of the published V2 checkpoint.
+- The next reconstruction slice is V3. **V3 has not started** and must remain a separate,
+  separately reviewed checkpoint.
+- Detailed evidence and residual risks are in
+  [docs/collaboration/CODEX_CLAUDE_WORKLOG.md](docs/collaboration/CODEX_CLAUDE_WORKLOG.md).
+
 Backend and frontend modules are broadly at MVP: sales, purchase, inventory, warehouse,
 CRM, HR, reporting, data import, storefront, and a fairly deep finance module (chart of
 accounts, journal, facturas, IVA report, P&L, balance sheet, aging, periods, bank
@@ -120,6 +139,12 @@ inside that directory, never from the parent.
 product for businesses too small for a €10–15k ERP and too big for spreadsheets (≤ ~50 employees).
 Governing principle, recorded in [CLAUDE.md](CLAUDE.md): *feature scope is reduced, data model depth
 is not — every scope cut must be a behaviour cut, never a schema cut.*
+
+**Process backbone decision, 2026-09-07:** the supplied July 2026 Microsoft Business Process
+Catalog is adopted as the canonical taxonomy for the Core ERP Completion Matrix. It does not expand
+scope to all D365 capabilities. The adoption rules, initial process classification, and first
+bounded matrix slice are in
+[docs/process/CORE_ERP_PROCESS_CATALOG.md](docs/process/CORE_ERP_PROCESS_CATALOG.md).
 
 ### Deliverables produced this session (analysis only — no code, no schema changes)
 

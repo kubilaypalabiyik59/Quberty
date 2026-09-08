@@ -7,6 +7,11 @@ anla, kendine bir takip listesi çıkar ve bunu uygulamayı fixlemek için kulla
 This is that list. It exists so that the architecture conversation can start from a shared model
 instead of from first principles every time.
 
+The checklist is the parameter/setup evidence layer beneath the canonical process taxonomy in
+[Core ERP process catalog framework](../process/CORE_ERP_PROCESS_CATALOG.md). The catalog says where
+a process belongs; this checklist says which configurable setup must exist for the selected
+Skarpine scenario. Neither document turns the full D365 surface into product scope.
+
 **Legend:** ✅ built · 🟡 partial · ❌ missing · ⛔ deliberately out of scope
 
 ---

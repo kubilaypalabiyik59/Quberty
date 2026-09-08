@@ -95,6 +95,21 @@ The shared core both in-scope processes write to — product dimensions, invento
 financial dimensions, posting profiles, document numbering, tax — is where the real
 architectural risk lives. That core deserves more care than either process on its own.
 
+### Canonical process taxonomy
+
+Use the Microsoft Dynamics 365 `JUL-2026` Business Process Catalog as the canonical process
+taxonomy, following `docs/process/CORE_ERP_PROCESS_CATALOG.md`.
+
+- Preserve all six levels: end-to-end process, process area, business process, scenario, system
+  process, and test case.
+- The catalog is not a feature-parity target and not an automatic backlog. Apply Skarpine's SME
+  scope overlay before proposing work.
+- Every analysis and implementation work item must name the relevant catalog IDs and separately
+  state scope status, implementation evidence, parameter owner, schema-hook decision, localization
+  effect, and acceptance evidence.
+- Do not use the workbook's product tags as the sole scope filter and do not treat its test cases as
+  sufficient regression coverage.
+
 ---
 
 ## 5. Research Rules

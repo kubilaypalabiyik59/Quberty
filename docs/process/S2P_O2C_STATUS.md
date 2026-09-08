@@ -7,6 +7,11 @@
 >
 > "Verified by running it" means a script or a browser session actually drove it against the real
 > database, not that the code reads correctly.
+>
+> This narrative status predates the July 2026 catalog adoption. Future revisions must map each
+> claim to the selected catalog IDs and controlled scope/implementation statuses defined in
+> [CORE_ERP_PROCESS_CATALOG.md](CORE_ERP_PROCESS_CATALOG.md). Do not reinterpret the existing symbols
+> as catalog-level coverage until that mapping is completed.
 
 ---
 

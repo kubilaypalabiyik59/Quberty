@@ -40,6 +40,14 @@
   is remediated incrementally when its process is next touched. Full text in
   `CODEX_CLAUDE_WORKLOG.md` §4.1. **It must be carried into every future Claude implementation
   prompt.**
+- **Business Process Catalog decision, recorded 2026-09-07.** The Microsoft Dynamics 365
+  `JUL-2026` Business Process Catalog is Skarpine's canonical process taxonomy and the backbone of
+  future Core ERP completion analysis. It is **not** a D365 feature-parity promise or an automatic
+  backlog. Use all six levels, then add Skarpine-owned scope, implementation evidence, parameter
+  ownership, hard-coding debt, schema hooks, localization impact, and acceptance evidence as a
+  separate overlay. The binding framework is
+  `docs/process/CORE_ERP_PROCESS_CATALOG.md`; carry relevant catalog IDs into every future analysis
+  and Claude implementation prompt.
 
 ## Resume checkpoint — 2026-09-06 (SUPERSEDED by the 2026-09-07 checkpoint below)
 
@@ -132,6 +140,28 @@
 - **Still not started:** the security module (analysis approved, implementation not), and backlog
   items P0.3 migration baselining, P0.4 checksum ledger, P0.5 CI drift checks, P0.6 parallel-
   developer rules.
+
+### Resume checkpoint addendum — 2026-09-07 after WORK-007 review
+
+- V1 governance (`a713a53`) and the WORK-006 clean baseline (`cef88c9`) are pushed and accepted on
+  `origin/codex/rebuild-2026-09-07`.
+- **WORK-007 / V2 is independently ACCEPTED by Codex at commit
+  `fcc008e9bf00b09ae450cdbe17d281561566cf48`.** Codex reviewed the repository diff rather than
+  relying on Claude's report, ran the complete backend suite (12 suites / 264 tests), and completed
+  the frontend production build (67 static pages). The rebuild worktree is clean.
+- **V2 is published.** `origin/codex/rebuild-2026-09-07` contains the V2 checkpoint
+  `fcc008e9bf00b09ae450cdbe17d281561566cf48`, pushed 2026-09-08 and confirmed with `git ls-remote`.
+  The Business Process Catalog documentation is integrated on top of it by the commit this bullet
+  belongs to. The next reconstruction slice is V3; **V3 has not started.**
+- WORK-007's accepted behaviour covers automatic/manual FACTURA numbering across the parent web
+  surfaces, including customer returns, and fails closed on unsupported fiscal-year resumption.
+- Residuals remain separate work: Android POS manual-number support; the Bolivian credit-note series
+  decision; a year/legal-entity-aware FACTURA history model; shared JSX for the repeated manual-
+  number control; and the `backend/scripts/` compiler gate.
+- The July 2026 Business Process Catalog framework was prepared on the separate local branch
+  `codex/business-process-catalog-framework-2026-09-07` and applied to the rebuild branch by
+  cherry-pick — never by merge — only after the V2 remote checkpoint had been verified. That branch
+  and its worktree remain in place; they were not deleted.
 
 ## Maintenance rule
 
