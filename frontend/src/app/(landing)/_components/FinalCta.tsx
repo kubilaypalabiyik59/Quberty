@@ -1,10 +1,10 @@
-import { CtaLink } from '@/components/ui/CtaLink';
+import { DEMO_EMAIL } from '@/app/(landing)/content';
+
+import { CtaLink } from '@/app/(landing)/_components/CtaLink';
 
 import { Reveal } from '@/app/(landing)/_components/Reveal';
 
 import type { LandingDictionary } from '@/app/(landing)/i18n/types';
-
-const DEMO_EMAIL = 'demo@quberty.dev';
 
 /** Final CTA: the closing offer to reach out. */
 export function FinalCta({ t }: { t: LandingDictionary }) {
