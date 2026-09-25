@@ -67,6 +67,14 @@ change.
   `<section>`), not on a wrapper inside it. Otherwise an empty landmark stays in the page.
   (Ledger: T2)
 
+## Playwright tests
+
+- In a URL glob, `?` and `*` are wildcards: `'??lang=es'` never matches a real URL. To match a
+  query string, use a regular expression: `page.waitForURL(/\?lang=es$/)`. (Ledger: T7)
+- `toBeVisible()` passes for an element at `opacity: 0`. To prove content is actually shown,
+  assert `toHaveCSS('opacity', '1')`. (Ledger: T7)
+- Import app code with relative paths. The `@/` alias is not resolved in tests.
+
 ## Copy and accessibility
 
 - Components never contain user-visible text. All text comes from the dictionary prop `t`.

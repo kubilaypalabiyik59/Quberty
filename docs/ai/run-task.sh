@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run one implementer task through Aider.
 # Usage: docs/ai/run-task.sh <task-file.md> <file> [file...]
+# TEST_CMD="..." replaces the default gate for this run, e.g. to add a Playwright spec to the
+# feedback loop: TEST_CMD="node docs/ai/check.mjs && cd frontend && npx playwright test <spec>".
 # Output streams to .aider.run.log (watch it with: Get-Content .aider.run.log -Wait -Encoding UTF8).
 set -u
 cd "$(git rev-parse --show-toplevel)"
