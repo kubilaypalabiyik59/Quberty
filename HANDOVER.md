@@ -1,5 +1,66 @@
 # HANDOVER — Skarpine ERP
 
+## Current state — 2026-09-25 (supersedes the coordination note below where they conflict)
+
+**Machine move.** Work continues on a new machine (`C:\Users\ryzen9`, RTX 2080 Ti). The old
+machine's repository (`C:\Users\Nieuw\...`) did not come across; the working tree did.
+
+- Git was rebuilt on `origin/codex/rebuild-2026-09-07`. Everything done after that point, including
+  WORK-048B/051A, which the note below describes as "approved in the uncommitted worktree", is in
+  one snapshot commit, `0d02a93`, on `recovery/2026-09-25-machine-move`.
+- The individual commit history of that period stayed on the old machine.
+- `frontend/src/lib/format.ts` exists on the base branch but not in the recovered tree. Its removal
+  is carried over as found, not confirmed as intended.
+
+**Roles.** Kubi named Claude the solution architect and reviewer; Codex is not available on this
+machine. Implementation is split:
+
+- **Ornith-1.5-9B** is a *local junior implementer* (LM Studio + Aider). It takes only
+  pattern-replication work.
+- **Claude** writes specs, reviews every diff, and keeps red-zone code (schema, posting, tax,
+  numbering, tenant). The implementer never touches red-zone code.
+- Setup and rules: `docs/ai/`. Run tasks with `docs/ai/run-task.sh`. The gate is
+  `docs/ai/check.mjs`, Aider's test-cmd. Conventions and the ledger are in the same folder.
+
+**Delivered 2026-09-25.** The Quberty marketing landing page at `/`, in EN/TR/ES with a language
+switcher, always dark, reusing the sign-in brand stage.
+
+- Spec: `docs/design/QUBERTY_LANDING_2026-09-25.md`.
+- Built by the implementer in 6 tasks and 11 rounds, recorded in `docs/ai/IMPLEMENTER_LEDGER.md`.
+- `/` no longer redirects to `/dashboard`. Signed-in users reach the app via Sign in, and
+  `10-session.spec.ts` was updated for this.
+- Verified: tsc, `next build`, and a Chromium check at 360/768/1440 px × 3 languages with 0 px
+  overflow. The switcher persists via cookie, and content stays visible under reduced motion.
+- **Not verified:** the updated `10-session.spec.ts` was not run, because it needs the backend and
+  database.
+
+**Branches.** `codex/rebuild-2026-09-07` → `recovery/2026-09-25-machine-move` →
+`landing/ornith-pilot`, and `origin/master` is an ancestor of all three.
+
+- A PR proposes `landing/ornith-pilot` → `master`.
+- It was deliberately **not** merged by Claude. The repo pipelines deploy only on `v*` tags, and
+  they live in `alm/` rather than `.github/`, so GitHub never runs them. But whether Vercel or
+  Railway auto-deploy from `master` through a Git integration is not recorded. Kubi confirms that,
+  then merges.
+- `codex/wip-full-snapshot-2026-09-06` is a side branch and not an ancestor. Keep it as an archive.
+
+**Open, in suggested order:**
+
+1. Merge the PR once auto-deploy is ruled out.
+2. The POS repo is missing on this machine (`skarpine-pos/` is empty; remote `Quberty-POS`).
+3. The `skarpine-second-opinion` router scripts are still on the old machine.
+4. ESLint is not installed in `frontend/`, and `npm run lint` stops at a setup prompt.
+5. The app has no favicon (404 everywhere).
+6. Landing follow-ups:
+   - a permanent Playwright spec (`11-landing.spec.ts`), a good implementer task;
+   - `hreflang` alternates and an Open Graph image;
+   - with JavaScript disabled, the sections below the hero stay hidden (an accepted trade-off).
+7. 491 design-token violations in legacy ERP components (palette classes, `rgb()`, arbitrary
+   values), found by the gate's audit mode:
+   `CHECK_PATHS="frontend/src/components" node docs/ai/check.mjs`. This is mechanical work that the
+   gate can verify, so it is a good pool of implementer tasks.
+8. Everything in the 2026-09-17 note below that is still marked OPEN, starting with WORK-048A.
+
 ## Active coordination — 2026-09-17
 
 Kubi explicitly resumed Codex architectural leadership and authorized bounded Claude CLI fixes
