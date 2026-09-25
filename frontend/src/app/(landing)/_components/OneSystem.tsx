@@ -17,7 +17,10 @@ export function OneSystem({ t }: { t: LandingDictionary }) {
           <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {t.oneSystem.tiles.map((tile, i) => (
               <div key={tile.title} className="rounded-surface border border-border bg-surface p-6">
-                <ICONS[i] aria-hidden className="h-5 w-5 text-accent" />
+                <ICONS[i]
+                  aria-hidden
+                  className="h-5 w-5 text-accent"
+                />
                 <h3 className="mt-4 text-title font-semibold text-fg">{tile.title}</h3>
                 <p className="mt-2 text-body text-fg-muted">{tile.body}</p>
               </div>

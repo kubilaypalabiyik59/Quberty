@@ -16,7 +16,10 @@ export function Problem({ t }: { t: LandingDictionary }) {
           <div className="mt-12 grid gap-4 md:grid-cols-3">
             {t.problem.items.map((item, i) => (
               <div key={item.title} className="rounded-surface border border-border bg-surface p-6">
-                <ICONS[i] aria-hidden className="h-5 w-5 text-accent" />
+                <ICONS[i]
+                  aria-hidden
+                  className="h-5 w-5 text-accent"
+                />
                 <h3 className="mt-4 text-title font-semibold text-fg">{item.title}</h3>
                 <p className="mt-2 text-body text-fg-muted">{item.body}</p>
               </div>
