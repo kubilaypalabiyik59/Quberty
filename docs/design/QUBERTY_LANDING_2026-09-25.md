@@ -269,8 +269,9 @@ component contains user-visible text of its own.** All text comes from `t`.
 6. `next/link` for internal links, a plain `<a>` for `mailto:`.
 7. Every image or decorative layer has `aria-hidden` or a real `alt`. There is one `<h1>` on the
    page, and section titles are `<h2>`.
-8. Each task ends with `npx tsc --noEmit` and `npm run lint` passing. Do not claim a task is done
-   without running both.
+8. Each task ends with `npx tsc --noEmit` passing in `frontend/`. Do not claim a task is done
+   without running it. (`npm run lint` is not used: ESLint is not installed in `frontend/`, and the
+   script stops at an interactive setup prompt. Adding ESLint is a separate work item.)
 
 ---
 
@@ -554,7 +555,8 @@ These pass the §1 policy on repo evidence, but the wording promises more than t
 
 ## 8. Acceptance
 
-1. `npx tsc --noEmit`, `npm run lint` and `npm run build` pass in `frontend/`.
+1. `npx tsc --noEmit` and `npm run build` pass in `frontend/`. The tsc baseline was clean on
+   2026-09-25.
 2. `/`, `/?lang=tr` and `/?lang=es` render with no console errors. The switcher persists the choice
    across a reload without the query parameter (cookie).
 3. Playwright screenshots at 360, 768 and 1440 px wide × 3 languages: no horizontal scroll, no
