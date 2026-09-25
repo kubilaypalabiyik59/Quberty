@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
-import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
+import { resolveDocumentCurrency } from '../../shared/services/currency/documentCurrency';
 import {
   REQUISITION_STATUS,
   REQUISITION_PURPOSE,
@@ -93,6 +93,7 @@ export async function createRequisition(
   }
 
   const estimated_total = Number(input.lines.reduce((s, l) => s + reqLineTotal(l), 0).toFixed(2));
+  const currency = await resolveDocumentCurrency(tenantId, input.currency);
   const requisition_number = await allocateNumber({ tenantId, reference: 'PURCHASE_REQUISITION' });
 
   return db.purchaseRequisition.create({
@@ -105,7 +106,7 @@ export async function createRequisition(
       purpose,
       required_date: input.required_date ? new Date(input.required_date) : null,
       justification: input.justification ?? null,
-      currency: input.currency ?? 'BOB',
+      currency,
       notes: input.notes ?? null,
       estimated_total,
       created_by: userId,
@@ -374,7 +375,7 @@ export async function createPurchaseOrderFromRequisition(
   );
   const money = await computePurchaseMoney(tenantId, agreed, { partyId: supplier.id });
 
-  const po_number = await nextPurchaseOrderNumber(tenantId);
+  const po_number = await allocateNumber({ tenantId, reference: 'PURCHASE_ORDER', legalEntityId: null });
 
   return db.$transaction(async (tx) => {
     const po = await tx.purchaseOrder.create({

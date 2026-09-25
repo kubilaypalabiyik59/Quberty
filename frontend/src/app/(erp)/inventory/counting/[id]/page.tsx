@@ -61,6 +61,9 @@ export default function CountDetailPage() {
     try {
       await api.put(`/inventory-counts/${id}/lines/${lineId}`, { counted_qty: val });
       qc.invalidateQueries({ queryKey: ['inventory-count', id] });
+    } catch (err: any) {
+      // e.g. 409 COUNT_NOT_EDITABLE once the count is finalized.
+      setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Failed to save the counted quantity');
     } finally {
       setSaving(null);
     }
@@ -73,7 +76,7 @@ export default function CountDetailPage() {
       qc.invalidateQueries({ queryKey: ['inventory-counts'] });
       router.push('/inventory/counting');
     },
-    onError: (err: any) => setError(err.response?.data?.message ?? 'Failed to finalize'),
+    onError: (err: any) => setError(err.response?.data?.error?.message ?? 'Failed to finalize'),
   });
 
   if (isLoading) return <div className="text-gray-400 py-12 text-center">Loading...</div>;

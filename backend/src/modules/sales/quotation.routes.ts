@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, paginated } from '../../shared/response';
 import { CreateQuotationSchema, UpdateQuotationLinesSchema } from '../../shared/schemas';
+import { routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
 import type { AppEnv } from '../../shared/context';
 import {
   createQuotation,
@@ -19,7 +19,27 @@ import {
 /** Sales quotations — mounted at /api/v1/sales/quotations. */
 const app = new Hono<AppEnv>();
 
-app.get('/', async (c) => {
+/**
+ * The permission each route requires (WORK-030a). Exported so a test can pin the
+ * map and prove every route in this file has exactly one entry; the guard is the
+ * first middleware, so a denial happens before validation and before the database.
+ */
+export const SALES_QUOTATION_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /': ['sales.quotation.read'],
+  'POST /': ['sales.quotation.create'],
+  'GET /:id': ['sales.quotation.read'],
+  'PUT /:id/lines': ['sales.quotation.update'],
+  'POST /:id/send': ['sales.quotation.send'],
+  'POST /:id/revise': ['sales.quotation.update'],
+  'POST /:id/confirm': ['sales.quotation.confirm', 'sales.order.create', 'customer.create'],
+  'POST /:id/lose': ['sales.quotation.close'],
+  'POST /:id/cancel': ['sales.quotation.close'],
+} satisfies RouteGuards);
+
+const guard = routeGuard(SALES_QUOTATION_ROUTE_PERMISSIONS);
+
+
+app.get('/', guard('GET /'), async (c) => {
   const { status, customer_id, lead_id, opportunity_id, page = '1', limit = '20' } = c.req.query();
 
   // Expiry is observed on read rather than by a scheduler — see the note on
@@ -51,12 +71,12 @@ app.get('/', async (c) => {
   return paginated(c, quotations, total, Number(page), Number(limit));
 });
 
-app.post('/', validate(CreateQuotationSchema), async (c) => {
+app.post('/', guard('POST /'), validate(CreateQuotationSchema), async (c) => {
   const q = await createQuotation(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, q);
 });
 
-app.get('/:id', async (c) => {
+app.get('/:id', guard('GET /:id'), async (c) => {
   const q = await db.salesQuotation.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -78,7 +98,7 @@ app.get('/:id', async (c) => {
   return ok(c, q);
 });
 
-app.put('/:id/lines', requireRole('admin', 'store_manager'), validate(UpdateQuotationLinesSchema), async (c) => {
+app.put('/:id/lines', guard('PUT /:id/lines'), validate(UpdateQuotationLinesSchema), async (c) => {
   const body = c.get('body') as any;
   const q = await updateQuotationLines(
     c.get('tenantId'),
@@ -89,26 +109,26 @@ app.put('/:id/lines', requireRole('admin', 'store_manager'), validate(UpdateQuot
   return ok(c, q);
 });
 
-app.post('/:id/send', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/send', guard('POST /:id/send'), async (c) => {
   return ok(c, await sendQuotation(c.get('tenantId'), c.req.param('id')));
 });
 
-app.post('/:id/revise', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/revise', guard('POST /:id/revise'), async (c) => {
   return created(c, await reviseQuotation(c.get('tenantId'), c.req.param('id'), c.get('user').id));
 });
 
 /** The join to Order to Cash: creates the sales order. */
-app.post('/:id/confirm', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/confirm', guard('POST /:id/confirm'), async (c) => {
   const result = await confirmQuotation(c.get('tenantId'), c.req.param('id'), c.get('user').id);
   return created(c, result);
 });
 
-app.post('/:id/lose', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/lose', guard('POST /:id/lose'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   return ok(c, await closeQuotation(c.get('tenantId'), c.req.param('id'), 'LOST', reason));
 });
 
-app.post('/:id/cancel', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/cancel', guard('POST /:id/cancel'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   return ok(c, await closeQuotation(c.get('tenantId'), c.req.param('id'), 'CANCELLED', reason));
 });

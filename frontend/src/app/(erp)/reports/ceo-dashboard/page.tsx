@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { PageHeader } from '@/components/erp/PageHeader';
 import { OperationsMap } from '@/components/erp/OperationsMap';
 import { AlertTriangle } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * CEO dashboard — where the business actually is, without opening a report.
@@ -79,6 +80,7 @@ const PROCESS_SUB: Record<string, string> = {
 };
 
 export default function CeoDashboardPage() {
+  const { money } = useMoney();
   const { data, isLoading, error } = useQuery({
     queryKey: ['ceo-dashboard'],
     queryFn: () => api.get('/reports/ceo-dashboard').then((r) => r.data.data),
@@ -205,7 +207,7 @@ export default function CeoDashboardPage() {
                   <div className="mt-3 flex items-baseline justify-between border-t border-border pt-3">
                     <span className="text-caption text-fg-muted">Value in flight</span>
                     <span className="text-body font-semibold tabular-nums text-fg">
-                      Bs. {Math.round(p.value).toLocaleString()}
+                      {money(Math.round(p.value))}
                     </span>
                   </div>
 
@@ -260,7 +262,7 @@ export default function CeoDashboardPage() {
                 </span>
                 {selectedAgent.party && <span className="text-fg-muted">{selectedAgent.party}</span>}
                 <span className="ml-auto tabular-nums text-fg">
-                  Bs. {Math.round(selectedAgent.amount).toLocaleString()}
+                  {money(Math.round(selectedAgent.amount))}
                 </span>
               </div>
             )}
@@ -300,7 +302,7 @@ export default function CeoDashboardPage() {
                       <td className="px-4 py-2 text-fg-muted">{a.site_name ?? '—'}</td>
                       <td className="px-4 py-2 text-right tabular-nums text-danger">{a.late_by}d</td>
                       <td className="px-4 py-2 text-right tabular-nums text-fg">
-                        Bs. {Math.round(a.amount).toLocaleString()}
+                        {money(Math.round(a.amount))}
                       </td>
                     </tr>
                   ))}
@@ -334,7 +336,7 @@ export default function CeoDashboardPage() {
                         </div>
                       </td>
                       <td className="w-32 px-4 py-2 text-right tabular-nums text-fg">
-                        Bs. {Math.round(s.revenue).toLocaleString()}
+                        {money(Math.round(s.revenue))}
                       </td>
                       <td className="w-20 px-4 py-2 text-right tabular-nums text-fg-muted">{s.orders}</td>
                     </tr>

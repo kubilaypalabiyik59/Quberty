@@ -1,5 +1,8 @@
+'use client';
+
 import { Badge } from '@/components/ui/Badge';
 import Link from 'next/link';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const STATUS_COLORS: Record<string, 'gray' | 'blue' | 'yellow' | 'purple' | 'orange' | 'green' | 'red'> = {
   DRAFT: 'gray', CONFIRMED: 'blue', PICKING: 'yellow',
@@ -16,6 +19,7 @@ interface Order {
 }
 
 export function RecentOrdersTable({ orders }: { orders: Order[] }) {
+  const { money } = useMoney();
   if (!orders.length) return <p className="text-sm text-gray-400 text-center py-6">No recent orders</p>;
 
   return (
@@ -44,7 +48,7 @@ export function RecentOrdersTable({ orders }: { orders: Order[] }) {
               <td className="py-2.5">
                 <Badge color={STATUS_COLORS[order.status] ?? 'gray'}>{order.status}</Badge>
               </td>
-              <td className="py-2.5 text-right font-medium">Bs. {Number(order.total_amount).toLocaleString()}</td>
+              <td className="py-2.5 text-right font-medium">{money(order.total_amount)}</td>
               <td className="py-2.5 text-right text-gray-400">{new Date(order.created_at).toLocaleDateString()}</td>
             </tr>
           ))}

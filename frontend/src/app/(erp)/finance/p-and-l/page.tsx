@@ -4,10 +4,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 export default function ProfitLossPage() {
+  const { money } = useMoney();
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -49,14 +51,14 @@ export default function ProfitLossPage() {
             <TrendingUp className="h-4 w-4 text-green-500" />
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Revenue</p>
           </div>
-          <p className="text-2xl font-bold text-green-600">Bs. {(data?.total_revenue ?? 0).toFixed(2)}</p>
+          <p className="text-2xl font-bold text-green-600">{money(data?.total_revenue ?? 0)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="flex items-center gap-2 mb-1">
             <TrendingDown className="h-4 w-4 text-red-500" />
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Expenses</p>
           </div>
-          <p className="text-2xl font-bold text-red-600">Bs. {(data?.total_expenses ?? 0).toFixed(2)}</p>
+          <p className="text-2xl font-bold text-red-600">{money(data?.total_expenses ?? 0)}</p>
         </div>
         <div className={`rounded-xl border p-5 ${netIncome >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
           <div className="flex items-center gap-2 mb-1">
@@ -64,7 +66,7 @@ export default function ProfitLossPage() {
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Net Income</p>
           </div>
           <p className={`text-2xl font-bold ${netIncome >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-            Bs. {netIncome.toFixed(2)}
+            {money(netIncome)}
           </p>
         </div>
       </div>
@@ -93,14 +95,14 @@ export default function ProfitLossPage() {
                 <tr key={r.code} className="hover:bg-gray-50">
                   <td className="px-4 py-2 font-mono text-xs text-gray-400">{r.code}</td>
                   <td className="px-4 py-2 text-gray-900">{r.name}</td>
-                  <td className="px-4 py-2 text-right font-medium text-green-600">Bs. {r.balance.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-medium text-green-600">{money(r.balance)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot className="border-t border-gray-200 bg-green-50">
               <tr>
                 <td colSpan={2} className="px-4 py-2 text-sm font-bold text-gray-700">Total Revenue</td>
-                <td className="px-4 py-2 text-right font-bold text-green-700">Bs. {(data?.total_revenue ?? 0).toFixed(2)}</td>
+                <td className="px-4 py-2 text-right font-bold text-green-700">{money(data?.total_revenue ?? 0)}</td>
               </tr>
             </tfoot>
           </table>
@@ -129,14 +131,14 @@ export default function ProfitLossPage() {
                 <tr key={e.code} className="hover:bg-gray-50">
                   <td className="px-4 py-2 font-mono text-xs text-gray-400">{e.code}</td>
                   <td className="px-4 py-2 text-gray-900">{e.name}</td>
-                  <td className="px-4 py-2 text-right font-medium text-red-600">Bs. {e.balance.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-medium text-red-600">{money(e.balance)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot className="border-t border-gray-200 bg-red-50">
               <tr>
                 <td colSpan={2} className="px-4 py-2 text-sm font-bold text-gray-700">Total Expenses</td>
-                <td className="px-4 py-2 text-right font-bold text-red-700">Bs. {(data?.total_expenses ?? 0).toFixed(2)}</td>
+                <td className="px-4 py-2 text-right font-bold text-red-700">{money(data?.total_expenses ?? 0)}</td>
               </tr>
             </tfoot>
           </table>
@@ -147,7 +149,7 @@ export default function ProfitLossPage() {
       <div className={`mt-4 rounded-xl border p-4 flex items-center justify-between ${netIncome >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
         <span className="font-bold text-gray-700">Net Income — {MONTHS[month-1]} {year}</span>
         <span className={`text-xl font-bold ${netIncome >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-          Bs. {netIncome.toFixed(2)} {netIncome >= 0 ? '▲ Profit' : '▼ Loss'}
+          {money(netIncome)} {netIncome >= 0 ? '▲ Profit' : '▼ Loss'}
         </span>
       </div>
     </div>

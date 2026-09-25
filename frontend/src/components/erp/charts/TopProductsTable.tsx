@@ -1,3 +1,7 @@
+'use client';
+
+import { useMoney } from '@/components/CurrencyProvider';
+
 interface Product {
   name: string;
   units_sold: number;
@@ -6,6 +10,7 @@ interface Product {
 }
 
 export function TopProductsTable({ data, dark }: { data: Product[]; dark?: boolean }) {
+  const { money } = useMoney();
   if (!data.length) {
     return (
       <p className={`text-sm text-center py-6 ${dark ? 'text-red-300/30' : 'text-gray-400'}`}>
@@ -27,7 +32,7 @@ export function TopProductsTable({ data, dark }: { data: Product[]; dark?: boole
           <div className="flex-1 min-w-0">
             <p className={`text-sm font-medium truncate ${nameColor}`}>{p.name}</p>
             <p className={`text-xs ${metaColor}`}>
-              {p.units_sold} units · Bs. {Number(p.revenue).toLocaleString()}
+              {p.units_sold} units · {money(p.revenue)}
             </p>
           </div>
           {p.margin_pct != null && (

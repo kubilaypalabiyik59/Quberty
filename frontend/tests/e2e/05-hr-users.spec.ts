@@ -16,9 +16,13 @@ test.describe('HR — Employee & Cashier Creation', () => {
     await page.click('button:has-text("New Employee")');
     // Use the exact section heading — the page subtitle also contains "system accounts"
     await expect(page.getByText('System Account (ERP + POS)')).toBeVisible();
-    // Role dropdown includes store_manager and cashier
+    // The existing selector exposes operational and specialized purchasing roles.
     await expect(page.locator('option[value="store_manager"]')).toBeAttached();
     await expect(page.locator('option[value="cashier"]')).toBeAttached();
+    for (const role of ['purchasing_requester', 'buyer', 'receiver', 'ap_clerk', 'finance_approver', 'auditor']) {
+      await expect(page.locator(`option[value="${role}"]`)).toBeAttached();
+    }
+    await expect(page.locator('option[value="customer"]')).toHaveCount(0);
   });
 
   test('create cashier account', async ({ page }) => {

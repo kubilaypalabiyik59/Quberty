@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
+import { nextCustomerCode } from '../../shared/services/customerCode.service';
+import { resolveDocumentCurrency } from '../../shared/services/currency/documentCurrency';
 import {
   LEAD_STATUS,
   OPPORTUNITY_STATUS,
@@ -62,7 +64,7 @@ export async function createLead(tenantId: string, input: CreateLeadInput, creat
       source: input.source ?? 'MANUAL',
       rating: input.rating ?? 'WARM',
       estimated_amount: input.estimated_amount ?? null,
-      currency: input.currency ?? 'BOB',
+      currency: await resolveDocumentCurrency(tenantId, input.currency),
       owner_user_id: input.owner_user_id ?? null,
       notes: input.notes ?? null,
       created_by: createdBy,
@@ -70,23 +72,6 @@ export async function createLead(tenantId: string, input: CreateLeadInput, creat
   });
 }
 
-/**
- * Next customer code.
- *
- * The existing `POST /customers` derives this from `count() + 1`, which is the
- * same shape as the journal-number bug D-5: it collides under concurrency and it
- * reuses codes after a deletion. Reading MAX of the numeric suffix is strictly
- * better, and the caller retries once on a unique violation, which closes the
- * remaining race without introducing another counter table.
- */
-async function nextCustomerCode(tenantId: string, client: Prisma.TransactionClient): Promise<string> {
-  const rows = await client.$queryRaw<{ max: bigint | null }[]>`
-    SELECT COALESCE(MAX(NULLIF(regexp_replace(code, '^\\D*', ''), '')::bigint), 0) AS max
-      FROM customers
-     WHERE tenant_id = ${tenantId}::uuid AND code ~ '^CUST-[0-9]+$'
-  `;
-  return `CUST-${String(Number(rows[0]?.max ?? 0) + 1).padStart(5, '0')}`;
-}
 
 /**
  * Turn a lead into a customer record.
@@ -371,7 +356,7 @@ export async function createOpportunity(
       stage_id: stage?.id ?? null,
       probability: input.probability ?? stage?.default_probability ?? 50,
       estimated_amount: input.estimated_amount ?? 0,
-      currency: input.currency ?? 'BOB',
+      currency: await resolveDocumentCurrency(tenantId, input.currency),
       expected_close_date: input.expected_close_date ? new Date(input.expected_close_date) : null,
       owner_user_id: input.owner_user_id ?? createdBy,
       notes: input.notes ?? null,

@@ -34,16 +34,17 @@ const NEW_CATEGORIES = ['ACCRUED_PURCHASES', 'PURCHASE_EXPENDITURE', 'PRICE_VARI
 
 (async () => {
   const tenants = await db.tenant.findMany({
-    select: { id: true, slug: true, name: true, currency_code: true },
+    select: { id: true, slug: true, name: true, country: true },
   });
 
   for (const t of tenants) {
-    console.log(`\n${'='.repeat(78)}\n${t.name} (${t.slug}) — ${t.currency_code}\n${'='.repeat(78)}`);
+    console.log(`\n${'='.repeat(78)}\n${t.name} (${t.slug}) — ${t.country ?? 'no country set'}\n${'='.repeat(78)}`);
 
-    const template =
-      COA_TEMPLATES.find(x => x.currency === t.currency_code) ?? getTemplate('generic-ifrs');
+    // By jurisdiction, not by currency: a chart of accounts is a country's, and
+    // several countries share a currency (WORK-025).
+    const template = t.country ? COA_TEMPLATES.find(x => x.country === t.country) : undefined;
     if (!template) {
-      console.log('  no chart template matches this tenant — skipped');
+      console.log('  no chart template matches this tenant\'s country — set it, or skip this tenant');
       continue;
     }
     console.log(`  template: ${template.name}`);

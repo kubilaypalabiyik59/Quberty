@@ -14,7 +14,7 @@ export const openApiSpec: Record<string, any> = {
 Full-stack ERP with Sales, Purchase, Inventory, Warehouse, HR, Finance, and POS modules.
 
 ### Authentication
-All endpoints (except \`/auth/login\`, \`/auth/register\`, \`/tenants\`) require a **Bearer token** in the \`Authorization\` header.
+All endpoints (except \`/auth/login\`, \`/auth/register\`) require a **Bearer token** in the \`Authorization\` header.
 
 Tenant is resolved from:
 - \`x-tenant-id\` header (UUID), OR
@@ -89,7 +89,7 @@ Tenant is resolved from:
           email:        { type: 'string', format: 'email' },
           first_name:   { type: 'string' },
           last_name:    { type: 'string' },
-          role:         { type: 'string', enum: ['admin', 'store_manager', 'warehouse_worker', 'employee', 'customer'] },
+          role:         { type: 'string', enum: ['admin', 'store_manager', 'warehouse_worker', 'employee', 'customer', 'cashier', 'purchasing_requester', 'buyer', 'receiver', 'ap_clerk', 'finance_approver', 'auditor', 'finance_manager'] },
           is_active:    { type: 'boolean' },
           last_login_at: { type: 'string', format: 'date-time', nullable: true },
           created_at:   { type: 'string', format: 'date-time' },
@@ -243,13 +243,15 @@ Tenant is resolved from:
     },
     '/v1/auth/register': {
       post: {
-        tags: ['Auth'], summary: 'Register new customer account', security: [],
+        tags: ['Auth'], summary: 'Register a storefront customer in the named tenant (exactly one of tenant_id or tenant_slug; always role customer). POST /v1/auth/make-admin was removed (WORK-030a)', security: [],
         requestBody: {
           required: true,
-          content: { 'application/json': { schema: { type: 'object', required: ['email','password','first_name','last_name'], properties: { email: { type: 'string', format: 'email' }, password: { type: 'string', minLength: 8 }, first_name: { type: 'string' }, last_name: { type: 'string' }, tenant_id: { type: 'string', format: 'uuid' } } } } },
+          content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['email','password','first_name','last_name'], description: 'Exactly one of tenant_id or tenant_slug', properties: { email: { type: 'string', format: 'email' }, password: { type: 'string', minLength: 8 }, first_name: { type: 'string' }, last_name: { type: 'string' }, tenant_id: { type: 'string', format: 'uuid' }, tenant_slug: { type: 'string' }, phone: { type: 'string' }, address: { type: 'string' }, city: { type: 'string' }, country: { type: 'string' }, date_of_birth: { type: 'string' } } } } },
         },
         responses: {
-          '201': { description: 'Account created' },
+          '201': { description: 'Customer account created' },
+          '400': { description: 'VALIDATION_ERROR — no tenant, two tenants, or an unknown key such as role' },
+          '404': { description: 'TENANT_NOT_FOUND' },
           '409': { description: 'Email already registered', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
         },
       },
@@ -273,16 +275,50 @@ Tenant is resolved from:
     },
 
     // ── Tenants ─────────────────────────────────────────────────────────────
-    '/v1/tenants': {
-      post: {
-        tags: ['Tenants'], summary: 'Create new tenant', security: [],
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['name','slug'], properties: { name: { type: 'string' }, slug: { type: 'string' }, plan: { type: 'string', default: 'starter' }, language: { type: 'string', default: 'es' }, timezone: { type: 'string', default: 'America/La_Paz' } } } } } },
-        responses: { '201': { description: 'Tenant created', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { $ref: '#/components/schemas/Tenant' } } } } } } },
-      },
+    // The caller's own tenant only. Tenants are created by the operator CLI
+    // (backend/scripts/createTenant.ts), not over HTTP.
+    '/v1/tenant/currency': {
+      get: { tags: ['Tenants'], summary: 'The ledger currency every screen renders money in — authentication only, no permission (WORK-025b). Null before the ledger exists', responses: { '200': { description: 'code, symbol, rounding_precision, rounding_method, locale — or null' }, '401': { description: 'Not authenticated' } } },
     },
-    '/v1/tenants/{id}/config': {
-      get: { tags: ['Tenants'], summary: 'Get tenant configuration', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], responses: { '200': { description: 'Tenant config' } } },
-      put: { tags: ['Tenants'], summary: 'Update tenant configuration', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { modules: { type: 'object' }, branding: { type: 'object' }, language: { type: 'string' }, timezone: { type: 'string' } } } } } }, responses: { '200': { description: 'Updated' } } },
+    '/v1/tenant/config': {
+      get: { tags: ['Tenants'], summary: 'Get own tenant configuration (setup.tenant.read)', responses: { '200': { description: 'Tenant config' }, '401': { description: 'Not authenticated' }, '403': { description: 'Permission denied' } } },
+      put: { tags: ['Tenants'], summary: 'Update own tenant branding, language, timezone (setup.tenant.maintain)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, properties: { branding: { type: 'object' }, language: { type: 'string' }, timezone: { type: 'string' } } } } } }, responses: { '200': { description: 'Updated' }, '400': { description: 'Unknown key or modules supplied' }, '401': { description: 'Not authenticated' }, '403': { description: 'Permission denied' } } },
+    },
+    '/v1/tenant/setup': {
+      put: { tags: ['Tenants'], summary: 'Update the legacy tax config (finance.setup.maintain). The accounting currency is set via PUT /v1/finance/ledger-currencies; currency_code here is refused (400)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['tax_config'], properties: { tax_config: { type: 'object' } } } } } }, responses: { '200': { description: 'Updated' }, '400': { description: 'Validation failed (including a currency_code)' }, '401': { description: 'Not authenticated' }, '403': { description: 'Permission denied' } } },
+    },
+
+    // ── Currencies and exchange rates (WORK-024a) ───────────────────────────
+    '/v1/finance/ledger-currencies': {
+      get: { tags: ['Finance'], summary: 'Ledger accounting/reporting currency, rate types, and whether they are locked (finance.currency.read)', responses: { '200': { description: 'Ledger currencies' }, '422': { description: 'LEDGER_CURRENCY_NOT_CONFIGURED' } } },
+      put: { tags: ['Finance'], summary: 'Set the ledger currencies (finance.setup.maintain). Reporting must equal accounting until WORK-024b; only POSTING_DATE is supported', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['accounting_currency_code', 'reporting_currency_code', 'accounting_rate_type_id'], properties: { accounting_currency_code: { type: 'string', pattern: '^[A-Z]{3}$' }, reporting_currency_code: { type: 'string', pattern: '^[A-Z]{3}$' }, accounting_rate_type_id: { type: 'string', format: 'uuid' }, reporting_rate_type_id: { type: 'string', format: 'uuid', nullable: true }, exchange_rate_date_basis: { type: 'string', enum: ['POSTING_DATE', 'DOCUMENT_DATE'] } } } } } }, responses: { '200': { description: 'Updated (re-sending the current values is a no-op)' }, '403': { description: 'Permission denied' }, '409': { description: 'CURRENCY_LOCKED: transactions already posted' }, '422': { description: 'CURRENCY_INACTIVE, RATE_TYPE_NOT_FOUND, REPORTING_CURRENCY_UNSUPPORTED, EXCHANGE_RATE_DATE_BASIS_UNSUPPORTED' } } },
+    },
+    '/v1/finance/currencies': {
+      get: { tags: ['Finance'], summary: "The tenant's activated currencies with rounding (finance.currency.read)", responses: { '200': { description: 'Currencies' } } },
+      post: { tags: ['Finance'], summary: 'Activate an ISO 4217 currency (finance.setup.maintain); more than two decimals refused', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['currency_code'], properties: { currency_code: { type: 'string', pattern: '^[A-Z]{3}$' }, symbol: { type: 'string' }, rounding_precision: { type: 'number' }, rounding_method: { type: 'string', enum: ['NEAREST', 'UP', 'DOWN'] } } } } } }, responses: { '201': { description: 'Activated' }, '409': { description: 'CURRENCY_EXISTS' }, '422': { description: 'CURRENCY_UNKNOWN, CURRENCY_PRECISION_UNSUPPORTED' } } },
+    },
+    '/v1/finance/currencies/iso': {
+      get: { tags: ['Finance'], summary: 'ISO 4217 reference list (finance.currency.read)', responses: { '200': { description: 'ISO currencies' } } },
+    },
+    '/v1/finance/currencies/{code}': {
+      put: { tags: ['Finance'], summary: 'Update symbol, rounding or active flag (finance.setup.maintain); a ledger currency cannot be deactivated', responses: { '200': { description: 'Updated' }, '404': { description: 'CURRENCY_NOT_FOUND' }, '409': { description: 'CURRENCY_IN_USE_BY_LEDGER' } } },
+    },
+    '/v1/finance/exchange-rate-types': {
+      get: { tags: ['Finance'], summary: 'Exchange-rate types (finance.currency.read)', responses: { '200': { description: 'Rate types' } } },
+      post: { tags: ['Finance'], summary: 'Create a rate type (finance.setup.maintain)', responses: { '201': { description: 'Created' }, '409': { description: 'RATE_TYPE_EXISTS' } } },
+    },
+    '/v1/finance/exchange-rate-types/{id}': {
+      put: { tags: ['Finance'], summary: 'Rename or (de)activate a rate type (finance.setup.maintain); the ledger rate type cannot be deactivated', responses: { '200': { description: 'Updated' }, '409': { description: 'RATE_TYPE_IN_USE_BY_LEDGER' } } },
+    },
+    '/v1/finance/exchange-rates': {
+      get: { tags: ['Finance'], summary: 'Dated rates, optionally by rate_type_id (finance.currency.read)', responses: { '200': { description: 'Rates' } } },
+      post: { tags: ['Finance'], summary: 'Add a dated rate; the pair is created on first use and a reciprocal pair is refused (finance.exchange_rate.maintain: admin, store manager, finance approver)', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['rate_type_id', 'from_currency_code', 'to_currency_code', 'valid_from', 'rate'], properties: { rate_type_id: { type: 'string', format: 'uuid' }, from_currency_code: { type: 'string', pattern: '^[A-Z]{3}$' }, to_currency_code: { type: 'string', pattern: '^[A-Z]{3}$' }, valid_from: { type: 'string', format: 'date' }, rate: { type: 'number', exclusiveMinimum: 0 }, conversion_factor: { type: 'integer', minimum: 1 } } } } } }, responses: { '201': { description: 'Added' }, '409': { description: 'RECIPROCAL_PAIR_EXISTS, EXCHANGE_RATE_EXISTS, CONVERSION_FACTOR_MISMATCH' }, '422': { description: 'RATE_TYPE_NOT_FOUND, CURRENCY_INACTIVE' } } },
+    },
+    '/v1/finance/exchange-rates/resolve': {
+      get: { tags: ['Finance'], summary: 'Preview the rate a posting on a date would use (finance.currency.read); query rate_type_id, from, to, date', responses: { '200': { description: 'Resolved rate' }, '422': { description: 'EXCHANGE_RATE_MISSING, CURRENCY_INACTIVE' } } },
+    },
+    '/v1/finance/exchange-rates/{id}': {
+      put: { tags: ['Finance'], summary: 'Correct an existing rate (finance.setup.maintain: admin only); posted documents keep their rate', responses: { '200': { description: 'Corrected' }, '404': { description: 'EXCHANGE_RATE_NOT_FOUND' } } },
     },
 
     // ── Products ─────────────────────────────────────────────────────────────
@@ -473,7 +509,7 @@ Tenant is resolved from:
       get: { tags: ['HR'], summary: 'List all users (admin only)', responses: { '200': { description: 'User list', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, data: { type: 'array', items: { $ref: '#/components/schemas/User' } } } } } } } } },
     },
     '/v1/hr/users/{id}/role': {
-      put: { tags: ['HR'], summary: 'Change user role', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['role'], properties: { role: { type: 'string', enum: ['admin','store_manager','warehouse_worker','employee','customer'] } } } } } }, responses: { '200': { description: 'Role updated' } } },
+      put: { tags: ['HR'], summary: 'Change user role', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['role'], properties: { role: { type: 'string', enum: ['admin','store_manager','warehouse_worker','employee','customer','cashier','purchasing_requester','buyer','receiver','ap_clerk','finance_approver','auditor','finance_manager'] } } } } } }, responses: { '200': { description: 'Role updated' } } },
     },
     '/v1/hr/employees': {
       get: { tags: ['HR'], summary: 'List active employees', responses: { '200': { description: 'Employee list' } } },

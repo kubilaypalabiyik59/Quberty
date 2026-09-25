@@ -8,6 +8,8 @@ import { contextForPurchaseOrder } from '../../shared/services/dimension.service
 import { resolveItemPolicies, groupByItemGroup, ItemPolicy } from '../../shared/services/itemPolicy.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
+import { createInvoiceOpenTransaction } from './vendorPayment.service';
+import { assertDocumentCurrencySupported, resolveDocumentCurrency } from '../../shared/services/currency/documentCurrency';
 import {
   resolveMatchingPolicy,
   resolvePriceTolerance,
@@ -137,7 +139,7 @@ export async function createInvoice(
       const receiptTotals = await receiptQuantitiesByPoLine(tx, po.id);
       lines = po.lines
         .map(l => {
-          const ordered = Number(l.quantity);
+          const ordered = Number(l.quantity) - Number(l.cancelled_qty);
           const received = Number(receiptTotals.get(l.id) ?? 0);
           const invoiced = Number(l.invoiced_qty);
           const qty =
@@ -166,6 +168,33 @@ export async function createInvoice(
       );
     }
 
+    if (po) {
+      const requestedByLine = new Map<string, number>();
+      for (const line of lines) {
+        if (!line.po_line_id) continue;
+        const source = po.lines.find(candidate => candidate.id === line.po_line_id);
+        if (!source) {
+          throw new AppError(`Purchase order line ${line.po_line_id} is not on ${po.po_number}.`, 400);
+        }
+        requestedByLine.set(source.id, (requestedByLine.get(source.id) ?? 0) + Number(line.quantity));
+      }
+      for (const [lineId, requested] of requestedByLine) {
+        const source = po.lines.find(line => line.id === lineId)!;
+        const available = Number(source.quantity) - Number(source.cancelled_qty) - Number(source.invoiced_qty);
+        if (requested > available + 1e-9) {
+          throw new AppError(
+            `Cannot invoice ${requested} of that line — only ${Number(available.toFixed(2))} remains on ${po.po_number}.`,
+            409,
+            'INVOICE_QUANTITY_EXCEEDS_ORDER_REMAINDER',
+          );
+        }
+      }
+    }
+
+    // The order's currency, or the ledger's accounting currency for an invoice
+    // without an order. Resolved before a number is drawn.
+    const documentCurrency = await resolveDocumentCurrency(tenantId, po?.currency, tx);
+
     const internalNumber = await allocateNumber({
       tenantId, reference: 'VENDOR_INVOICE', legalEntityId, tx,
     });
@@ -184,7 +213,7 @@ export async function createInvoice(
         supplier_tax_id:           input.supplier_tax_id ?? null,
         fiscal_authorization_code: input.fiscal_authorization_code ?? null,
         fiscal_control_code:       input.fiscal_control_code ?? null,
-        currency:                  po?.currency ?? 'BOB',
+        currency:                  documentCurrency,
         notes:                     input.notes ?? null,
         created_by:                userId,
       },
@@ -523,6 +552,15 @@ export async function postInvoice(
     if (invoice.status === 'POSTED') throw new AppError('This invoice is already posted.', 409);
     if (invoice.status === 'CANCELLED') throw new AppError('A cancelled invoice cannot be posted.', 409);
 
+    // Before anything is written: the voucher below and `exchange_rate: 1` are
+    // only true when the invoice is in the ledger's accounting currency.
+    await assertDocumentCurrencySupported(tenantId, invoice.currency, {
+      errorCode: 'VENDOR_INVOICE_FX_NOT_IMPLEMENTED',
+      capability: 'Vendor invoice posting',
+      legalEntityId,
+      client: tx,
+    });
+
     const params = await tx.purchaseParameters.findFirst({
       where: { tenant_id: tenantId, legal_entity_id: legalEntityId },
       select: { post_invoice_with_discrepancies: true, post_product_receipt_in_ledger: true },
@@ -578,7 +616,21 @@ export async function postInvoice(
         posted_at: new Date(),
         posted_by: userId,
         journal_entry_id: journal.journalId,
+        exchange_rate: 1,
+        amount_functional: invoice.total_amount,
       },
+    });
+
+    await createInvoiceOpenTransaction(tx, {
+      tenantId,
+      legalEntityId: invoice.legal_entity_id,
+      invoiceId: invoice.id,
+      supplierId: invoice.supplier_id,
+      invoiceDate: invoice.invoice_date,
+      postingDate: invoice.posting_date,
+      currency: invoice.currency,
+      amount: Number(invoice.total_amount),
+      journalEntryId: journal.journalId,
     });
 
     // ── Order accumulators ───────────────────────────────────────────────────
@@ -586,6 +638,17 @@ export async function postInvoice(
     // remainder and the deliver remainder reach zero.
     for (const line of invoice.lines) {
       if (!line.po_line_id) continue;
+      const current = await tx.purchaseOrderLine.findUnique({ where: { id: line.po_line_id } });
+      if (!current) throw new AppError('Purchase order line not found.', 409, 'PURCHASE_ORDER_LINE_NOT_FOUND');
+      const invoiceRemainder =
+        Number(current.quantity) - Number(current.cancelled_qty) - Number(current.invoiced_qty);
+      if (Number(line.quantity) > invoiceRemainder + 1e-9) {
+        throw new AppError(
+          `Invoice quantity exceeds the open quantity on its purchase order line.`,
+          409,
+          'INVOICE_EXCEEDS_OPEN_PURCHASE_QUANTITY',
+        );
+      }
       await tx.purchaseOrderLine.update({
         where: { id: line.po_line_id },
         data: { invoiced_qty: { increment: Number(line.quantity) } },
@@ -594,11 +657,11 @@ export async function postInvoice(
     if (invoice.purchase_order) {
       const lines = await tx.purchaseOrderLine.findMany({
         where: { po_id: invoice.purchase_order.id },
-        select: { quantity: true, received_qty: true, invoiced_qty: true },
+        select: { quantity: true, cancelled_qty: true, received_qty: true, invoiced_qty: true },
       });
       const done = lines.every(
-        l => Number(l.invoiced_qty) >= Number(l.quantity) - 1e-9 &&
-             Number(l.received_qty) >= Number(l.quantity) - 1e-9,
+        l => Number(l.invoiced_qty) >= Number(l.quantity) - Number(l.cancelled_qty) - 1e-9 &&
+             Number(l.received_qty) >= Number(l.quantity) - Number(l.cancelled_qty) - 1e-9,
       );
       if (done) {
         await tx.purchaseOrder.update({

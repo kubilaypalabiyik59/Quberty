@@ -24,7 +24,12 @@ model Tenant {
   branding      Json?
   language      String   @default("en")
   timezone      String   @default("UTC")
-  currency_code String   @default("USD")
+  /// ISO 3166-1 alpha-2. What jurisdiction this company files in — which chart of
+  /// accounts it is provisioned with, and (later) which localization rules apply.
+  /// Nullable because existing tenants have none, and deriving one from the
+  /// currency is exactly the inference WORK-025 removes: Ecuador, Panama and El
+  /// Salvador all use USD and none of them files the same chart.
+  country       String?
   tax_config    Json?
   is_active     Boolean  @default(true)
   created_at    DateTime @default(now())
@@ -80,7 +85,11 @@ model Site {
   code       String
   name       String
   city       String
-  country    String   @default("TR")
+  /// ISO 3166-1 alpha-2. No default: a site stamped with somebody else's country
+  /// is what made the tenant-jurisdiction seed in migration 034 unsafe, and a
+  /// jurisdiction decides which statutory chart of accounts a company files
+  /// (WORK-025a).
+  country    String
   address    String?
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())
@@ -129,6 +138,7 @@ model Warehouse {
   rfq_cases           RfqCase[]
   default_for_sales   SalesParameters[]
   parameters          WarehouseParameters?
+  purchase_returns    PurchaseReturn[]
 
   @@unique([tenant_id, code])
   @@map("warehouses")
@@ -225,6 +235,7 @@ model WarehouseLocation {
   inv_tx_to         InventoryTransaction[]  @relation("inv_tx_to")
   cost_layers       InventoryCostLayer[]
   default_receive_for WarehouseParameters[] @relation("default_receive_location")
+  purchase_return_source_lines PurchaseReturnLine[] @relation("return_line_source_location")
 
   @@unique([zone_id, code])
   @@map("warehouse_locations")
@@ -486,6 +497,8 @@ model Product {
   vendor_invoice_lines   VendorInvoiceLine[]
   trade_agreements TradeAgreement[]
   factura_lines FacturaLine[]
+  purchase_return_lines PurchaseReturnLine[]
+  supplier_credit_lines SupplierCreditLine[]
 
   @@unique([tenant_id, sku])
   @@map("products")
@@ -542,6 +555,8 @@ model ProductVariant {
   rfq_request_lines RfqRequestLine[]
   trade_agreements TradeAgreement[]
   factura_lines FacturaLine[]
+  purchase_return_lines PurchaseReturnLine[]
+  supplier_credit_lines SupplierCreditLine[]
 
   @@unique([tenant_id, sku_variant])
   @@map("product_variants")
@@ -565,8 +580,45 @@ model InventoryStock {
   location WarehouseLocation @relation(fields: [location_id], references: [id])
   variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
 
+  reservations InventoryReservation[]
+
+  /// Migration 037: the index is NULLS NOT DISTINCT (one row per product, variant
+  /// or none, and location) and CHECKs hold quantity >= 0 and
+  /// 0 <= reserved_qty <= quantity. `reserved_qty` is the cached sum of ACTIVE
+  /// InventoryReservation rows on this stock row.
   @@unique([tenant_id, product_id, variant_id, location_id], name: "tenant_id_product_id_variant_id_location_id")
   @@map("inventory_stock")
+}
+
+/// One stock row held by one source document (migration 037).
+///
+/// Release and issue act on these rows, never on "any reserved quantity of the
+/// product", so cancelling one order cannot free another order's stock and a
+/// shipment consumes exactly what its order reserved, where it reserved it.
+model InventoryReservation {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenant_id      String    @db.Uuid
+  /// SALES_ORDER | TRANSFER | WORK
+  source_type    String
+  source_id      String    @db.Uuid
+  source_line_id String?   @db.Uuid
+  stock_id       String    @db.Uuid
+  product_id     String    @db.Uuid
+  variant_id     String?   @db.Uuid
+  location_id    String    @db.Uuid
+  quantity       Int
+  /// ACTIVE | CONSUMED | RELEASED
+  status         String    @default("ACTIVE")
+  /// Hook: unpaid storefront carts could expire. Nothing reads it yet.
+  expires_at     DateTime?
+  created_at     DateTime  @default(now())
+  released_at    DateTime?
+
+  stock InventoryStock @relation(fields: [stock_id], references: [id])
+
+  @@index([tenant_id, source_type, source_id, status])
+  @@index([stock_id, status])
+  @@map("inventory_reservations")
 }
 
 model InventoryTransaction {
@@ -585,6 +637,13 @@ model InventoryTransaction {
   notes            String?
   performed_by     String?  @db.Uuid
   created_at       DateTime @default(now())
+
+  /// Migration 037. On an issue: the single layer consumed, when there was one,
+  /// and the cost consumed in total. `unit_cost` is that cost per unit, never a
+  /// sales price.
+  cost_layer_id String?  @db.Uuid
+  cost_amount   Decimal? @db.Decimal(14, 2)
+  settlements   InventoryCostSettlement[]
 
   /// ── Status (migration 016) ──────────────────────────────────────────────
   /// **[OFFICIAL]** "Each inventory transaction has a status that's displayed in
@@ -647,15 +706,129 @@ model InventoryCostLayer {
   po_number    String? // human-readable "PO-2026-00004"
   quantity     Int // remaining quantity in this batch
   unit_cost    Decimal  @default(0) @db.Decimal(14, 4)
+  /// The currency `unit_cost` is stated in: the ledger's accounting currency at
+  /// receipt. The basis WORK-031 needs to value issues without guessing.
+  cost_currency_code String
   received_at  DateTime @default(now())
   created_at   DateTime @default(now())
+
+  /// Migration 037. The quantity the layer was created with (backfilled from the
+  /// remaining quantity for older layers), what created it, and — for a layer
+  /// created by a customer return — the settlement whose cost it carries.
+  original_quantity    Int?
+  /// PURCHASE_RECEIPT | TRANSFER | SALES_RETURN | ADJUSTMENT | COUNT | OPENING
+  source_type          String  @default("PURCHASE_RECEIPT")
+  origin_settlement_id String? @db.Uuid
 
   product  Product           @relation(fields: [product_id], references: [id])
   variant  ProductVariant?   @relation(fields: [variant_id], references: [id])
   location WarehouseLocation @relation(fields: [location_id], references: [id])
 
+  settlements InventoryCostSettlement[]
+
   @@index([tenant_id, product_id, variant_id, received_at(sort: Asc)])
+  @@index([tenant_id, location_id, product_id, received_at])
   @@map("inventory_cost_layers")
+}
+
+/// Why stock changed — damaged, theft, found in the back room (migration 039).
+model InventoryReasonCode {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenant_id  String   @db.Uuid
+  code       String
+  name       String
+  /// INCREASE | DECREASE | BOTH
+  direction  String   @default("BOTH")
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  @@unique([tenant_id, code])
+  @@map("inventory_reason_codes")
+}
+
+/// A stock correction that posts quantity AND value (migration 039).
+///
+/// ADJUSTMENT and OPENING are entered by a person; COUNT is created by finalising
+/// a count. Posting runs in one transaction: a positive line receives a new cost
+/// layer, a negative line issues FIFO layers at its location, and one voucher moves
+/// the inventory account against inventory profit, loss or opening balance.
+model InventoryJournal {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenant_id        String    @db.Uuid
+  journal_number   String
+  /// ADJUSTMENT | COUNT | OPENING
+  journal_type     String
+  warehouse_id     String    @db.Uuid
+  /// DRAFT | POSTED | CANCELLED
+  status           String    @default("DRAFT")
+  description      String?
+  reason_code_id   String?   @db.Uuid
+  source_count_id  String?   @db.Uuid
+  journal_entry_id String?   @db.Uuid
+  created_by       String?   @db.Uuid
+  created_at       DateTime  @default(now())
+  posted_by        String?   @db.Uuid
+  posted_at        DateTime?
+
+  lines InventoryJournalLine[]
+
+  @@unique([tenant_id, journal_number])
+  @@index([tenant_id, status, created_at])
+  @@map("inventory_journals")
+}
+
+model InventoryJournalLine {
+  id             String   @id @default(uuid()) @db.Uuid
+  journal_id     String   @db.Uuid
+  product_id     String   @db.Uuid
+  variant_id     String?  @db.Uuid
+  location_id    String   @db.Uuid
+  /// Signed: positive adds stock, negative removes it. Never zero.
+  quantity       Int
+  snapshot_qty   Int?
+  counted_qty    Int?
+  /// For a positive line, the cost the new layer carries; for a negative line,
+  /// written at posting from the layers consumed.
+  unit_cost      Decimal? @db.Decimal(14, 4)
+  cost_amount    Decimal? @db.Decimal(14, 2)
+  reason_code_id String?  @db.Uuid
+  notes          String?
+
+  journal InventoryJournal @relation(fields: [journal_id], references: [id], onDelete: Cascade)
+
+  @@index([journal_id])
+  @@map("inventory_journal_lines")
+}
+
+/// What an issue consumed, layer by layer (migration 037).
+///
+/// COGS is the sum of `cost_amount` for the issue's transactions. A void puts the
+/// quantity back on `cost_layer_id`; a return creates a new layer at `unit_cost`.
+/// `reversed_by_id` is the inventory transaction that undid it; the stock ledger
+/// restores only settlements where it is still null, claiming each with a guarded
+/// update, so a settlement is reversed at most once (migration 038).
+model InventoryCostSettlement {
+  id                       String   @id @default(uuid()) @db.Uuid
+  tenant_id                String   @db.Uuid
+  inventory_transaction_id String   @db.Uuid
+  cost_layer_id            String?  @db.Uuid
+  quantity                 Int
+  unit_cost                Decimal  @db.Decimal(14, 4)
+  cost_amount              Decimal  @db.Decimal(14, 2)
+  cost_currency_code       String
+  /// LAYER | ESTIMATED (no layer covered it; valued at the item cost price under
+  /// InventoryParameters.uncosted_issue_policy = ITEM_COST_PRICE_FLAGGED)
+  cost_source              String   @default("LAYER")
+  reversed_by_id           String?  @db.Uuid
+  created_at               DateTime @default(now())
+
+  transaction InventoryTransaction @relation(fields: [inventory_transaction_id], references: [id])
+  layer       InventoryCostLayer?  @relation(fields: [cost_layer_id], references: [id], onDelete: Restrict)
+
+  @@index([inventory_transaction_id])
+  @@index([cost_layer_id])
+  @@index([reversed_by_id])
+  @@map("inventory_cost_settlements")
 }
 
 // =====================
@@ -765,7 +938,7 @@ model Wave {
 model WarehouseWork {
   id             String    @id @default(uuid()) @db.Uuid
   tenant_id      String    @db.Uuid
-  work_id_code   String    @unique
+  work_id_code   String
   work_type      String
   status         String    @default("OPEN")
   wave_id        String?   @db.Uuid
@@ -782,6 +955,7 @@ model WarehouseWork {
   warehouse Warehouse           @relation(fields: [warehouse_id], references: [id])
   lines     WarehouseWorkLine[]
 
+  @@unique([tenant_id, work_id_code])
   @@index([tenant_id, status])
   @@map("warehouse_work")
 }
@@ -811,7 +985,7 @@ model WarehouseWorkLine {
 model ArrivalJournal {
   id                String    @id @default(uuid()) @db.Uuid
   tenant_id         String    @db.Uuid
-  journal_number    String    @unique
+  journal_number    String
   purchase_order_id String?   @db.Uuid
   warehouse_id      String    @db.Uuid
   status            String    @default("DRAFT")
@@ -825,6 +999,7 @@ model ArrivalJournal {
   purchase_order PurchaseOrder?       @relation(fields: [purchase_order_id], references: [id])
   lines          ArrivalJournalLine[]
 
+  @@unique([tenant_id, journal_number])
   @@map("arrival_journals")
 }
 
@@ -858,7 +1033,7 @@ model Supplier {
   city          String?
   country       String?
   payment_terms Int?     @default(30)
-  currency      String   @default("BOB")
+  currency      String
   /// Party side of the tax intersection. Nullable — falls back to the default on
   /// PurchaseParameters/SalesParameters when unset, which is how existing rows keep
   /// working unchanged.
@@ -874,6 +1049,10 @@ model Supplier {
   product_receipts ProductReceipt[]
   vendor_invoices  VendorInvoice[]
   trade_agreements TradeAgreement[]
+  vendor_payments VendorPayment[]
+  vendor_open_transactions VendorOpenTransaction[]
+  purchase_returns PurchaseReturn[]
+  supplier_credits SupplierCredit[]
 
   @@unique([tenant_id, code])
   @@map("suppliers")
@@ -882,13 +1061,13 @@ model Supplier {
 model PurchaseOrder {
   id                  String    @id @default(uuid()) @db.Uuid
   tenant_id           String    @db.Uuid
-  po_number           String    @unique
+  po_number           String
   supplier_id         String    @db.Uuid
   warehouse_id        String    @db.Uuid
   status              String    @default("DRAFT")
   order_date          DateTime  @default(now()) @db.Date
   expected_date       DateTime? @db.Date
-  currency            String    @default("TRY")
+  currency            String
   subtotal            Decimal   @default(0) @db.Decimal(14, 2)
   tax_amount          Decimal   @default(0) @db.Decimal(14, 2)
   total_amount        Decimal   @default(0) @db.Decimal(14, 2)
@@ -932,7 +1111,9 @@ model PurchaseOrder {
   arrival_journals ArrivalJournal[]
   product_receipts ProductReceipt[]
   vendor_invoices  VendorInvoice[]
+  changes          PurchaseOrderChange[]
 
+  @@unique([tenant_id, po_number])
   @@index([tenant_id, source_document_type, source_document_id])
   @@map("purchase_orders")
 }
@@ -983,6 +1164,18 @@ model PurchaseOrderLine {
   /// in for this one.
   invoiced_qty Decimal @default(0) @db.Decimal(12, 2)
 
+  /// Quantity deliberately removed from the still-open commitment. The original
+  /// ordered quantity remains immutable so receipts, invoices, and confirmations
+  /// can always be reconstructed. Effective ordered quantity is
+  /// `quantity - cancelled_qty`.
+  cancelled_qty Decimal @default(0) @db.Decimal(12, 2)
+
+  /// Nullable line-level date hooks. The current SME UI can update all open lines
+  /// together from the header, while future split deliveries can use them without
+  /// rewriting historical purchase lines.
+  requested_delivery_date DateTime? @db.Date
+  confirmed_delivery_date DateTime? @db.Date
+
   /// Per-line override of the matching policy. **[OFFICIAL]** the legal-entity
   /// policy "can be overridden for a specific vendor, item, or vendor and item
   /// combination", and for a specific purchase order line, when the parameters
@@ -998,6 +1191,27 @@ model PurchaseOrderLine {
   invoice_lines  VendorInvoiceLine[]
 
   @@map("purchase_order_lines")
+}
+
+/// Immutable evidence for changes made after a purchase order is raised. JSON
+/// snapshots are audit payloads, not operational master data: cancellation and
+/// receipt calculations continue to use typed PurchaseOrderLine columns.
+model PurchaseOrderChange {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenant_id         String   @db.Uuid
+  purchase_order_id String   @db.Uuid
+  line_id           String?  @db.Uuid
+  action             String
+  reason             String
+  before_snapshot    Json
+  after_snapshot     Json
+  changed_by         String?  @db.Uuid
+  created_at         DateTime @default(now())
+
+  purchase_order PurchaseOrder @relation(fields: [purchase_order_id], references: [id], onDelete: Restrict)
+
+  @@index([tenant_id, purchase_order_id, created_at])
+  @@map("purchase_order_changes")
 }
 
 // =============================================================================
@@ -1104,6 +1318,7 @@ model ProductReceiptLine {
   po_line PurchaseOrderLine?   @relation(fields: [po_line_id], references: [id])
   product Product              @relation(fields: [product_id], references: [id])
   matches VendorInvoiceMatch[]
+  purchase_return_lines PurchaseReturnLine[] @relation("return_line_receipt")
 
   @@index([receipt_id])
   @@index([po_line_id])
@@ -1156,7 +1371,13 @@ model VendorInvoice {
   fiscal_authorization_code String?
   fiscal_control_code       String?
 
-  currency String @default("BOB")
+  currency String
+
+  /// Nullable compatibility hooks. Migration 025 does not infer historical FX.
+  /// Posting persists 1 and total_amount only when the invoice currency equals the
+  /// ledger's accounting currency; any other currency is refused (WORK-026).
+  exchange_rate    Decimal? @db.Decimal(18, 8)
+  amount_functional Decimal? @db.Decimal(14, 2)
 
   /// Money, split exactly as the purchase side already splits it: what
   /// capitalises, what is reclaimable, what the supplier is owed.
@@ -1196,6 +1417,8 @@ model VendorInvoice {
   supplier       Supplier            @relation(fields: [supplier_id], references: [id])
   purchase_order PurchaseOrder?      @relation(fields: [purchase_order_id], references: [id])
   lines          VendorInvoiceLine[]
+  purchase_returns PurchaseReturn[] @relation("return_source_invoice")
+  supplier_credits SupplierCredit[] @relation("credit_source_invoice")
 
   @@unique([tenant_id, supplier_id, invoice_number])
   @@unique([tenant_id, internal_number])
@@ -1256,6 +1479,8 @@ model VendorInvoiceLine {
   po_line PurchaseOrderLine?   @relation(fields: [po_line_id], references: [id])
   product Product?             @relation(fields: [product_id], references: [id])
   matches VendorInvoiceMatch[]
+  purchase_return_lines PurchaseReturnLine[]
+  supplier_credit_lines SupplierCreditLine[]
 
   @@index([invoice_id])
   @@index([po_line_id])
@@ -1289,6 +1514,286 @@ model VendorInvoiceMatch {
   @@unique([tenant_id, invoice_line_id, receipt_line_id])
   @@index([tenant_id, receipt_line_id])
   @@map("vendor_invoice_matches")
+}
+
+// =============================================================================
+// VENDOR PAYMENT AND AP SETTLEMENT FOUNDATION
+//
+// Added empty by migration 025. Runtime posting and legacy invoice backfill are
+// separate bounded items; no historical exchange rate is guessed here.
+// =============================================================================
+
+model PurchasePaymentMethod {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  code             String
+  name             String
+  account_type     String // BANK | CASH | LEDGER
+  offset_account_id String @db.Uuid
+  allowed_currency String?
+  bank_account_reference String?
+  reconciliation_reference String?
+  is_active        Boolean @default(true)
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  offset_account Account @relation("payment_method_offset_account", fields: [offset_account_id], references: [id])
+  payments VendorPayment[]
+  default_for_parameters PurchaseParameters[]
+
+  @@unique([tenant_id, legal_entity_id, code])
+  @@index([tenant_id, legal_entity_id, is_active], map: "purchase_payment_methods_scope_active_idx")
+  @@map("purchase_payment_methods")
+}
+
+model VendorPayment {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  payment_number  String
+  supplier_id     String  @db.Uuid
+  payment_date    DateTime @db.Date
+  posting_date    DateTime @db.Date
+  currency        String
+  amount           Decimal @db.Decimal(14, 2)
+  exchange_rate    Decimal @db.Decimal(18, 8)
+  amount_functional Decimal @db.Decimal(14, 2)
+  payment_method_id String @db.Uuid
+  offset_account_id String @db.Uuid
+  journal_entry_id String? @unique @db.Uuid
+  status           String @default("DRAFT") // DRAFT | POSTED
+  approval_status  String @default("NOT_REQUIRED")
+  reverses_payment_id String? @unique @db.Uuid
+  created_by       String? @db.Uuid
+  posted_by        String? @db.Uuid
+  created_at       DateTime @default(now())
+  posted_at        DateTime?
+  notes            String?
+
+  supplier Supplier @relation(fields: [supplier_id], references: [id])
+  payment_method PurchasePaymentMethod @relation(fields: [payment_method_id], references: [id])
+  offset_account Account @relation("vendor_payment_offset_account", fields: [offset_account_id], references: [id])
+  journal_entry JournalEntry? @relation(fields: [journal_entry_id], references: [id])
+  reverses_payment VendorPayment? @relation("vendor_payment_reversal", fields: [reverses_payment_id], references: [id], onDelete: Restrict)
+  reversed_by VendorPayment? @relation("vendor_payment_reversal")
+
+  @@unique([tenant_id, legal_entity_id, payment_number])
+  @@index([tenant_id, supplier_id, payment_date])
+  @@index([tenant_id, legal_entity_id, status])
+  @@map("vendor_payments")
+}
+
+model VendorOpenTransaction {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  supplier_id     String  @db.Uuid
+  source_type     String // INVOICE | PAYMENT | SUPPLIER_CREDIT | PAYMENT_REVERSAL
+  source_id       String  @db.Uuid
+  reverses_transaction_id String? @unique @db.Uuid
+  direction       String // DEBIT | CREDIT
+  transaction_date DateTime @db.Date
+  posting_date    DateTime @db.Date
+  currency        String
+  amount           Decimal @db.Decimal(14, 2)
+  exchange_rate    Decimal @db.Decimal(18, 8)
+  amount_functional Decimal @db.Decimal(14, 2)
+  /// The reporting-currency basis of this open item: what WORK-027 revalues and
+  /// WORK-026 computes realized FX against. It must agree with the voucher named
+  /// below — the subledger never translates independently of the general ledger.
+  amount_reporting Decimal @db.Decimal(14, 2)
+  exchange_rate_reporting Decimal @db.Decimal(18, 8)
+  /// Nullable for the legacy combined receipt/invoice mode: AP was created by
+  /// one or more receipt vouchers, so the invoice open item has no single
+  /// invoice voucher to name. New separate-posting invoices populate it.
+  journal_entry_id String? @unique @db.Uuid
+  created_at       DateTime @default(now())
+
+  supplier Supplier @relation(fields: [supplier_id], references: [id])
+  journal_entry JournalEntry? @relation(fields: [journal_entry_id], references: [id], onDelete: Restrict)
+  reverses_transaction VendorOpenTransaction? @relation("vendor_transaction_reversal", fields: [reverses_transaction_id], references: [id], onDelete: Restrict)
+  reversed_by VendorOpenTransaction? @relation("vendor_transaction_reversal")
+  debit_settlements VendorSettlement[] @relation("vendor_settlement_debit")
+  credit_settlements VendorSettlement[] @relation("vendor_settlement_credit")
+
+  @@unique([tenant_id, legal_entity_id, source_type, source_id], map: "vendor_open_transactions_source_key")
+  @@index([tenant_id, supplier_id, posting_date])
+  @@index([tenant_id, legal_entity_id, direction], map: "vendor_open_transactions_scope_direction_idx")
+  @@map("vendor_open_transactions")
+}
+
+model VendorSettlement {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenant_id       String  @db.Uuid
+  legal_entity_id String? @db.Uuid
+  supplier_id     String  @db.Uuid
+  debit_transaction_id String @db.Uuid
+  credit_transaction_id String @db.Uuid
+  currency        String
+  amount           Decimal @db.Decimal(14, 2)
+  exchange_rate    Decimal @db.Decimal(18, 8)
+  amount_functional Decimal @db.Decimal(14, 2)
+  /// A settlement is where WORK-026 computes realized FX, so it carries the
+  /// reporting basis from the start rather than being backfilled by guesswork.
+  amount_reporting Decimal @db.Decimal(14, 2)
+  exchange_rate_reporting Decimal @db.Decimal(18, 8)
+  settlement_date DateTime @db.Date
+  journal_entry_id String? @db.Uuid
+  reverses_settlement_id String? @unique @db.Uuid
+  created_by       String? @db.Uuid
+  created_at       DateTime @default(now())
+
+  debit_transaction VendorOpenTransaction @relation("vendor_settlement_debit", fields: [debit_transaction_id], references: [id])
+  credit_transaction VendorOpenTransaction @relation("vendor_settlement_credit", fields: [credit_transaction_id], references: [id])
+  journal_entry JournalEntry? @relation(fields: [journal_entry_id], references: [id])
+  reverses_settlement VendorSettlement? @relation("vendor_settlement_reversal", fields: [reverses_settlement_id], references: [id], onDelete: Restrict)
+  reversed_by VendorSettlement? @relation("vendor_settlement_reversal")
+
+  @@index([tenant_id, supplier_id, settlement_date])
+  @@index([debit_transaction_id])
+  @@index([credit_transaction_id])
+  @@map("vendor_settlements")
+}
+
+// =============================================================================
+// SUPPLIER RETURNS AND CREDITS (migration 029)
+// =============================================================================
+
+model PurchaseReturn {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenant_id           String    @db.Uuid
+  legal_entity_id     String?   @db.Uuid
+  return_number       String
+  supplier_id         String    @db.Uuid
+  original_invoice_id String    @db.Uuid
+  warehouse_id        String    @db.Uuid
+  /// DRAFT | SHIPPED | CANCELLED
+  status              String    @default("DRAFT")
+  reason              String?
+  requested_date      DateTime  @default(now()) @db.Date
+  shipped_date        DateTime? @db.Date
+  shipment_reference  String?
+  journal_entry_id    String?   @unique @db.Uuid
+  reversal_return_id  String?   @unique @db.Uuid
+  notes               String?
+  created_by          String?   @db.Uuid
+  shipped_by          String?   @db.Uuid
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+
+  supplier         Supplier        @relation(fields: [supplier_id], references: [id])
+  original_invoice VendorInvoice   @relation("return_source_invoice", fields: [original_invoice_id], references: [id])
+  warehouse        Warehouse       @relation(fields: [warehouse_id], references: [id])
+  journal_entry    JournalEntry?   @relation("purchase_return_journal", fields: [journal_entry_id], references: [id])
+  reversal_of      PurchaseReturn? @relation("purchase_return_reversal", fields: [reversal_return_id], references: [id], onDelete: Restrict)
+  reversed_by      PurchaseReturn? @relation("purchase_return_reversal")
+  lines            PurchaseReturnLine[]
+  credits          SupplierCredit[]
+
+  @@unique([tenant_id, return_number])
+  @@index([tenant_id, supplier_id, status])
+  @@index([tenant_id, original_invoice_id])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnLine {
+  id                       String  @id @default(uuid()) @db.Uuid
+  return_id                String  @db.Uuid
+  original_invoice_line_id String  @db.Uuid
+  original_receipt_line_id String  @db.Uuid
+  product_id               String  @db.Uuid
+  variant_id               String? @db.Uuid
+  source_location_id       String  @db.Uuid
+  quantity                 Int
+  frozen_gross_unit_cost   Decimal @default(0) @db.Decimal(12, 4)
+  frozen_net_unit_cost     Decimal @default(0) @db.Decimal(12, 4)
+  gross_amount             Decimal @default(0) @db.Decimal(14, 2)
+  net_amount               Decimal @default(0) @db.Decimal(14, 2)
+  tax_amount               Decimal @default(0) @db.Decimal(14, 2)
+  sort_order               Int     @default(0)
+
+  purchase_return       PurchaseReturn      @relation(fields: [return_id], references: [id], onDelete: Cascade)
+  original_invoice_line VendorInvoiceLine   @relation(fields: [original_invoice_line_id], references: [id])
+  original_receipt_line ProductReceiptLine @relation("return_line_receipt", fields: [original_receipt_line_id], references: [id])
+  product               Product            @relation(fields: [product_id], references: [id])
+  variant               ProductVariant?     @relation(fields: [variant_id], references: [id])
+  source_location       WarehouseLocation   @relation("return_line_source_location", fields: [source_location_id], references: [id])
+  credit_lines          SupplierCreditLine[]
+
+  @@unique([return_id, original_invoice_line_id, original_receipt_line_id])
+  @@index([return_id])
+  @@index([original_invoice_line_id])
+  @@map("purchase_return_lines")
+}
+
+model SupplierCredit {
+  id                     String    @id @default(uuid()) @db.Uuid
+  tenant_id              String    @db.Uuid
+  legal_entity_id        String?   @db.Uuid
+  credit_number          String
+  external_credit_number String?
+  supplier_id            String    @db.Uuid
+  original_invoice_id    String    @db.Uuid
+  purchase_return_id     String?   @db.Uuid
+  credit_date            DateTime  @db.Date
+  posting_date           DateTime  @db.Date
+  /// DRAFT | POSTED | CANCELLED
+  status                 String    @default("DRAFT")
+  currency               String
+  exchange_rate          Decimal   @default(1) @db.Decimal(18, 8)
+  amount_functional      Decimal?  @db.Decimal(14, 2)
+  net_amount             Decimal   @default(0) @db.Decimal(14, 2)
+  tax_amount             Decimal   @default(0) @db.Decimal(14, 2)
+  total_amount           Decimal   @default(0) @db.Decimal(14, 2)
+  journal_entry_id       String?   @unique @db.Uuid
+  reversal_credit_id     String?   @unique @db.Uuid
+  notes                  String?
+  created_by             String?   @db.Uuid
+  posted_by              String?   @db.Uuid
+  posted_at              DateTime?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  supplier         Supplier        @relation(fields: [supplier_id], references: [id])
+  original_invoice VendorInvoice   @relation("credit_source_invoice", fields: [original_invoice_id], references: [id])
+  purchase_return  PurchaseReturn? @relation(fields: [purchase_return_id], references: [id])
+  journal_entry    JournalEntry?   @relation("supplier_credit_journal", fields: [journal_entry_id], references: [id])
+  reversal_of      SupplierCredit? @relation("supplier_credit_reversal", fields: [reversal_credit_id], references: [id], onDelete: Restrict)
+  reversed_by      SupplierCredit? @relation("supplier_credit_reversal")
+  lines            SupplierCreditLine[]
+
+  @@unique([tenant_id, credit_number])
+  @@unique([tenant_id, supplier_id, external_credit_number])
+  @@index([tenant_id, supplier_id, status])
+  @@index([tenant_id, original_invoice_id])
+  @@map("supplier_credits")
+}
+
+model SupplierCreditLine {
+  id                       String  @id @default(uuid()) @db.Uuid
+  credit_id                String  @db.Uuid
+  original_invoice_line_id String  @db.Uuid
+  return_line_id           String? @db.Uuid
+  product_id               String? @db.Uuid
+  variant_id               String? @db.Uuid
+  description              String?
+  quantity                 Decimal @db.Decimal(12, 2)
+  unit_price               Decimal @default(0) @db.Decimal(12, 4)
+  net_amount               Decimal @default(0) @db.Decimal(14, 2)
+  tax_amount               Decimal @default(0) @db.Decimal(14, 2)
+  gross_amount             Decimal @default(0) @db.Decimal(14, 2)
+  sort_order               Int     @default(0)
+
+  credit                SupplierCredit      @relation(fields: [credit_id], references: [id], onDelete: Cascade)
+  original_invoice_line VendorInvoiceLine   @relation(fields: [original_invoice_line_id], references: [id])
+  return_line           PurchaseReturnLine? @relation(fields: [return_line_id], references: [id])
+  product               Product?            @relation(fields: [product_id], references: [id])
+  variant               ProductVariant?     @relation(fields: [variant_id], references: [id])
+
+  @@index([credit_id])
+  @@index([original_invoice_line_id])
+  @@map("supplier_credit_lines")
 }
 
 /// Which matching policy applies to which purchase.
@@ -1401,13 +1906,15 @@ model Customer {
 model SalesOrder {
   id               String    @id @default(uuid()) @db.Uuid
   tenant_id        String    @db.Uuid
-  order_number     String    @unique
+  order_number     String
   customer_id      String?   @db.Uuid
   source           String    @default("manual")
   status           String    @default("DRAFT")
   site_id          String?   @db.Uuid
   warehouse_id     String?   @db.Uuid
-  currency         String    @default("BOB")
+  /// No default: the ledger's accounting currency decides it, and POS, storefront
+  /// and back office all resolve it the same way (WORK-025).
+  currency         String
   subtotal         Decimal   @default(0) @db.Decimal(14, 2)
   discount_amount  Decimal   @default(0) @db.Decimal(14, 2)
   tax_amount       Decimal   @default(0) @db.Decimal(14, 2)
@@ -1425,6 +1932,9 @@ model SalesOrder {
   requested_delivery_date DateTime? @db.Date
 
   wave_id          String?   @db.Uuid
+  /// The POS register session a sale was rung in (migration 037). A void acts on
+  /// this session, not on whichever session happens to be open.
+  register_session_id String?  @db.Uuid
   invoice_id       String?   @db.Uuid // soft ref to Factura — set when invoiced
   paid_at          DateTime?
   paid_by          String?   @db.Uuid
@@ -1462,6 +1972,7 @@ model SalesOrder {
   @@index([tenant_id, status])
   @@index([tenant_id, created_at(sort: Desc)])
   @@index([tenant_id, source_document_type, source_document_id])
+  @@unique([tenant_id, order_number])
   @@map("sales_orders")
 }
 
@@ -1512,7 +2023,7 @@ model SalesOrderLine {
 model Shipment {
   id                String    @id @default(uuid()) @db.Uuid
   tenant_id         String    @db.Uuid
-  shipment_number   String    @unique
+  shipment_number   String
   order_id          String    @db.Uuid
   status            String    @default("PENDING")
   carrier           String?
@@ -1524,6 +2035,7 @@ model Shipment {
 
   order SalesOrder @relation(fields: [order_id], references: [id])
 
+  @@unique([tenant_id, shipment_number])
   @@map("shipments")
 }
 
@@ -1682,15 +2194,20 @@ model VariantType {
 model InventoryCount {
   id           String    @id @default(uuid()) @db.Uuid
   tenant_id    String    @db.Uuid
-  reference    String    @unique
+  reference    String
   status       String    @default("DRAFT")
   notes        String?
   counted_by   String?   @db.Uuid
   created_at   DateTime  @default(now())
   finalized_at DateTime?
+  /// The warehouse the count covers, and the COUNT journal that posted it
+  /// (migration 039).
+  warehouse_id String?   @db.Uuid
+  journal_id   String?   @db.Uuid
 
   lines InventoryCountLine[]
 
+  @@unique([tenant_id, reference])
   @@map("inventory_counts")
 }
 
@@ -1747,6 +2264,9 @@ model Account {
   journal_lines    JournalLine[]
   posting_profiles PostingProfile[]
   dimension_rules  DimensionRule[]
+  purchase_payment_methods PurchasePaymentMethod[] @relation("payment_method_offset_account")
+  sales_payment_methods    SalesPaymentMethod[]    @relation("sales_payment_method_account")
+  vendor_payments VendorPayment[] @relation("vendor_payment_offset_account")
 
   @@unique([tenant_id, code])
   @@map("accounts")
@@ -1755,7 +2275,7 @@ model Account {
 model JournalEntry {
   id            String    @id @default(uuid()) @db.Uuid
   tenant_id     String    @db.Uuid
-  entry_number  String    @unique
+  entry_number  String
   entry_date    DateTime  @db.Date
   description   String
   source_module String? // SALE, PURCHASE, MANUAL, ADJUSTMENT
@@ -1774,14 +2294,39 @@ model JournalEntry {
   correction_reason String?
   is_correction     Boolean   @default(false)
 
+  /// The ledger currencies this voucher was posted under, snapshotted (WORK-024b).
+  /// **[OFFICIAL]** the accounting and reporting amounts are each translated from
+  /// the transaction amount, so both currencies belong on the voucher:
+  ///   learn.microsoft.com/dynamics365/finance/general-ledger/dual-currency
+  accounting_currency_code String
+  reporting_currency_code  String
+  /// The date the rates were taken on. For a reversal this is the ORIGINAL's date:
+  /// re-translating at today's rate would leave a residue that never nets to zero.
+  exchange_rate_date       DateTime @db.Date
+  /// Null where nothing was quoted: a backfilled voucher, or an identity
+  /// translation. Inventing a rate type would repeat the `exchange_rate: 1` defect.
+  accounting_rate_type_id  String?  @db.Uuid
+  reporting_rate_type_id   String?  @db.Uuid
+
   corrects   JournalEntry?  @relation("correction", fields: [corrects_entry_id], references: [id])
   corrected_by JournalEntry? @relation("correction")
 
+  accounting_currency TenantCurrency    @relation("entry_accounting_currency", fields: [tenant_id, accounting_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  reporting_currency  TenantCurrency    @relation("entry_reporting_currency", fields: [tenant_id, reporting_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  accounting_rate_type ExchangeRateType? @relation("entry_accounting_rate_type", fields: [tenant_id, accounting_rate_type_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+  reporting_rate_type  ExchangeRateType? @relation("entry_reporting_rate_type", fields: [tenant_id, reporting_rate_type_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+
   lines JournalLine[]
+  vendor_payments VendorPayment[]
+  vendor_open_transactions VendorOpenTransaction[]
+  vendor_settlements VendorSettlement[]
+  purchase_return_vouchers PurchaseReturn[] @relation("purchase_return_journal")
+  supplier_credit_vouchers SupplierCredit[] @relation("supplier_credit_journal")
 
   @@index([tenant_id, entry_date(sort: Desc)])
   @@index([tenant_id, source_module, source_id])
   @@index([tenant_id, is_correction])
+  @@unique([tenant_id, entry_number])
   @@map("journal_entries")
 }
 
@@ -1789,8 +2334,31 @@ model JournalLine {
   id               String  @id @default(uuid()) @db.Uuid
   journal_entry_id String  @db.Uuid
   account_id       String  @db.Uuid
+  /// The ACCOUNTING amounts. Every report reads these, so they keep their name and
+  /// their meaning; the transaction and reporting amounts sit beside them.
   debit_amount     Decimal @default(0) @db.Decimal(14, 2)
   credit_amount    Decimal @default(0) @db.Decimal(14, 2)
+
+  /// The amounts as transacted, and as reported (WORK-024b). Deliberately without
+  /// defaults: a rate defaulting to 1 is exactly the defect WORK-024a removed, so a
+  /// writer that forgets a value must fail rather than post at par.
+  ///
+  /// `journal_lines` carries no `tenant_id`, so the currency FK points at the shared
+  /// ISO `currencies` table rather than the tenant's activated list; that the
+  /// currency is active for the tenant is validated in the journal service. Adding
+  /// `tenant_id` here for a reference check would touch every insert for no gain.
+  transaction_currency_code String
+  transaction_currency      Currency @relation(fields: [transaction_currency_code], references: [code], onDelete: Restrict)
+  transaction_debit_amount  Decimal @db.Decimal(14, 2)
+  transaction_credit_amount Decimal @db.Decimal(14, 2)
+  reporting_debit_amount    Decimal @db.Decimal(14, 2)
+  reporting_credit_amount   Decimal @db.Decimal(14, 2)
+  /// The EFFECTIVE per-unit quote (rate ÷ conversion factor), recorded for audit and
+  /// inquiry. The amounts are authoritative: nothing may recompute an amount from
+  /// this 8-decimal figure. Never negated by STORNO — only amounts are.
+  accounting_exchange_rate  Decimal @db.Decimal(18, 8)
+  reporting_exchange_rate   Decimal @db.Decimal(18, 8)
+
   description      String?
 
   /// D365's `Correction` field. Under STORNO a correction is a NEGATIVE amount in
@@ -1995,6 +2563,12 @@ model Factura {
   it_amount        Decimal  @default(0) @db.Decimal(14, 2) // IT 3%
   total_amount     Decimal  @db.Decimal(14, 2)
   status           String   @default("ISSUED") // ISSUED, CANCELLED
+  /// An annulled factura keeps its number (migration 040): who annulled it, when,
+  /// why, and the voucher that reversed its posting.
+  cancelled_at              DateTime?
+  cancelled_by              String?   @db.Uuid
+  cancellation_reason       String?
+  reversal_journal_entry_id String?   @db.Uuid
   notes            String?
   invoice_metadata Json? // snapshot: { vat_label, secondary_tax_name, invoice_label, currency_code }
   created_by       String?  @db.Uuid
@@ -2042,6 +2616,80 @@ model RegisterSession {
 
   @@index([tenant_id, status])
   @@map("register_sessions")
+}
+
+/// How a customer pays (migration 040). A tender of this method debits `account_id`.
+model SalesPaymentMethod {
+  id                    String   @id @default(uuid()) @db.Uuid
+  tenant_id             String   @db.Uuid
+  legal_entity_id       String?  @db.Uuid
+  /// Hook: a per-store override of the same code. Nothing reads it yet.
+  warehouse_id          String?  @db.Uuid
+  code                  String
+  name                  String
+  /// CASH | CARD | TRANSFER | QR | CUSTOMER_ACCOUNT | VOUCHER
+  tender_type           String
+  account_id            String   @db.Uuid
+  /// NONE | COUNT — whether the drawer declares this method at close.
+  declaration_policy    String   @default("NONE")
+  /// Only CASH gives change.
+  allow_change          Boolean  @default(false)
+  /// A close with a larger difference needs pos.session.close_with_difference.
+  max_difference_amount Decimal? @db.Decimal(14, 2)
+  is_active             Boolean  @default(true)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  account      Account                      @relation("sales_payment_method_account", fields: [account_id], references: [id], onDelete: Restrict)
+  tenders      PosTender[]
+  declarations RegisterSessionDeclaration[]
+
+  @@unique([tenant_id, legal_entity_id, warehouse_id, code], map: "sales_payment_methods_scope_code_key")
+  @@map("sales_payment_methods")
+}
+
+/// One payment of a POS sale (migration 040), with the method's type and account
+/// snapshotted so a later change to the method does not rewrite history.
+model PosTender {
+  id                       String    @id @default(uuid()) @db.Uuid
+  tenant_id                String    @db.Uuid
+  sales_order_id           String    @db.Uuid
+  register_session_id      String    @db.Uuid
+  payment_method_id        String    @db.Uuid
+  tender_type              String
+  account_id               String    @db.Uuid
+  amount                   Decimal   @db.Decimal(14, 2)
+  tendered                 Decimal?  @db.Decimal(14, 2)
+  change                   Decimal?  @db.Decimal(14, 2)
+  /// Set when the sale is voided.
+  reversed_at              DateTime?
+  /// Hook: the bank-statement match that cleared a card or QR tender.
+  settled_journal_entry_id String?   @db.Uuid
+  created_at               DateTime  @default(now())
+
+  payment_method SalesPaymentMethod @relation(fields: [payment_method_id], references: [id], onDelete: Restrict)
+
+  @@index([register_session_id])
+  @@index([sales_order_id])
+  @@map("pos_tenders")
+}
+
+/// What a closing shift counted for one payment method (migration 040).
+model RegisterSessionDeclaration {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenant_id           String   @db.Uuid
+  register_session_id String   @db.Uuid
+  payment_method_id   String   @db.Uuid
+  expected            Decimal  @db.Decimal(14, 2)
+  counted             Decimal  @db.Decimal(14, 2)
+  difference          Decimal  @db.Decimal(14, 2)
+  journal_entry_id    String?  @db.Uuid
+  created_at          DateTime @default(now())
+
+  payment_method SalesPaymentMethod @relation(fields: [payment_method_id], references: [id], onDelete: Restrict)
+
+  @@unique([register_session_id, payment_method_id], map: "register_session_declarations_session_method_key")
+  @@map("register_session_declarations")
 }
 
 // =====================
@@ -2209,6 +2857,13 @@ model NumberSequence {
   /// is why this is a per-sequence choice and not a global policy.
   continuous Boolean @default(false)
 
+  /// NONE | GAPLESS. GAPLESS marks a series whose continuity is a legal
+  /// obligation (the Bolivian FACTURA series). The numbering rules refuse to make
+  /// it non-continuous or to move its counter forward without a recorded reason,
+  /// and a CHECK constraint (migration 036) refuses a GAPLESS row that is not
+  /// continuous. Set by provisioning; not editable through the Setup API.
+  legal_series String @default("NONE")
+
   /// When true the system does NOT generate the number — a user supplies it and
   /// the counter is left alone. D365 puts this flag on the sequence itself
   /// rather than in a module parameter, which is why it lives here: a tenant can
@@ -2274,16 +2929,149 @@ model FinanceParameters {
   /// storno because its jurisdiction expects it. See docs/architecture/CORRECTIONS.md.
   correction_method String @default("REVERSE") // REVERSE | STORNO
 
-  functional_currency String  @default("BOB")
+
+  /// The ledger's currencies. **[OFFICIAL]** each legal entity's ledger has an
+  /// accounting currency, a reporting currency and a rate type for each; neither
+  /// currency can be changed once anything has posted:
+  ///   learn.microsoft.com/dynamics365/finance/general-ledger/configure-ledger
+  /// Never defaulted: a country default here is exactly the hard-coding this
+  /// column exists to remove. Written only by ledgerCurrency.service.
+  accounting_currency_code String
+  reporting_currency_code  String
+  accounting_rate_type_id  String  @db.Uuid
+  /// Null falls back to the accounting rate type — D365's documented behaviour.
+  reporting_rate_type_id   String? @db.Uuid
+  /// POSTING_DATE | DOCUMENT_DATE. D365 defaults to posting date; only
+  /// POSTING_DATE has behaviour today and the setup API refuses the other.
+  exchange_rate_date_basis String  @default("POSTING_DATE")
   /// Rounding tolerance below which a posting imbalance is written to ROUNDING
   /// rather than rejected.
   rounding_tolerance  Decimal @default(0.02) @db.Decimal(14, 2)
+  /// The same tolerance for the reporting currency (WORK-024b).
+  reporting_rounding_tolerance Decimal @default(0.02) @db.Decimal(14, 2)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  accounting_currency  TenantCurrency   @relation("ledger_accounting_currency", fields: [tenant_id, accounting_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  reporting_currency   TenantCurrency   @relation("ledger_reporting_currency", fields: [tenant_id, reporting_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  // Tenant-composite: the database itself refuses another tenant's rate type.
+  accounting_rate_type ExchangeRateType  @relation("ledger_accounting_rate_type", fields: [tenant_id, accounting_rate_type_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+  reporting_rate_type  ExchangeRateType? @relation("ledger_reporting_rate_type", fields: [tenant_id, reporting_rate_type_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+
   @@unique([tenant_id, legal_entity_id])
   @@map("finance_parameters")
+}
+
+/// ISO 4217 reference data, shared by every tenant (D365 ships currencies as
+/// shared data). Not tenant-scoped on purpose: a code means the same everywhere.
+/// A tenant uses a currency only through `TenantCurrency`.
+model Currency {
+  code       String @id
+  name       String
+  /// Decimal places the currency is quoted in. Amount columns are (14,2), so a
+  /// currency with more than two cannot be activated for a tenant.
+  minor_unit Int
+
+  tenant_currencies TenantCurrency[]
+  journal_lines     JournalLine[]
+
+  @@map("currencies")
+}
+
+/// A currency a tenant has activated, with its own rounding rule.
+/// **[OFFICIAL]** rounding is set per currency:
+///   learn.microsoft.com/dynamics365/business-central/finance-set-up-currencies#rounding-currencies
+model TenantCurrency {
+  id                 String  @id @default(uuid()) @db.Uuid
+  tenant_id          String  @db.Uuid
+  currency_code      String
+  symbol             String?
+  rounding_precision Decimal @db.Decimal(6, 4)
+  /// NEAREST | UP | DOWN
+  rounding_method    String  @default("NEAREST")
+  is_active          Boolean @default(true)
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  currency Currency @relation(fields: [currency_code], references: [code], onDelete: Restrict)
+
+  ledger_accounting FinanceParameters[]        @relation("ledger_accounting_currency")
+  ledger_reporting  FinanceParameters[]        @relation("ledger_reporting_currency")
+  pairs_from        ExchangeRateCurrencyPair[] @relation("pair_from_currency")
+  pairs_to          ExchangeRateCurrencyPair[] @relation("pair_to_currency")
+  entries_accounting JournalEntry[]            @relation("entry_accounting_currency")
+  entries_reporting  JournalEntry[]            @relation("entry_reporting_currency")
+
+  @@unique([tenant_id, currency_code])
+  @@map("tenant_currencies")
+}
+
+/// A named set of rates — e.g. the central bank's official rate. D365 rate types
+/// are shared across legal entities, so there is no legal_entity_id.
+model ExchangeRateType {
+  id          String  @id @default(uuid()) @db.Uuid
+  tenant_id   String  @db.Uuid
+  code        String
+  name        String
+  description String?
+  is_active   Boolean @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  pairs             ExchangeRateCurrencyPair[]
+  ledger_accounting FinanceParameters[] @relation("ledger_accounting_rate_type")
+  ledger_reporting  FinanceParameters[] @relation("ledger_reporting_rate_type")
+  entries_accounting JournalEntry[]     @relation("entry_accounting_rate_type")
+  entries_reporting  JournalEntry[]     @relation("entry_reporting_rate_type")
+
+  @@unique([tenant_id, code])
+  @@unique([tenant_id, id]) // target of tenant-composite foreign keys
+  @@map("exchange_rate_types")
+}
+
+/// **[OFFICIAL]** a currency pair exists once per rate type; the reciprocal pair
+/// is refused and its rate is computed when needed. The conversion factor states
+/// the rate per 1 or per 100 units:
+///   learn.microsoft.com/training/modules/configure-currencies-dyn365-finance/3-currency-exchange-rate
+model ExchangeRateCurrencyPair {
+  id                 String  @id @default(uuid()) @db.Uuid
+  tenant_id          String  @db.Uuid
+  rate_type_id       String  @db.Uuid
+  from_currency_code String
+  to_currency_code   String
+  conversion_factor  Decimal @default(1) @db.Decimal(10, 0)
+  created_at         DateTime @default(now())
+
+  rate_type     ExchangeRateType @relation(fields: [tenant_id, rate_type_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+  from_currency TenantCurrency   @relation("pair_from_currency", fields: [tenant_id, from_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  to_currency   TenantCurrency   @relation("pair_to_currency", fields: [tenant_id, to_currency_code], references: [tenant_id, currency_code], onDelete: Restrict, onUpdate: Restrict)
+  rates         ExchangeRate[]
+
+  @@unique([tenant_id, rate_type_id, from_currency_code, to_currency_code])
+  @@unique([tenant_id, id]) // target of tenant-composite foreign keys
+  @@map("exchange_rate_currency_pairs")
+}
+
+/// One dated rate. The rate used is the latest `valid_from` on or before the
+/// transaction date; a change is a new row, so posted history never moves.
+model ExchangeRate {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenant_id        String   @db.Uuid
+  currency_pair_id String   @db.Uuid
+  valid_from       DateTime @db.Date
+  rate             Decimal  @db.Decimal(18, 8)
+  /// MANUAL | IMPORTED
+  source           String   @default("MANUAL")
+  created_by       String?  @db.Uuid
+  updated_by       String?  @db.Uuid
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  pair ExchangeRateCurrencyPair @relation(fields: [tenant_id, currency_pair_id], references: [tenant_id, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenant_id, currency_pair_id, valid_from])
+  @@map("exchange_rates")
 }
 
 model SalesParameters {
@@ -2316,6 +3104,12 @@ model SalesParameters {
   /// Fallback warehouse, consulted after the explicit request value and the POS
   /// register session and before the sole-warehouse shortcut.
   default_warehouse_id             String? @db.Uuid
+  /// The warehouse storefront orders reserve and ship from (migration 037). Never
+  /// taken from the shopper's request.
+  storefront_warehouse_id          String? @db.Uuid
+  /// ANNUL_IN_SESSION | CREDIT_NOTE_ONLY | DISABLED (migration 040). How a POS sale
+  /// may be undone: annulled while its session is open, or only by a return.
+  pos_void_mode                    String  @default("ANNUL_IN_SESSION")
   /// FALSE keeps today's behaviour, so an unprovisioned tenant is unaffected.
   /// TRUE refuses to create a demand document that cannot say where it ships
   /// from — which is also what stops the return path guessing (§5.3b of the
@@ -2360,6 +3154,16 @@ model PurchaseParameters {
   id              String  @id @default(uuid()) @db.Uuid
   tenant_id       String  @db.Uuid
   legal_entity_id String? @db.Uuid
+
+  /// AP payment configuration. These switches become live only with the bounded
+  /// payment service; migration 025 creates no implied posting behavior.
+  default_payment_method_id String? @db.Uuid
+  settlement_mode String @default("MANUAL") // MANUAL | SELECTED_INVOICES
+  overpayment_policy String @default("REJECT") // REJECT | WRITE_OFF_WITHIN_TOLERANCE
+  overpayment_tolerance Decimal? @db.Decimal(14, 2)
+  underpayment_tolerance Decimal? @db.Decimal(14, 2)
+  writeoff_posting_type String?
+  reversal_approval_policy String @default("NONE") // NONE | REQUIRED
 
   /// NONE | TWO_WAY | THREE_WAY — **[OFFICIAL]** the legal-entity default line
   /// matching policy. Still NONE by default so an existing tenant's behaviour is
@@ -2451,7 +3255,10 @@ model PurchaseParameters {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
+  default_payment_method PurchasePaymentMethod? @relation(fields: [default_payment_method_id], references: [id])
+
   @@unique([tenant_id, legal_entity_id])
+  @@index([default_payment_method_id])
   @@map("purchase_parameters")
 }
 
@@ -2468,6 +3275,15 @@ model InventoryParameters {
   /// Landed cost is deferred. The hook is on the batch, not here — this flag only
   /// controls whether the allocation step runs.
   capitalise_landed_cost   Boolean @default(false)
+
+  /// REFUSE | ITEM_COST_PRICE_FLAGGED (migration 037). What an issue does when the
+  /// issuing location holds stock that no cost layer covers.
+  uncosted_issue_policy String @default("REFUSE")
+  /// LEGAL_ENTITY | SITE | WAREHOUSE. Hook for average costing; FIFO ignores it.
+  cost_level            String @default("WAREHOUSE")
+  /// REFUSE_IF_CHANGED | APPLY_DELTA (migration 039). What finalising a count does
+  /// when on-hand moved after the count was created.
+  count_snapshot_policy String @default("REFUSE_IF_CHANGED")
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -2993,7 +3809,7 @@ model Lead {
 
   owner_user_id    String?  @db.Uuid
   estimated_amount Decimal? @db.Decimal(14, 2)
-  currency         String   @default("BOB")
+  currency         String
   notes            String?
 
   /// Set by qualification. **[OFFICIAL]** qualifying a lead associates an
@@ -3068,7 +3884,7 @@ model Opportunity {
   /// 0–100, CHECK-constrained in the migration. Seeded from the stage.
   probability         Int       @default(50)
   estimated_amount    Decimal   @default(0) @db.Decimal(14, 2)
-  currency            String    @default("BOB")
+  currency            String
   expected_close_date DateTime? @db.Date
 
   owner_user_id  String? @db.Uuid
@@ -3129,7 +3945,7 @@ model SalesQuotation {
   quotation_date DateTime  @default(now()) @db.Date
   valid_until    DateTime? @db.Date
 
-  currency        String  @default("BOB")
+  currency        String
   subtotal        Decimal @default(0) @db.Decimal(14, 2)
   discount_amount Decimal @default(0) @db.Decimal(14, 2)
   tax_amount      Decimal @default(0) @db.Decimal(14, 2)
@@ -3243,7 +4059,7 @@ model PurchaseRequisition {
   required_date   DateTime? @db.Date
   justification   String?
   estimated_total Decimal   @default(0) @db.Decimal(14, 2)
-  currency        String    @default("BOB")
+  currency        String
 
   submitted_at     DateTime?
   approved_at      DateTime?
@@ -3343,7 +4159,7 @@ model RfqCase {
   warehouse_id   String? @db.Uuid
 
   bid_deadline DateTime?
-  currency     String    @default("BOB")
+  currency     String
   notes        String?
 
   sent_at    DateTime?
@@ -3417,7 +4233,7 @@ model RfqRequest {
   /// rejected a bid."
   reason_code String?
 
-  currency       String  @default("BOB")
+  currency       String
   total_amount   Decimal @default(0) @db.Decimal(14, 2)
   lead_time_days Int?
   notes          String?
@@ -3655,4 +4471,52 @@ model FacturaLine {
   @@index([tenant_id], map: "factura_lines_tenant_idx")
   @@index([sales_order_line_id], map: "factura_lines_order_line_idx")
   @@map("factura_lines")
+}
+
+/// Runner-owned migration ledger. Application services must not write this model.
+/// It is represented here so Prisma drift checks understand the database-owned table.
+model SkarpineSchemaMigration {
+  migration_name String   @id @db.Text
+  ordinal        Int      @unique(map: "skarpine_schema_migrations_ordinal_uidx")
+  checksum       String   @db.Text
+  applied_at     DateTime @default(now()) @db.Timestamptz(6)
+  applied_by     String   @db.Text
+  duration_ms    Int
+  app_version    String   @db.Text
+
+  @@map("skarpine_schema_migrations")
+}
+
+// =====================
+// DOCUMENT MANAGEMENT
+// =====================
+
+/// A file attached to a business document (migration 041). The D365 DocuRef
+/// equivalent: one polymorphic table, so every document type gets attachments
+/// without a table of its own. `entity_id` is checked in the service (no FK).
+///
+/// The file itself lives in the PRIVATE storage bucket `attachments` at
+/// `storage_path` and is served only through short-lived signed URLs.
+/// Deletion is soft, so what was attached stays answerable.
+model DocumentAttachment {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenant_id     String    @db.Uuid
+  /// LEAD | OPPORTUNITY | SALES_QUOTATION | SALES_ORDER | PURCHASE_ORDER |
+  /// VENDOR_INVOICE | CUSTOMER | SUPPLIER — CHECK-constrained; a new type is a
+  /// migration that widens the CHECK.
+  entity_type   String
+  entity_id     String    @db.Uuid
+  /// FILE today. Hook for D365 document types (note, URL, per-type storage).
+  document_type String    @default("FILE")
+  file_name     String
+  mime_type     String
+  size_bytes    Int
+  storage_path  String    @unique
+  uploaded_by   String?   @db.Uuid
+  uploaded_at   DateTime  @default(now())
+  deleted_at    DateTime?
+  deleted_by    String?   @db.Uuid
+
+  @@index([tenant_id, entity_type, entity_id], map: "document_attachments_entity_idx")
+  @@map("document_attachments")
 }

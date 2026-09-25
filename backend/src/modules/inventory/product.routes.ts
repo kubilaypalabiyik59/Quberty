@@ -1,20 +1,104 @@
 import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
 import { logger } from '../../shared/logger';
 import { ok, created, paginated } from '../../shared/response';
-import type { AppEnv } from '../../shared/context';
+import { hasPermission, routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
+import type { AppContext, AppEnv } from '../../shared/context';
+import {
+  IMAGE_QUALITIES, PRODUCT_VIEWS, generateProductView, isOneProviderConfigured,
+  type ImageQuality, type ProductView,
+} from '../../shared/services/oneProvider.service';
 
 const app = new Hono<AppEnv>();
 
-// GET /products — public (storefront needs no auth for browsing)
-app.get('/', async (c) => {
+/**
+ * The three product reads the storefront shares with the back office (WORK-030a).
+ * Every other product route is on PRODUCT_ROUTE_PERMISSIONS below (WORK-030b).
+ *
+ * A caller without `product.read` — a shopper — gets the storefront projection:
+ * published products only, whatever `published` the request carries, and no
+ * `cost_price`. `additional_cost` on a variant is NOT hidden: despite its name it
+ * is a price surcharge (the POS sells a variant at selling_price + additional_cost),
+ * so it is catalogue information, not cost.
+ */
+export const PRODUCT_READ_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /': { anyOf: ['product.read', 'storefront.catalog.read'] },
+  'GET /categories': { anyOf: ['product.read', 'storefront.catalog.read'] },
+  'GET /:id': { anyOf: ['product.read', 'storefront.catalog.read'] },
+} satisfies RouteGuards);
+
+/**
+ * The rest of the product router (WORK-030b). Catalogue maintenance, item setup,
+ * deletion and paid media generation are separate duties; the stock view of one
+ * product is an inventory read.
+ */
+export const PRODUCT_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /barcode/:code': ['product.read'],
+  'POST /categories': ['product.maintain'],
+  'POST /': ['product.maintain'],
+  'PUT /:id': ['product.maintain'],
+  'GET /setup/item-groups': ['product.setup.read'],
+  'GET /setup/item-model-groups': ['product.setup.read'],
+  'POST /setup/item-groups': ['product.setup.maintain'],
+  'POST /setup/item-model-groups': ['product.setup.maintain'],
+  'PUT /setup/item-model-groups/:id': ['product.setup.maintain'],
+  'PUT /setup/item-groups/:id': ['product.setup.maintain'],
+  'GET /setup/coverage': ['product.setup.read'],
+  'POST /setup/assign-groups': ['product.setup.maintain'],
+  'DELETE /:id': ['product.delete'],
+  'POST /bulk': ['product.maintain'],
+  'POST /:id/variants': ['product.maintain'],
+  'PUT /:id/variants/:variantId': ['product.maintain'],
+  'DELETE /:id/variants/:variantId': ['product.maintain'],
+  'POST /:id/image': ['product.maintain'],
+  'DELETE /:id/image': ['product.maintain'],
+  'POST /:id/generate-views': ['product.media.generate'],
+  'POST /:id/generate-video': ['product.media.generate'],
+  'GET /:id/video-jobs/:requestId': ['product.media.generate'],
+  'DELETE /:id/video': ['product.maintain'],
+  'GET /:id/stock': ['inventory.stock.read'],
+} satisfies RouteGuards);
+
+const guard = routeGuard({ ...PRODUCT_READ_ROUTE_PERMISSIONS, ...PRODUCT_ROUTE_PERMISSIONS });
+
+/**
+ * Refuses a group id that is not this tenant's. Without it a product could be
+ * pointed at another company's item group — and so at its GL accounts.
+ */
+async function assertGroupsInTenant(
+  tenantId: string,
+  ids: { item_group_id?: string | null; item_model_group_id?: string | null },
+) {
+  if (ids.item_group_id) {
+    const g = await db.itemGroup.findFirst({ where: { id: ids.item_group_id, tenant_id: tenantId }, select: { id: true } });
+    if (!g) throw new AppError('Unknown reference for this tenant: item_group_id', 422, 'FOREIGN_REFERENCE');
+  }
+  if (ids.item_model_group_id) {
+    const g = await db.itemModelGroup.findFirst({ where: { id: ids.item_model_group_id, tenant_id: tenantId }, select: { id: true } });
+    if (!g) throw new AppError('Unknown reference for this tenant: item_model_group_id', 422, 'FOREIGN_REFERENCE');
+  }
+}
+
+/** True when the caller sees the storefront projection rather than the full product. */
+export function isStorefrontReader(c: AppContext): boolean {
+  return !hasPermission(c.get('user')?.role ?? '', 'product.read');
+}
+
+function withoutCost<T extends Record<string, any>>(product: T): T {
+  const { cost_price: _hidden, ...rest } = product;
+  return rest as T;
+}
+
+// GET /products — back office, POS and storefront (projection per the caller)
+app.get('/', guard('GET /'), async (c) => {
   const { search, category, inStock, published, page = '1', limit = '20', sortBy = 'name' } = c.req.query();
+  const storefront = isStorefrontReader(c);
 
   const where: any = { tenant_id: c.get('tenantId'), is_active: true };
 
-  if (published === 'true') where.is_published = true;
+  // A shopper sees published products only; the query flag cannot widen that.
+  if (storefront || published === 'true') where.is_published = true;
   if (search) where.name = { contains: search, mode: 'insensitive' };
   if (category) where.category_id = category;
 
@@ -65,7 +149,7 @@ app.get('/', async (c) => {
     variantAgg.map((s: any) => [s.variant_id, Math.max(0, (s._sum.quantity ?? 0) - (s._sum.reserved_qty ?? 0))])
   );
   const productsWithStock = products.map((p: any) => ({
-    ...p,
+    ...(storefront ? withoutCost(p) : p),
     total_stock: stockByProduct.get(p.id) ?? 0,
     variants: (p.variants ?? []).map((v: any) => ({
       ...v,
@@ -77,7 +161,7 @@ app.get('/', async (c) => {
 });
 
 // GET /products/barcode/:code — fast lookup by product or variant barcode (POS use)
-app.get('/barcode/:code', async (c) => {
+app.get('/barcode/:code', guard('GET /barcode/:code'), async (c) => {
   const code = c.req.param('code');
 
   // Try product barcode first
@@ -125,7 +209,7 @@ app.get('/barcode/:code', async (c) => {
   return ok(c, { ...product, variants: variantsWithStock, total_stock: totalStock, matched_variant_id: matchedVariantId });
 });
 
-app.get('/categories', async (c) => {
+app.get('/categories', guard('GET /categories'), async (c) => {
   const categories = await db.productCategory.findMany({
     where: { tenant_id: c.get('tenantId') },
     orderBy: { name: 'asc' },
@@ -133,7 +217,7 @@ app.get('/categories', async (c) => {
   return ok(c, categories);
 });
 
-app.post('/categories', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/categories', guard('POST /categories'), async (c) => {
   const { name, code, parent_id } = await c.req.json();
   if (!name || !code) throw new AppError('name and code are required');
   const category = await db.productCategory.create({
@@ -142,9 +226,10 @@ app.post('/categories', requireRole('admin', 'store_manager'), async (c) => {
   return created(c, category);
 });
 
-app.get('/:id', async (c) => {
+app.get('/:id', guard('GET /:id'), async (c) => {
+  const storefront = isStorefrontReader(c);
   const product = await db.product.findFirst({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), ...(storefront ? { is_published: true } : {}) },
     include: {
       category: true,
       variants: { where: { is_active: true } },
@@ -171,18 +256,22 @@ app.get('/:id', async (c) => {
     available_stock: stockByVariant.get(v.id) ?? 0,
   }));
 
-  return ok(c, { ...product, variants: variantsWithStock, total_stock: totalStock });
+  return ok(c, { ...(storefront ? withoutCost(product) : product), variants: variantsWithStock, total_stock: totalStock });
 });
 
-app.post('/', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/', guard('POST /'), async (c) => {
   const {
     name, sku, barcode, description, brand, category_id,
     uom_id, product_type,
     cost_price, selling_price, sale_price,
     weight_kg, reorder_point, is_published, images,
+    item_group_id, item_model_group_id,
   } = await c.req.json();
 
   if (!name || !sku || !selling_price) throw new AppError('name, sku and selling_price are required');
+  // A new product has no transactions, so its groups are set freely — at birth
+  // is exactly when they should be, not in a separate setup pass afterwards.
+  await assertGroupsInTenant(c.get('tenantId'), { item_group_id, item_model_group_id });
 
   const product = await db.product.create({
     data: {
@@ -201,13 +290,15 @@ app.post('/', requireRole('admin', 'store_manager'), async (c) => {
       reorder_point: reorder_point ? Number(reorder_point) : 0,
       is_published: is_published ?? false,
       images: Array.isArray(images) ? images : [],
+      item_group_id: item_group_id || null,
+      item_model_group_id: item_model_group_id || null,
       tenant_id: c.get('tenantId'),
     },
   });
   return created(c, product);
 });
 
-app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
+app.put('/:id', guard('PUT /:id'), async (c) => {
   const {
     name, sku, barcode, description, brand, category_id,
     uom_id, product_type,
@@ -250,6 +341,7 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
     (item_group_id !== undefined || item_model_group_id !== undefined);
 
   if (changesGrouping) {
+    await assertGroupsInTenant(c.get('tenantId'), { item_group_id, item_model_group_id });
     const existing = await db.product.findFirst({
       where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
       select: { id: true, sku: true, item_group_id: true, item_model_group_id: true },
@@ -307,7 +399,7 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
  * Design and the full setup order: docs/architecture/ERP_SETUP_CHECKLIST.md
  */
 
-app.get('/setup/item-groups', async (c) => {
+app.get('/setup/item-groups', guard('GET /setup/item-groups'), async (c) => {
   const groups = await db.itemGroup.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: { _count: { select: { products: true } } },
@@ -316,7 +408,7 @@ app.get('/setup/item-groups', async (c) => {
   return ok(c, groups);
 });
 
-app.get('/setup/item-model-groups', async (c) => {
+app.get('/setup/item-model-groups', guard('GET /setup/item-model-groups'), async (c) => {
   const groups = await db.itemModelGroup.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: { _count: { select: { products: true } } },
@@ -325,7 +417,7 @@ app.get('/setup/item-model-groups', async (c) => {
   return ok(c, groups);
 });
 
-app.post('/setup/item-groups', requireRole('admin'), async (c) => {
+app.post('/setup/item-groups', guard('POST /setup/item-groups'), async (c) => {
   const { code, name, description } = await c.req.json();
   if (!code || !name) throw new AppError('code and name are required', 400);
   const group = await db.itemGroup.create({
@@ -345,7 +437,7 @@ app.post('/setup/item-groups', requireRole('admin'), async (c) => {
  */
 const COSTING_METHODS = ['FIFO', 'LIFO', 'WEIGHTED_AVG', 'MOVING_AVG', 'STANDARD'];
 
-function modelGroupSettings(b: any) {
+function modelGroupSettings(b: any, opts: { checkCosting: boolean } = { checkCosting: true }) {
   if (b.costing_method !== undefined && !COSTING_METHODS.includes(b.costing_method)) {
     throw new AppError(
       `Unknown costing method "${b.costing_method}". Expected one of ${COSTING_METHODS.join(', ')}.`,
@@ -353,9 +445,23 @@ function modelGroupSettings(b: any) {
     );
   }
   const bool = (v: any, dflt: boolean) => (v === undefined ? dflt : Boolean(v));
+  const costingMethod = b.costing_method ?? 'FIFO';
+  const stocked = bool(b.stocked, true);
+  // FIFO is the only valuation the posting code implements. A stocked group with
+  // any other method would be valued FIFO while its setup claimed otherwise, so
+  // the combination is refused rather than stored. Non-stocked groups have no
+  // inventory valuation and keep whatever method they carry.
+  if (opts.checkCosting && stocked && costingMethod !== 'FIFO') {
+    throw new AppError(
+      `Costing method "${costingMethod}" is not implemented for stocked items yet; only FIFO is. ` +
+        'Use FIFO, or mark the group as not stocked.',
+      422,
+      'COSTING_METHOD_NOT_IMPLEMENTED',
+    );
+  }
   return {
-    costing_method: b.costing_method ?? 'FIFO',
-    stocked: bool(b.stocked, true),
+    costing_method: costingMethod,
+    stocked,
     include_physical_value: bool(b.include_physical_value, false),
     fixed_receipt_price: bool(b.fixed_receipt_price, false),
     post_physical_inventory: bool(b.post_physical_inventory, true),
@@ -369,7 +475,7 @@ function modelGroupSettings(b: any) {
   };
 }
 
-app.post('/setup/item-model-groups', requireRole('admin'), async (c) => {
+app.post('/setup/item-model-groups', guard('POST /setup/item-model-groups'), async (c) => {
   const b = await c.req.json();
   if (!b.code || !b.name) throw new AppError('code and name are required', 400);
   const group = await db.itemModelGroup.create({
@@ -384,7 +490,7 @@ app.post('/setup/item-model-groups', requireRole('admin'), async (c) => {
   return created(c, group);
 });
 
-app.put('/setup/item-model-groups/:id', requireRole('admin'), async (c) => {
+app.put('/setup/item-model-groups/:id', guard('PUT /setup/item-model-groups/:id'), async (c) => {
   const b = await c.req.json();
   const existing = await db.itemModelGroup.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
@@ -434,13 +540,15 @@ app.put('/setup/item-model-groups/:id', requireRole('admin'), async (c) => {
       ...(b.name !== undefined && { name: b.name }),
       ...(b.description !== undefined && { description: b.description || null }),
       ...(b.is_active !== undefined && { is_active: Boolean(b.is_active) }),
-      ...modelGroupSettings({ ...existing, ...b }),
+      // The costing rule is checked when the request touches valuation; a rename
+      // or deactivation of a group created before the rule must still go through.
+      ...modelGroupSettings({ ...existing, ...b }, { checkCosting: changingCosting || changingStocked }),
     },
   });
   return ok(c, group);
 });
 
-app.put('/setup/item-groups/:id', requireRole('admin'), async (c) => {
+app.put('/setup/item-groups/:id', guard('PUT /setup/item-groups/:id'), async (c) => {
   const b = await c.req.json();
   const { count } = await db.itemGroup.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
@@ -458,7 +566,7 @@ app.put('/setup/item-groups/:id', requireRole('admin'), async (c) => {
  * The setup gap, as a number. Products with no item group can only ever resolve
  * the ALL-scope posting profile, so per-group accounts are unreachable for them.
  */
-app.get('/setup/coverage', async (c) => {
+app.get('/setup/coverage', guard('GET /setup/coverage'), async (c) => {
   const tenantId = c.get('tenantId');
   const total = await db.product.count({ where: { tenant_id: tenantId } });
   const noItemGroup = await db.product.count({ where: { tenant_id: tenantId, item_group_id: null } });
@@ -478,7 +586,89 @@ app.get('/setup/coverage', async (c) => {
   });
 });
 
-app.delete('/:id', requireRole('admin'), async (c) => {
+/**
+ * Assigns an item group and/or item model group to many products at once —
+ * the way a catalogue of a thousand articles gets set up, instead of one
+ * product at a time.
+ *
+ * Body: {
+ *   item_group_id?, item_model_group_id?   at least one; null clears it
+ *   product_ids?: string[]                 these products, or
+ *   only_unassigned?: true                 every product where that field is empty
+ *   force?: boolean
+ * }
+ *
+ * The same guard as PUT /:id applies, set-wise: a product that already has
+ * posted inventory transactions is skipped and reported, because moving it
+ * would split the ledger from the subledger. `force` includes those too and
+ * is logged.
+ */
+app.post('/setup/assign-groups', guard('POST /setup/assign-groups'), async (c) => {
+  const tenantId = c.get('tenantId');
+  const body = await c.req.json().catch(() => ({}));
+  const { product_ids, only_unassigned, force } = body as {
+    product_ids?: unknown; only_unassigned?: unknown; force?: unknown;
+  };
+
+  const fields = (['item_group_id', 'item_model_group_id'] as const).filter((f) => f in body);
+  if (fields.length === 0) throw new AppError('Give item_group_id and/or item_model_group_id', 400, 'VALIDATION');
+  for (const f of fields) {
+    const v = body[f];
+    if (v !== null && typeof v !== 'string') throw new AppError(`${f} must be an id or null`, 400, 'VALIDATION');
+  }
+  const ids = Array.isArray(product_ids) ? product_ids.filter((x): x is string => typeof x === 'string') : null;
+  if (!ids?.length && only_unassigned !== true) {
+    throw new AppError('Give product_ids, or only_unassigned: true', 400, 'VALIDATION');
+  }
+  if (ids && ids.length > 5000) throw new AppError('At most 5000 products per call', 400, 'VALIDATION');
+  await assertGroupsInTenant(tenantId, { item_group_id: body.item_group_id, item_model_group_id: body.item_model_group_id });
+
+  const result: Record<string, { updated: number; skipped_with_transactions: string[] }> = {};
+  for (const field of fields) {
+    const value: string | null = body[field] || null;
+    const candidates = await db.product.findMany({
+      where: {
+        tenant_id: tenantId,
+        ...(ids?.length ? { id: { in: ids } } : {}),
+        ...(only_unassigned === true ? { [field]: null } : {}),
+        // Products that would actually change. Spelled out rather than NOT
+        // (field = value): in SQL that is NULL for an empty field, which would
+        // drop exactly the unassigned products this route exists for.
+        ...(value === null
+          ? { NOT: { [field]: null } }
+          : { OR: [{ [field]: null }, { [field]: { not: value } }] }),
+      },
+      select: { id: true, sku: true },
+    });
+
+    const posted = candidates.length
+      ? await db.inventoryTransaction.groupBy({
+          by: ['product_id'],
+          where: { tenant_id: tenantId, product_id: { in: candidates.map((p) => p.id) } },
+        })
+      : [];
+    const withTx = new Set(posted.map((r) => r.product_id));
+    const eligible = candidates.filter((p) => force === true || !withTx.has(p.id));
+    const skipped = force === true ? [] : candidates.filter((p) => withTx.has(p.id)).map((p) => p.sku);
+
+    if (force === true && withTx.size > 0) {
+      logger.warn(
+        { tenantId, field, value, products_with_transactions: withTx.size },
+        'Bulk item grouping change on products WITH posted transactions - ledger and subledger will diverge for them',
+      );
+    }
+    const { count } = eligible.length
+      ? await db.product.updateMany({
+          where: { tenant_id: tenantId, id: { in: eligible.map((p) => p.id) } },
+          data: { [field]: value, updated_at: new Date() },
+        })
+      : { count: 0 };
+    result[field] = { updated: count, skipped_with_transactions: skipped };
+  }
+  return ok(c, result);
+});
+
+app.delete('/:id', guard('DELETE /:id'), async (c) => {
   await db.product.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     data: { is_active: false, is_published: false },
@@ -488,15 +678,15 @@ app.delete('/:id', requireRole('admin'), async (c) => {
 
 // ── Bulk actions on the product list ───────────────────────────────────────────
 // Body: { ids: string[], action: 'publish' | 'unpublish' | 'delete' }
-app.post('/bulk', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/bulk', guard('POST /bulk'), async (c) => {
   const { ids, action } = await c.req.json();
   if (!Array.isArray(ids) || ids.length === 0) throw new AppError('ids must be a non-empty array');
   if (!['publish', 'unpublish', 'delete'].includes(action)) {
     throw new AppError('action must be one of: publish, unpublish, delete');
   }
-  // delete is admin-only (soft delete)
-  if (action === 'delete' && c.get('user').role !== 'admin') {
-    throw new AppError('Only admins can bulk-delete products', 403);
+  // Bulk delete is the same duty as deleting one product (soft delete).
+  if (action === 'delete' && !hasPermission(c.get('user').role, 'product.delete')) {
+    throw new AppError('Permission denied: product.delete', 403);
   }
 
   const data =
@@ -514,7 +704,7 @@ app.post('/bulk', requireRole('admin', 'store_manager'), async (c) => {
 
 // ── Variant CRUD ──────────────────────────────────────────────────────────────
 
-app.post('/:id/variants', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/variants', guard('POST /:id/variants'), async (c) => {
   const { sku_variant, attributes, additional_cost, barcode, is_active } = await c.req.json();
   if (!sku_variant) throw new AppError('sku_variant is required');
 
@@ -550,7 +740,7 @@ app.post('/:id/variants', requireRole('admin', 'store_manager'), async (c) => {
   }
 });
 
-app.put('/:id/variants/:variantId', requireRole('admin', 'store_manager'), async (c) => {
+app.put('/:id/variants/:variantId', guard('PUT /:id/variants/:variantId'), async (c) => {
   const { sku_variant, attributes, additional_cost, barcode, is_active } = await c.req.json();
   const data: any = {};
   if (sku_variant !== undefined) data.sku_variant = sku_variant;
@@ -565,7 +755,7 @@ app.put('/:id/variants/:variantId', requireRole('admin', 'store_manager'), async
   return ok(c, null);
 });
 
-app.delete('/:id/variants/:variantId', requireRole('admin', 'store_manager'), async (c) => {
+app.delete('/:id/variants/:variantId', guard('DELETE /:id/variants/:variantId'), async (c) => {
   await db.productVariant.updateMany({
     where: { id: c.req.param('variantId'), product_id: c.req.param('id'), tenant_id: c.get('tenantId') },
     data: { is_active: false },
@@ -575,7 +765,35 @@ app.delete('/:id/variants/:variantId', requireRole('admin', 'store_manager'), as
 
 // ── Image upload / delete ─────────────────────────────────────────────────────
 
-app.post('/:id/image', async (c) => {
+/** Stores one product image in Supabase Storage and returns its public URL. */
+async function uploadProductImage(productId: string, bytes: ArrayBuffer, contentType: string, ext: string): Promise<string> {
+  const storageUrl = process.env.STORAGE_URL;
+  const bucket     = process.env.STORAGE_BUCKET;
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+
+  if (!storageUrl || !bucket || !serviceKey) {
+    throw new AppError('Storage not configured — set STORAGE_URL, STORAGE_BUCKET, SUPABASE_SERVICE_KEY', 500);
+  }
+
+  const filename    = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const storagePath = `products/${productId}/${filename}`;
+  const uploadUrl   = `${storageUrl}/storage/v1/object/${bucket}/${storagePath}`;
+
+  const uploadRes = await fetch(uploadUrl, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': contentType },
+    body:    bytes,
+  });
+
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text().catch(() => 'unknown');
+    throw new AppError(`Storage upload failed: ${errText}`, 500);
+  }
+
+  return `${storageUrl}/storage/v1/object/public/${bucket}/${storagePath}`;
+}
+
+app.post('/:id/image', guard('POST /:id/image'), async (c) => {
   const productId = c.req.param('id');
   const tenantId  = c.get('tenantId');
 
@@ -588,32 +806,8 @@ app.post('/:id/image', async (c) => {
   if (!file.type.startsWith('image/')) throw new AppError('Only image files are allowed', 400);
   if (file.size > 5 * 1024 * 1024) throw new AppError('File too large (max 5MB)', 400);
 
-  const storageUrl = process.env.STORAGE_URL;
-  const bucket     = process.env.STORAGE_BUCKET;
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-
-  if (!storageUrl || !bucket || !serviceKey) {
-    throw new AppError('Storage not configured — set STORAGE_URL, STORAGE_BUCKET, SUPABASE_SERVICE_KEY', 500);
-  }
-
   const ext       = (file.name.split('.').pop() ?? 'jpg').toLowerCase();
-  const filename  = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-  const storagePath = `products/${productId}/${filename}`;
-  const uploadUrl   = `${storageUrl}/storage/v1/object/${bucket}/${storagePath}`;
-
-  const arrayBuffer = await file.arrayBuffer();
-  const uploadRes   = await fetch(uploadUrl, {
-    method:  'POST',
-    headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': file.type },
-    body:    arrayBuffer,
-  });
-
-  if (!uploadRes.ok) {
-    const errText = await uploadRes.text().catch(() => 'unknown');
-    throw new AppError(`Storage upload failed: ${errText}`, 500);
-  }
-
-  const publicUrl = `${storageUrl}/storage/v1/object/public/${bucket}/${storagePath}`;
+  const publicUrl = await uploadProductImage(productId, await file.arrayBuffer(), file.type, ext);
 
   const updated = await db.product.update({
     where: { id: productId },
@@ -623,7 +817,7 @@ app.post('/:id/image', async (c) => {
   return ok(c, updated);
 });
 
-app.delete('/:id/image', async (c) => {
+app.delete('/:id/image', guard('DELETE /:id/image'), async (c) => {
   const productId = c.req.param('id');
   const tenantId  = c.get('tenantId');
   const { url }   = await c.req.json();
@@ -641,14 +835,75 @@ app.delete('/:id/image', async (c) => {
   return ok(c, updated);
 });
 
+// ── AI View Generation (OneProvider — optional) ───────────────────────────────
+// Requires ONEPROVIDER_API_KEY env var. If not set, returns 501.
+// Generates front / back / left / right views from one of the product's own
+// images and appends each successful view to product.images. Views are generated
+// independently: one failed view does not discard the others.
+
+app.post('/:id/generate-views', guard('POST /:id/generate-views'), async (c) => {
+  if (!isOneProviderConfigured()) {
+    throw new AppError('AI image generation is not configured. Set ONEPROVIDER_API_KEY.', 501);
+  }
+
+  const productId = c.req.param('id');
+  const tenantId  = c.get('tenantId');
+
+  const product = await db.product.findFirst({ where: { id: productId, tenant_id: tenantId } });
+  if (!product) throw new AppError('Product not found', 404);
+
+  const { image_url, views, quality } = await c.req.json() as { image_url?: string; views?: string[]; quality?: string };
+  if (!image_url) throw new AppError('image_url is required', 400);
+  if (quality !== undefined && !IMAGE_QUALITIES.includes(quality as ImageQuality)) {
+    throw new AppError(`quality must be one of: ${IMAGE_QUALITIES.join(', ')}`, 400);
+  }
+  if (!product.images.includes(image_url)) {
+    throw new AppError('image_url does not belong to this product', 400);
+  }
+
+  const requested = (views?.length ? views : [...PRODUCT_VIEWS]) as ProductView[];
+  const unknown = requested.filter((v) => !PRODUCT_VIEWS.includes(v));
+  if (unknown.length) throw new AppError(`Unknown view(s): ${unknown.join(', ')}`, 400);
+
+  const refRes = await fetch(image_url);
+  if (!refRes.ok) throw new AppError('Reference image could not be downloaded', 502);
+  const reference = {
+    bytes:       await refRes.arrayBuffer(),
+    contentType: refRes.headers.get('content-type') ?? 'image/png',
+  };
+
+  const results = await Promise.allSettled(requested.map(async (view) => {
+    const image = await generateProductView(reference, view, quality as ImageQuality | undefined);
+    const url   = await uploadProductImage(productId, image.bytes, image.contentType, image.ext);
+    return { view, url };
+  }));
+
+  const generated = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  const failed = results.flatMap((r, i) => (r.status === 'rejected'
+    ? [{ view: requested[i], error: r.reason instanceof Error ? r.reason.message : String(r.reason) }]
+    : []));
+
+  for (const f of failed) logger.warn({ productId, view: f.view, error: f.error }, 'AI view generation failed');
+  if (!generated.length) throw new AppError(`AI view generation failed: ${failed[0]?.error ?? 'unknown'}`, 502);
+
+  const updated = await db.product.update({
+    where: { id: productId },
+    data:  { images: { push: generated.map((g) => g.url) } },
+  });
+
+  return ok(c, { product: updated, generated, failed });
+});
+
 // ── AI Video Generation (FAL.ai — optional) ───────────────────────────────────
 // Requires FAL_API_KEY env var. If not set, returns 501.
 // Flow: POST generate-video → returns request_id (async job)
 //       GET  video-jobs/:requestId → poll until COMPLETED, auto-saves URL to product.video_urls
 
 const FAL_BASE = 'https://queue.fal.run/fal-ai/kling-video/v2.1/standard/image-to-video';
+/** Kling v2.1 standard accepts only these clip lengths, in seconds (FAL.ai API schema). */
+const FAL_VIDEO_DURATIONS = ['5', '10'] as const;
 
-app.post('/:id/generate-video', async (c) => {
+app.post('/:id/generate-video', guard('POST /:id/generate-video'), async (c) => {
   const falKey = process.env.FAL_API_KEY;
   if (!falKey) throw new AppError('AI video generation is not configured. Set FAL_API_KEY in .env.', 501);
 
@@ -658,8 +913,13 @@ app.post('/:id/generate-video', async (c) => {
   const product = await db.product.findFirst({ where: { id: productId, tenant_id: tenantId } });
   if (!product) throw new AppError('Product not found', 404);
 
-  const { image_url, prompt } = await c.req.json();
+  const { image_url, prompt, duration } = await c.req.json();
   if (!image_url) throw new AppError('image_url is required', 400);
+
+  const seconds = duration === undefined ? '5' : String(duration);
+  if (!(FAL_VIDEO_DURATIONS as readonly string[]).includes(seconds)) {
+    throw new AppError(`duration must be one of: ${FAL_VIDEO_DURATIONS.join(', ')} seconds`, 400);
+  }
 
   // Verify the image belongs to this product
   if (!product.images.includes(image_url)) {
@@ -675,7 +935,7 @@ app.post('/:id/generate-video', async (c) => {
     body: JSON.stringify({
       image_url,
       prompt:       prompt ?? 'Product showcase, smooth cinematic motion, professional lighting',
-      duration:     '5',
+      duration:     seconds,
       aspect_ratio: '16:9',
     }),
   });
@@ -689,7 +949,7 @@ app.post('/:id/generate-video', async (c) => {
   return ok(c, { request_id: job.request_id, status: 'submitted' });
 });
 
-app.get('/:id/video-jobs/:requestId', async (c) => {
+app.get('/:id/video-jobs/:requestId', guard('GET /:id/video-jobs/:requestId'), async (c) => {
   const falKey    = process.env.FAL_API_KEY;
   if (!falKey) throw new AppError('AI video generation is not configured.', 501);
 
@@ -736,7 +996,7 @@ app.get('/:id/video-jobs/:requestId', async (c) => {
   return ok(c, { status });
 });
 
-app.delete('/:id/video', async (c) => {
+app.delete('/:id/video', guard('DELETE /:id/video'), async (c) => {
   const productId = c.req.param('id');
   const tenantId  = c.get('tenantId');
   const { url }   = await c.req.json();
@@ -754,7 +1014,7 @@ app.delete('/:id/video', async (c) => {
 
 // ── Stock ─────────────────────────────────────────────────────────────────────
 
-app.get('/:id/stock', async (c) => {
+app.get('/:id/stock', guard('GET /:id/stock'), async (c) => {
   const stock = await db.inventoryStock.findMany({
     where: { tenant_id: c.get('tenantId'), product_id: c.req.param('id') },
     include: {

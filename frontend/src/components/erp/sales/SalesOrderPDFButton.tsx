@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { FileText, Eye, AlertCircle, RefreshCw } from 'lucide-react';
 import { SalesOrderPDF } from './SalesOrderPDF';
 import { useTaxPreview } from '@/lib/useTaxPreview';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const PDFDownloadLink = dynamic(
   () => import('@react-pdf/renderer').then(m => m.PDFDownloadLink),
@@ -37,6 +38,9 @@ export function SalesOrderPDFButton({ order, variant = 'both' }: Props) {
   const preview = useTaxPreview(Number(order.total_amount), {
     partyId: order.customer_id ?? null,
   });
+  // The currency is resolved here and handed down for the same reason the tax is
+  // — and, like the tax, no document is offered until it is known.
+  const { currency } = useMoney();
 
   if (preview.status === 'error') {
     return (
@@ -68,7 +72,7 @@ export function SalesOrderPDFButton({ order, variant = 'both' }: Props) {
   // exists to remove. If free-of-charge orders turn out to need a document, the
   // honest fix is for the preview to answer for a zero amount — not for this
   // component to invent the answer.
-  if (!preview.tax) {
+  if (!preview.tax || !currency) {
     return (
       <div className="flex items-center gap-1">
         <span
@@ -85,7 +89,7 @@ export function SalesOrderPDFButton({ order, variant = 'both' }: Props) {
     );
   }
 
-  const doc = <SalesOrderPDF order={order} tax={preview.tax} />;
+  const doc = <SalesOrderPDF order={order} tax={preview.tax} currency={currency} />;
   const fileName = `Pedido-${order.order_number}.pdf`;
 
   return (

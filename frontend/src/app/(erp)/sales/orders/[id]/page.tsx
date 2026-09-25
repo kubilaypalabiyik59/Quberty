@@ -19,6 +19,7 @@ import {
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
 import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const STATUS_COLORS = {
   DRAFT: 'gray', CONFIRMED: 'blue', PICKING: 'yellow',
@@ -28,6 +29,7 @@ const STATUS_COLORS = {
 const INVOICEABLE_STATUSES = ['CONFIRMED', 'PICKING', 'PACKED', 'SHIPPED', 'COMPLETED'];
 
 export default function OrderDetailPage() {
+  const { money, code } = useMoney();
   const { id } = useParams();
   const router = useRouter();
   const qc = useQueryClient();
@@ -96,7 +98,7 @@ export default function OrderDetailPage() {
   // while the return form is open: the two forms open independently, and a
   // shared `showInvoiceForm || showReturnForm` flag would let the return inherit
   // an answer fetched for the invoice form instead of revalidating for itself.
-  const returnSequence = useFacturaSequence(showReturnForm);
+  const returnSequence = useFacturaSequence(showReturnForm && !!order?.invoice_id);
 
   // ── Called HERE, above the loading and not-found returns ──────────────────
   //
@@ -117,7 +119,9 @@ export default function OrderDetailPage() {
     enabled: !!order && showInvoiceForm,
   });
   const returnNumberError =
-    returnSequence.manual === true ? manualFacturaNumberError(returnFacturaNumber) : null;
+    !!order?.invoice_id && returnSequence.manual === true
+      ? manualFacturaNumberError(returnFacturaNumber)
+      : null;
 
   const closeReturnForm = () => {
     setShowReturnForm(false);
@@ -131,9 +135,9 @@ export default function OrderDetailPage() {
   const returnOrder = useMutation({
     mutationFn: () => api.post(`/sales/orders/${id}/return`, {
       notes: returnNotes,
-      // Omitted entirely on an automatic series: the backend rejects a supplied
-      // number there rather than ignoring it.
-      factura_number: manualFacturaNumberPayload(returnSequence.manual, returnFacturaNumber),
+      ...(order?.invoice_id
+        ? { factura_number: manualFacturaNumberPayload(returnSequence.manual, returnFacturaNumber) }
+        : {}),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-order', id] });
@@ -281,7 +285,9 @@ export default function OrderDetailPage() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-gray-500">Currency</span>
-              <span className="font-medium">{order.currency ?? 'BOB'}</span>
+              {/* The currency the document was created in. It falls back to the
+                  ledger's only while an older order carries none. */}
+              <span className="font-medium">{order.currency ?? code}</span>
             </div>
             {order.notes && (
               <div>
@@ -315,29 +321,29 @@ export default function OrderDetailPage() {
                   <p className="font-medium text-gray-900">{line.product?.name ?? line.product_id}</p>
                   {line.product?.sku && <p className="text-xs text-gray-400 font-mono">{line.product.sku}</p>}
                 </td>
-                <td className="px-6 py-3 text-right text-gray-700">Bs. {Number(line.unit_price).toFixed(2)}</td>
+                <td className="px-6 py-3 text-right text-gray-700">{money(line.unit_price)}</td>
                 <td className="px-6 py-3 text-right font-medium">{line.quantity}</td>
                 <td className="px-6 py-3 text-right text-gray-400">
                   {Number(line.discount_pct) > 0 ? `${Number(line.discount_pct).toFixed(0)}%` : '—'}
                 </td>
-                <td className="px-6 py-3 text-right font-bold text-gray-900">Bs. {Number(line.line_total).toFixed(2)}</td>
+                <td className="px-6 py-3 text-right font-bold text-gray-900">{money(line.line_total)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot className="border-t border-gray-200 bg-gray-50">
             <tr>
               <td colSpan={4} className="px-6 py-3 text-right text-sm font-semibold text-gray-600">Subtotal (incl. IVA):</td>
-              <td className="px-6 py-3 text-right font-bold text-gray-900">Bs. {Number(order.subtotal).toFixed(2)}</td>
+              <td className="px-6 py-3 text-right font-bold text-gray-900">{money(order.subtotal)}</td>
             </tr>
             {Number(order.discount_amount) > 0 && (
               <tr>
                 <td colSpan={4} className="px-6 py-2 text-right text-sm text-gray-500">Discount:</td>
-                <td className="px-6 py-2 text-right text-red-600 font-medium">-Bs. {Number(order.discount_amount).toFixed(2)}</td>
+                <td className="px-6 py-2 text-right text-red-600 font-medium">-{money(order.discount_amount)}</td>
               </tr>
             )}
             <tr>
               <td colSpan={4} className="px-6 py-3 text-right text-base font-bold text-gray-900">Total:</td>
-              <td className="px-6 py-3 text-right text-lg font-black text-gray-900">Bs. {Number(order.total_amount).toFixed(2)}</td>
+              <td className="px-6 py-3 text-right text-lg font-black text-gray-900">{money(order.total_amount)}</td>
             </tr>
           </tfoot>
         </table>
@@ -446,13 +452,13 @@ export default function OrderDetailPage() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
                   <div>
                     <p className="text-xs text-gray-500 mb-1">Subtotal neto</p>
-                    <p className="font-bold text-gray-900">Bs. {taxPreview.tax.subtotal.toFixed(2)}</p>
+                    <p className="font-bold text-gray-900">{money(taxPreview.tax.subtotal)}</p>
                   </div>
                   {taxPreview.tax.lines.length > 0
                     ? taxPreview.tax.lines.map(l => (
                         <div key={l.code}>
                           <p className="text-xs text-red-500 mb-1">{l.code} {formatRate(l.rate)}</p>
-                          <p className="font-bold text-red-700">Bs. {l.amount.toFixed(2)}</p>
+                          <p className="font-bold text-red-700">{money(l.amount)}</p>
                         </div>
                       ))
                     : (
@@ -460,20 +466,20 @@ export default function OrderDetailPage() {
                         {taxPreview.tax.vat > 0 && (
                           <div>
                             <p className="text-xs text-red-500 mb-1">IVA</p>
-                            <p className="font-bold text-red-700">Bs. {taxPreview.tax.vat.toFixed(2)}</p>
+                            <p className="font-bold text-red-700">{money(taxPreview.tax.vat)}</p>
                           </div>
                         )}
                         {taxPreview.tax.turnover > 0 && (
                           <div>
                             <p className="text-xs text-orange-600 mb-1">IT</p>
-                            <p className="font-bold text-orange-600">Bs. {taxPreview.tax.turnover.toFixed(2)}</p>
+                            <p className="font-bold text-orange-600">{money(taxPreview.tax.turnover)}</p>
                           </div>
                         )}
                       </>
                     )}
                   <div>
                     <p className="text-xs text-gray-500 mb-1">Total</p>
-                    <p className="font-black text-gray-900">Bs. {total.toFixed(2)}</p>
+                    <p className="font-black text-gray-900">{money(total)}</p>
                   </div>
                 </div>
               ) : taxPreview.status === 'error' ? (
@@ -550,15 +556,15 @@ export default function OrderDetailPage() {
             </div>
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-blue-600 mb-1">IVA 13%</p>
-              <p className="font-bold text-blue-700">Bs. {Number(order.factura.iva_amount).toFixed(2)}</p>
+              <p className="font-bold text-blue-700">{money(order.factura.iva_amount)}</p>
             </div>
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-orange-600 mb-1">IT 3%</p>
-              <p className="font-bold text-orange-600">Bs. {Number(order.factura.it_amount).toFixed(2)}</p>
+              <p className="font-bold text-orange-600">{money(order.factura.it_amount)}</p>
             </div>
             <div className="bg-white rounded-xl border border-green-200 p-3">
               <p className="text-xs text-gray-500 mb-1">Total</p>
-              <p className="font-black text-gray-900">Bs. {Number(order.factura.total_amount).toFixed(2)}</p>
+              <p className="font-black text-gray-900">{money(order.factura.total_amount)}</p>
             </div>
           </div>
         )}
@@ -572,7 +578,11 @@ export default function OrderDetailPage() {
             </div>
             <div>
               <h2 className="font-bold text-gray-900">Process Return</h2>
-              <p className="text-sm text-gray-500">Stock will be restored, a credit note Factura will be issued, and all journal entries reversed.</p>
+              <p className="text-sm text-gray-500">
+                {order.invoice_id
+                  ? 'Stock will be restored, a credit note Factura will be issued, and the return recorded in accounting.'
+                  : 'Shipment stock and cost will be reversed. No credit note will be issued as this order was not invoiced.'}
+              </p>
             </div>
           </div>
 
@@ -588,7 +598,7 @@ export default function OrderDetailPage() {
             </div>
 
             {/* The credit note's legal number, only when a person supplies it. */}
-            {returnSequence.manual === true && (
+            {!!order.invoice_id && returnSequence.manual === true && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Credit note number <span className="text-red-500">*</span>
@@ -610,7 +620,7 @@ export default function OrderDetailPage() {
             )}
 
             {/* Fail closed: never assume automatic while the answer is unknown. */}
-            {returnSequence.blockingReason && (
+            {!!order.invoice_id && returnSequence.blockingReason && (
               <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <div className="flex-1">
@@ -631,11 +641,17 @@ export default function OrderDetailPage() {
               <p className="font-semibold mb-1">This will:</p>
               <ul className="list-disc list-inside space-y-0.5 text-xs">
                 <li>Restore {order.lines?.length ?? 0} line(s) of stock back to inventory</li>
-                <li>
-                  Issue a credit note Factura (negative amount)
-                  {returnSequence.manual === true && ' with the number entered above'}
-                </li>
-                <li>Reverse all GL journal entries for this order</li>
+                {order.invoice_id ? (
+                  <>
+                    <li>Issue a credit note Factura{returnSequence.manual === true && ' with the number entered above'}</li>
+                    <li>Record the return in accounting</li>
+                  </>
+                ) : (
+                  <>
+                    <li>Reverse the COGS journal entry at the original shipment cost</li>
+                    <li>No credit note will be issued — this order was not invoiced</li>
+                  </>
+                )}
               </ul>
             </div>
 
@@ -650,7 +666,7 @@ export default function OrderDetailPage() {
                 onClick={() => returnOrder.mutate()}
                 disabled={
                   returnOrder.isPending ||
-                  returnSequence.status !== 'ready' ||
+                  (!!order.invoice_id && returnSequence.status !== 'ready') ||
                   returnNumberError !== null
                 }
                 className="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors"

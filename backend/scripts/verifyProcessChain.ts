@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { db } from '../src/infrastructure/database/client';
+import { getLedgerCurrencies } from '../src/shared/services/currency/ledgerCurrency.service';
 import {
   createLead,
   qualifyLead,
@@ -317,7 +318,7 @@ function heading(s: string) {
         code: RIVAL_CODE,
         name: 'Proveedor Rival (verification fixture)',
         country: 'BO',
-        currency: 'BOB',
+        currency: (await getLedgerCurrencies(tenant.id)).accountingCurrency,
       },
     }));
   const supplierIds = [existingSupplier!.id, rival.id];

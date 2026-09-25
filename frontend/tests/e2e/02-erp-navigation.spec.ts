@@ -66,9 +66,9 @@ test.describe('ERP Navigation', () => {
 
   test('bell notification panel opens', async ({ page }) => {
     await page.getByRole('button', { name: 'Notifications' }).click();
-    // "Notifications" substring also matches "No notifications yet" — assert the unique empty-state text
-    await expect(page.getByText('No notifications yet')).toBeVisible();
-    await expect(page.getByText("You're all caught up!")).toBeVisible();
+    // The bell lists live conditions (low stock today): either the list or the
+    // empty state, never nothing.
+    await expect(page.getByText("You're all caught up!").or(page.getByText(/^Low stock ·/))).toBeVisible();
   });
 
   test('avatar dropdown shows user info', async ({ page }) => {

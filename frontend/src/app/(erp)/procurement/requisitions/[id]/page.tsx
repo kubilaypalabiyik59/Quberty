@@ -10,8 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { DocumentChain } from '@/components/erp/DocumentChain';
 import { PageHeader, TableShell, Th, Td, EmptyRow, ErrorNote } from '@/components/erp/PageHeader';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * One requisition.
@@ -21,6 +20,7 @@ const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFracti
  * header status is derived from what the lines say — never set directly.
  */
 export default function RequisitionDetailPage() {
+  const { amount: money } = useMoney();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();

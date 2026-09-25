@@ -4,11 +4,11 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { DollarSign, Play, ChevronDown, ChevronRight, AlertCircle, CheckCircle } from 'lucide-react';
-
-const fmt = (n: number) =>
-  n.toLocaleString('es-BO', { style: 'currency', currency: 'BOB', minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
 
 export default function PayrollPage() {
+  // The ledger's currency and the tenant's locale, not Bolivia's (WORK-025).
+  const { money: fmt, code, locale } = useMoney();
   const qc = useQueryClient();
   const today = new Date();
   const [year, setYear]   = useState(today.getFullYear());
@@ -66,7 +66,7 @@ export default function PayrollPage() {
   });
 
   const MONTHS = Array.from({ length: 12 }, (_, i) =>
-    new Date(2000, i).toLocaleString('es-BO', { month: 'long' })
+    new Date(2000, i).toLocaleString(locale, { month: 'long' })
   );
 
   return (
@@ -116,7 +116,7 @@ export default function PayrollPage() {
                 <tr>
                   <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Employee</th>
                   <th className="text-left px-3 py-2 text-xs font-medium text-gray-500">Position</th>
-                  <th className="text-right px-3 py-2 text-xs font-medium text-gray-500">Gross (BOB)</th>
+                  <th className="text-right px-3 py-2 text-xs font-medium text-gray-500">Gross ({code})</th>
                   <th className="text-right px-3 py-2 text-xs font-medium text-gray-500">Deductions</th>
                   <th className="text-right px-3 py-2 text-xs font-medium text-gray-500">Net</th>
                 </tr>

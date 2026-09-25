@@ -265,6 +265,38 @@
       "normal_balance": "DEBIT",
       "parent_code": "5000",
       "category": "PRICE_VARIANCE"
+    },
+    {
+      "code": "3501",
+      "name": "Saldos de Apertura de Inventario",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "OPENING_BALANCE_EQUITY"
+    },
+    {
+      "code": "4201",
+      "name": "Sobrantes de Inventario",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": "4000",
+      "category": "INVENTORY_PROFIT"
+    },
+    {
+      "code": "5305",
+      "name": "Faltantes de Inventario",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "INVENTORY_LOSS"
+    },
+    {
+      "code": "5306",
+      "name": "Faltantes y Sobrantes de Caja",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "CASH_DIFFERENCE"
     }
   ]
 }

@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { X, ArrowRightLeft } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 interface TransactionsModalProps {
   title: string;
@@ -21,6 +22,7 @@ const TX_TYPE_COLOR: Record<string, string> = {
 
 export function TransactionsModal({ title, queryParams, onClose }: TransactionsModalProps) {
   const params = new URLSearchParams({ ...queryParams, limit: '100' }).toString();
+  const { money } = useMoney();
 
   const { data: txs, isLoading } = useQuery({
     queryKey: ['inventory-transactions', queryParams],
@@ -96,7 +98,7 @@ export function TransactionsModal({ title, queryParams, onClose }: TransactionsM
                   </td>
                   <td className="px-4 py-2.5 text-right font-semibold text-gray-900">{tx.quantity}</td>
                   <td className="px-4 py-2.5 text-right text-gray-500 text-xs whitespace-nowrap">
-                    {tx.unit_cost ? `Bs. ${Number(tx.unit_cost).toFixed(2)}` : '—'}
+                    {tx.unit_cost ? money(tx.unit_cost) : '—'}
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="font-mono text-xs text-gray-700">{tx.reference_number ?? '—'}</div>

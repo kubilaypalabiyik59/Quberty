@@ -15,7 +15,7 @@ export async function tenantMiddleware(c: AppContext, next: AppNext) {
 
   const tenant = await db.tenant.findUnique({
     where:  { id: tenantId, is_active: true },
-    select: { id: true, slug: true, tax_config: true, currency_code: true },
+    select: { id: true, slug: true, tax_config: true },
   });
 
   if (!tenant) {
@@ -25,6 +25,5 @@ export async function tenantMiddleware(c: AppContext, next: AppNext) {
   c.set('tenantId',     tenant.id);
   c.set('tenantSlug',   tenant.slug);
   c.set('taxConfig',    (tenant as any).tax_config ?? null);
-  c.set('currencyCode', (tenant as any).currency_code ?? 'USD');
   await next();
 }

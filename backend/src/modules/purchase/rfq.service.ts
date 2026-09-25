@@ -4,7 +4,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { logger } from '../../shared/logger';
 import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
-import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
+import { resolveDocumentCurrency } from '../../shared/services/currency/documentCurrency';
 import {
   RFQ_CASE_STATUS,
   REQUISITION_STATUS,
@@ -71,6 +71,7 @@ async function responseDays(tenantId: string): Promise<number> {
 export async function createRfqCase(tenantId: string, input: CreateRfqCaseInput, userId: string) {
   if (!input.lines?.length) throw new AppError('An RFQ needs at least one line', 400);
 
+  const currency = await resolveDocumentCurrency(tenantId, input.currency);
   const rfq_number = await allocateNumber({ tenantId, reference: 'RFQ' });
   const deadline = input.bid_deadline
     ? new Date(input.bid_deadline)
@@ -84,7 +85,7 @@ export async function createRfqCase(tenantId: string, input: CreateRfqCaseInput,
       purchase_type: 'PURCHASE_ORDER',
       warehouse_id: input.warehouse_id ?? null,
       bid_deadline: deadline,
-      currency: input.currency ?? 'BOB',
+      currency,
       notes: input.notes ?? null,
       created_by: userId,
       lines: {
@@ -556,7 +557,7 @@ export async function awardRfq(
   // The winning bid is what the vendor will invoice, i.e. gross.
   const agreed = Number(selected.reduce((s, l) => s + Number(l.line_total), 0).toFixed(2));
   const money = await computePurchaseMoney(tenantId, agreed, { partyId: request.supplier_id });
-  const po_number = await nextPurchaseOrderNumber(tenantId);
+  const po_number = await allocateNumber({ tenantId, reference: 'PURCHASE_ORDER', legalEntityId: null });
 
   return db.$transaction(async (tx) => {
     const po = await tx.purchaseOrder.create({

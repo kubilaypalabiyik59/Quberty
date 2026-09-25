@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { Download } from 'lucide-react';
 import { IvaReportPDF } from './IvaReportPDF';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const PDFDownloadLink = dynamic(
   () => import('@react-pdf/renderer').then(m => m.PDFDownloadLink),
@@ -17,8 +18,13 @@ interface Props {
 }
 
 export function IvaReportPDFButton({ facturas, totals, year, month }: Props) {
+  // Resolved here because the document cannot read context; no export until known.
+  const { currency } = useMoney();
   const fileName = `Libro-Ventas-${year}-${String(month).padStart(2, '0')}.pdf`;
-  const doc = <IvaReportPDF facturas={facturas} totals={totals} year={year} month={month} />;
+  if (!currency) {
+    return <span className="text-caption text-fg-muted px-2">Loading currency…</span>;
+  }
+  const doc = <IvaReportPDF facturas={facturas} totals={totals} year={year} month={month} currency={currency} />;
 
   return (
     // @ts-ignore

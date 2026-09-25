@@ -36,6 +36,7 @@ import {
   POSTING_TYPES_REQUIRED_TO_TRADE,
 } from '../../shared/services/accountCategory';
 import { PostingType } from '../../shared/services/postingProfile.service';
+import { bootstrapTenantLedger } from '../../shared/services/currency/ledgerCurrency.service';
 
 const db = new PrismaClient();
 
@@ -72,21 +73,27 @@ const PINS = new Map<string, string>(
     }),
 );
 
-type Tenant = { id: string; name: string; slug: string; currency_code: string };
+type Tenant = { id: string; name: string; slug: string; country: string | null };
 
 /* ────────────────────────── template selection ────────────────────────── */
 
 /**
  * Pick the template for a tenant. Explicit flag wins; otherwise match on the
- * tenant's currency, then fall back to the generic IFRS chart. Never assume
- * Bolivia — that assumption is what this refactor removes.
+ * tenant's COUNTRY, and otherwise stop.
+ *
+ * It used to match on the currency, which is the same class of inference as
+ * resolving an account by its code: Ecuador, Panama and El Salvador all use USD
+ * and none of them files the same chart, while Turkey's TDHP is mandated by law
+ * rather than by the lira. A chart is a jurisdiction's, not a currency's.
+ *
+ * There is no silent fallback to the generic chart either: provisioning a company
+ * with the wrong statutory chart is worse than refusing to guess, and
+ * `generic-ifrs` stays reachable with an explicit --template.
  */
 function templateFor(tenant: Tenant): CoaTemplate | undefined {
   if (TEMPLATE_ID) return getTemplate(TEMPLATE_ID);
-  return (
-    COA_TEMPLATES.find(t => t.currency === tenant.currency_code) ??
-    getTemplate('generic-ifrs')
-  );
+  if (!tenant.country) return undefined;
+  return COA_TEMPLATES.find(t => t.country === tenant.country);
 }
 
 /* ────────────────────────── category backfill ─────────────────────────── */
@@ -351,10 +358,12 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
       reference: 'FACTURA',
       name: 'Legal invoice series',
       format: '{######}',
-      // Gaplessness is a legal question per jurisdiction and is still open for
-      // Bolivia (HANDOVER.md §7). Left false so this script does not assert a
-      // legal position it cannot support.
-      continuous: false,
+      // The legal invoice series must stay sequential: allocation holds a row
+      // lock inside the caller's transaction, so a rolled-back sale or invoice
+      // never burns a number. GAPLESS is enforced by the Setup rules and by a
+      // CHECK constraint (migration 036), so no screen or script can undo it.
+      continuous: true,
+      legal_series: 'GAPLESS',
       scope: 'LEGAL_ENTITY',
       next_number: 1,
       current_year: null,
@@ -411,6 +420,20 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
       current_year: new Date().getFullYear(),
     },
 
+    // ── Purchase order (migration 031) ────────────────────────────────────
+    // An internal handle, so non-continuous. LEGAL_ENTITY scope: the counter
+    // never resets, which is how purchase orders were numbered before 031.
+    // Existing tenants were seeded by the migration above their highest number.
+    {
+      reference: 'PURCHASE_ORDER',
+      name: 'Purchase order',
+      format: 'PO-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'LEGAL_ENTITY',
+      next_number: 1,
+      current_year: null,
+    },
+
     // ── Purchase documents (migration 010) ────────────────────────────────
     // Both are internal handles. The product receipt's legal anchor is the
     // supplier's packing slip, and the vendor invoice's is the supplier's own
@@ -434,6 +457,53 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
       next_number: 1,
       current_year: new Date().getFullYear(),
     },
+    {
+      reference: 'PAYMENT',
+      name: 'Vendor payment',
+      format: 'VP-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'PURCHASE_RETURN',
+      name: 'Purchase return',
+      format: 'PR-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'SUPPLIER_CREDIT',
+      name: 'Supplier credit',
+      format: 'SC-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    // WORK-045: inventory journals (adjustments and openings) and counts. Internal
+    // documents, so non-continuous.
+    {
+      reference: 'INVENTORY_ADJUSTMENT',
+      name: 'Inventory journal',
+      format: 'IJ-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
+    {
+      reference: 'INVENTORY_COUNT',
+      name: 'Inventory count',
+      format: 'CNT-{YYYY}-{#####}',
+      continuous: false,
+      scope: 'FISCAL_YEAR',
+      next_number: 1,
+      current_year: new Date().getFullYear(),
+    },
   ];
 
   for (const s of seqs) {
@@ -452,7 +522,6 @@ async function provisionSequences(tenant: Tenant): Promise<void> {
     await db.numberSequence.create({ data: { tenant_id: tenant.id, legal_entity_id: null, ...s } });
     console.log(`  OK       sequence ${s.reference} starting at ${s.next_number} (format ${s.format})`);
   }
-  console.log(`  NOTE     FACTURA sequence exists but is not yet used — factura_counters still owns the legal series.`);
 }
 
 /* ────────────────────────────── tax setup ─────────────────────────────── */
@@ -589,21 +658,20 @@ async function provisionParameters(
     db.salesParameters.createMany({ data: [{ ...scope, ...salesParams }], skipDuplicates: true }),
     db.purchaseParameters.createMany({ data: [{ ...scope }], skipDuplicates: true }),
     db.inventoryParameters.createMany({ data: [{ ...scope }], skipDuplicates: true }),
-    db.financeParameters.createMany({
-      data: [
-        {
-          ...scope,
-          functional_currency: template.currency,
-          // Starts FALSE for existing tenants deliberately. Flipping it makes an
-          // unpostable document fail the whole operation — the correct behaviour
-          // and the fix for D-4 — but doing that in the same step that introduces
-          // the tables would turn configuration into an outage risk.
-          require_balanced_posting: false,
-        },
-      ],
-      skipDuplicates: true,
-    }),
   ]);
+
+  // The ledger is created with the tenant (scripts/createTenant.ts), because its
+  // currency is a decision, not something provisioning can infer — the template's
+  // currency is the template's, not this company's. Provisioning only reports it.
+  const ledger = await db.financeParameters.findFirst({
+    where: { tenant_id: tenant.id, legal_entity_id: null },
+    select: { accounting_currency_code: true },
+  });
+  if (!ledger) {
+    console.log('  ERROR    this tenant has no ledger. Create it with scripts/createTenant.ts, or set the ledger currencies in Finance → Setup → Currencies, then re-run.');
+  } else if (template.currency !== ledger.accounting_currency_code) {
+    console.log(`  NOTE     template currency ${template.currency} differs from the ledger's ${ledger.accounting_currency_code}; the ledger keeps ${ledger.accounting_currency_code}`);
+  }
   console.log(`  OK       parameters created (require_balanced_posting = false — flip per tenant once profiles are complete)`);
 }
 
@@ -673,22 +741,16 @@ async function provisionPipelineStages(tenant: Tenant): Promise<void> {
  * So the assignment is a deliberate act, reported by the setup audit.
  */
 /**
- * THREE groups, chosen to make the two axes visibly INDEPENDENT.
+ * TWO groups: stocked FIFO trading stock, and non-stocked expensed items.
  *
- * An earlier version shipped only `FIFO` (stocked) and `SERVICE` (standard cost,
- * not stocked), which read as "standard cost means it is a service". That is
- * wrong, and the documentation contradicts it directly: *"Yes, you can use
- * different costing models for each item. It's common for manufacturers to use a
- * periodic costing model for raw materials and standard cost for semi-finished
- * and finished goods."*
- *
- * `STOCKED-STD` exists specifically to occupy the cell the old seed excluded —
- * a tangible, inventory-tracked item valued at standard cost. Delete it if the
- * tenant has no use for it; what matters is that the combination is reachable.
- *
- * Note also that a NOT-stocked group is not the same thing as "a service".
- * **[OFFICIAL]** a service item that appears on a BOM must be *stocked*. The
- * axis is "does this item have an inventory subledger", nothing more.
+ * Costing method and "is stocked" stay independent axes in the schema — the
+ * documentation is explicit that an inventory-tracked item may be valued at
+ * standard cost (learn.microsoft.com/dynamics365/supply-chain/cost-management/
+ * inventory-costing-faq). But FIFO is the only valuation the posting code
+ * implements, so a stocked group with any other method would be valued FIFO
+ * while claiming otherwise. The Setup API refuses that combination
+ * (COSTING_METHOD_NOT_IMPLEMENTED) and provisioning does not create it. The
+ * `costing_method` column is the hook the other methods attach to.
  */
 const DEFAULT_ITEM_MODEL_GROUPS = [
   {
@@ -696,17 +758,6 @@ const DEFAULT_ITEM_MODEL_GROUPS = [
     name: 'Stocked · FIFO',
     description: 'Tangible item, tracked in inventory, valued first-in-first-out. The default for trading stock.',
     costing_method: 'FIFO',
-    stocked: true,
-    post_physical_inventory: true,
-    post_financial_inventory: true,
-  },
-  {
-    code: 'STOCKED-STD',
-    name: 'Stocked · Standard cost',
-    description:
-      'Tangible item, tracked in inventory, valued at a standard cost with variances posted. ' +
-      'Costing method is independent of whether an item is stocked — this group exists to make that plain.',
-    costing_method: 'STANDARD',
     stocked: true,
     post_physical_inventory: true,
     post_financial_inventory: true,
@@ -781,12 +832,58 @@ async function provisionItemGroups(tenant: Tenant): Promise<void> {
 
 /* ──────────────────────────────── driver ──────────────────────────────── */
 
+/**
+ * Default sales payment methods (WORK-047): cash counted at close and giving change,
+ * card, QR and transfer settling to the bank account. Each maps to the one account
+ * carrying the category; when a category is ambiguous or missing the method is not
+ * created and the report says so — an administrator maps it under Sales → Payment
+ * methods.
+ */
+async function provisionSalesPaymentMethods(tenant: Tenant): Promise<void> {
+  const existing = await db.salesPaymentMethod.count({ where: { tenant_id: tenant.id } });
+  if (existing > 0) {
+    console.log(`  SKIP     sales payment methods — ${existing} already configured`);
+    return;
+  }
+  const accountFor = async (category: string) => {
+    const rows = await db.account.findMany({ where: { tenant_id: tenant.id, category, is_active: true }, select: { id: true, code: true } });
+    return rows.length === 1 ? rows[0] : null;
+  };
+  const defaults = [
+    { code: 'CASH', name: 'Efectivo / Cash', tender_type: 'CASH', category: 'CASH', declaration_policy: 'COUNT', allow_change: true },
+    { code: 'CARD', name: 'Tarjeta / Card', tender_type: 'CARD', category: 'BANK', declaration_policy: 'NONE', allow_change: false },
+    { code: 'QR', name: 'QR', tender_type: 'QR', category: 'BANK', declaration_policy: 'NONE', allow_change: false },
+    { code: 'TRANSFER', name: 'Transferencia / Transfer', tender_type: 'TRANSFER', category: 'BANK', declaration_policy: 'NONE', allow_change: false },
+  ];
+  for (const d of defaults) {
+    const account = await accountFor(d.category);
+    if (!account) {
+      console.log(`  MISSING  sales payment method ${d.code}: no single active ${d.category} account to map it to`);
+      continue;
+    }
+    if (!APPLY) {
+      console.log(`  DRY RUN  sales payment method ${d.code} → ${account.code}`);
+      continue;
+    }
+    await db.salesPaymentMethod.create({
+      data: {
+        tenant_id: tenant.id, code: d.code, name: d.name, tender_type: d.tender_type, account_id: account.id,
+        declaration_policy: d.declaration_policy, allow_change: d.allow_change,
+      },
+    });
+    console.log(`  OK       sales payment method ${d.code} → ${account.code}`);
+  }
+}
+
 async function provisionTenant(tenant: Tenant) {
   const template = templateFor(tenant);
   console.log(`\n${'='.repeat(78)}\nTenant: ${tenant.name} (${tenant.slug})`);
 
   if (!template) {
-    console.log(`  ERROR    no template resolved${TEMPLATE_ID ? ` for id "${TEMPLATE_ID}"` : ''} — skipping`);
+    console.log(
+      `  ERROR    no template resolved${TEMPLATE_ID ? ` for id "${TEMPLATE_ID}"` : ` for country ${tenant.country ?? '(none set)'}`}` +
+        ' — set the tenant country or pass --template. Refusing to guess a statutory chart of accounts.',
+    );
     return;
   }
   console.log(`Template: ${template.name} — ${template.country} / ${template.currency}\n${'='.repeat(78)}`);
@@ -794,6 +891,7 @@ async function provisionTenant(tenant: Tenant) {
   const pendingCategories = await backfillCategories(tenant, template);
   await provisionPostingProfiles(tenant, pendingCategories);
   await provisionSequences(tenant);
+  await provisionSalesPaymentMethods(tenant);
   const taxDefaults = await provisionTax(tenant, template);
   await provisionParameters(tenant, template, taxDefaults);
   await provisionPipelineStages(tenant);
@@ -805,7 +903,7 @@ async function main() {
 
   const tenants = await db.tenant.findMany({
     where: TENANT ? { slug: TENANT } : {},
-    select: { id: true, name: true, slug: true, currency_code: true },
+    select: { id: true, name: true, slug: true, country: true },
     orderBy: { name: 'asc' },
   });
 

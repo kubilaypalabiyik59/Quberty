@@ -1,10 +1,13 @@
 import 'dotenv/config';
 import { db } from '../src/infrastructure/database/client';
+import { getLedgerCurrencies } from '../src/shared/services/currency/ledgerCurrency.service';
 import { createAndPostReceipt } from '../src/modules/purchase/productReceipt.service';
 import { createInvoice, postInvoice } from '../src/modules/purchase/vendorInvoice.service';
 import { runMatching } from '../src/modules/purchase/vendorInvoice.service';
 import { computePurchaseMoney } from '../src/shared/services/documentTax.service';
-import { nextPurchaseOrderNumber } from '../src/shared/utils/orderCounter';
+import { allocateNumber } from '../src/shared/services/numberSequence.service';
+
+const nextPoNumber = (tenantId: string) => allocateNumber({ tenantId, reference: 'PURCHASE_ORDER', legalEntityId: null });
 
 /**
  * End-to-end proof of the split purchase posting, against the REAL database with
@@ -127,7 +130,10 @@ async function voucherBalance(entryId: string) {
   const supplier =
     (await db.supplier.findFirst({ where: { tenant_id: tenant.id, code: SUPPLIER_CODE }, select: { id: true } })) ??
     (await db.supplier.create({
-      data: { tenant_id: tenant.id, code: SUPPLIER_CODE, name: 'Proveedor Verificación', currency: 'BOB', country: 'BO' },
+      data: {
+        tenant_id: tenant.id, code: SUPPLIER_CODE, name: 'Proveedor Verificación',
+        currency: (await getLedgerCurrencies(tenant.id)).accountingCurrency, country: 'BO',
+      },
       select: { id: true },
     }));
 
@@ -142,12 +148,12 @@ async function voucherBalance(entryId: string) {
   const po1 = await db.purchaseOrder.create({
     data: {
       tenant_id: tenant.id,
-      po_number: await nextPurchaseOrderNumber(tenant.id),
+      po_number: await nextPoNumber(tenant.id),
       supplier_id: supplier.id,
       warehouse_id: warehouse.id,
       receive_location_id: location.id,
       status: 'CONFIRMED',
-      currency: 'BOB',
+      currency: (await getLedgerCurrencies(tenant.id)).accountingCurrency,
       subtotal: UNIT * QTY,
       ...(await (async () => {
         const m = await computePurchaseMoney(tenant.id, UNIT * QTY, { partyId: supplier.id });
@@ -261,12 +267,12 @@ async function voucherBalance(entryId: string) {
   const po2 = await db.purchaseOrder.create({
     data: {
       tenant_id: tenant.id,
-      po_number: await nextPurchaseOrderNumber(tenant.id),
+      po_number: await nextPoNumber(tenant.id),
       supplier_id: supplier.id,
       warehouse_id: warehouse.id,
       receive_location_id: location.id,
       status: 'CONFIRMED',
-      currency: 'BOB',
+      currency: (await getLedgerCurrencies(tenant.id)).accountingCurrency,
       subtotal: 200,
       ...(await (async () => {
         const m = await computePurchaseMoney(tenant.id, 200, { partyId: supplier.id });

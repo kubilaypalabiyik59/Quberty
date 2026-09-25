@@ -11,6 +11,7 @@ import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.
 import { computePurchaseMoney } from '../../shared/services/documentTax.service';
 import { resolveWarehouseParameters } from '../../shared/services/warehouseParameters.service';
 import { WarehouseService } from '../warehouse/warehouse.service';
+import { assertDocumentCurrencySupported } from '../../shared/services/currency/documentCurrency';
 
 const warehouseService = new WarehouseService();
 
@@ -132,6 +133,17 @@ export async function createAndPostReceipt(
         );
       }
 
+      // Stock and FIFO layers are valued at the order's unit cost. That is only
+      // an accounting-currency amount when the order is in that currency; a USD
+      // order would otherwise land in the ledger at its face value. Refused before
+      // any stock, layer or voucher is written (foreign currency is WORK-026).
+      const ledger = await assertDocumentCurrencySupported(tenantId, po.currency, {
+        errorCode: 'RECEIPT_FX_NOT_IMPLEMENTED',
+        capability: 'Product receipts',
+        legalEntityId,
+        client: tx,
+      });
+
       const params = await tx.purchaseParameters.findFirst({
         where: { tenant_id: tenantId, legal_entity_id: legalEntityId },
         select: { post_product_receipt_in_ledger: true },
@@ -147,7 +159,7 @@ export async function createAndPostReceipt(
           : po.lines
               .map(l => ({
                 po_line_id: l.id,
-                quantity: Number(l.quantity) - Number(l.received_qty),
+                quantity: Number(l.quantity) - Number(l.cancelled_qty) - Number(l.received_qty),
               }))
               .filter(l => l.quantity > 0);
 
@@ -166,6 +178,51 @@ export async function createAndPostReceipt(
           400,
           'RECEIVE_LOCATION_REQUIRED',
         );
+      }
+
+      // ── Location containment guard ─────────────────────────────────────────
+      // Validate the resolved header location and every effective per-line
+      // location in one scoped query, before any number sequence, receipt,
+      // stock, cost layer, or journal mutation.  Each must be active, belong to
+      // the caller tenant, and its zone must belong to the same tenant and the
+      // PO warehouse.  IDs are deduplicated so a receipt where every line falls
+      // back to the header location costs exactly one row-set lookup.
+      {
+        const effectiveLineLocIds = requested.map(r => r.location_id ?? locationId);
+        const allLocIds = [...new Set([locationId, ...effectiveLineLocIds])];
+        const locRecords = await tx.warehouseLocation.findMany({
+          where: { id: { in: allLocIds }, tenant_id: tenantId },
+          select: {
+            id:        true,
+            tenant_id: true,
+            is_active: true,
+            zone: {
+              select: {
+                tenant_id:    true,
+                warehouse_id: true,
+                warehouse:    { select: { tenant_id: true } },
+              },
+            },
+          },
+        });
+        const locMap = new Map(locRecords.map(l => [l.id, l]));
+        for (const locId of allLocIds) {
+          const loc = locMap.get(locId);
+          if (
+            !loc ||
+            !loc.is_active ||
+            loc.tenant_id !== tenantId ||
+            loc.zone.tenant_id !== tenantId ||
+            loc.zone.warehouse_id !== po.warehouse_id ||
+            loc.zone.warehouse.tenant_id !== tenantId
+          ) {
+            throw new AppError(
+              'A receiving location is invalid, inactive, or does not belong to this tenant and warehouse.',
+              422,
+              'RECEIVE_LOCATION_INVALID',
+            );
+          }
+        }
       }
 
       // ── Arrival registration gate ─────────────────────────────────────────
@@ -236,7 +293,7 @@ export async function createAndPostReceipt(
         const qty = Number(r.quantity);
         if (!(qty > 0)) throw new AppError('A receipt line needs a quantity greater than zero.', 400);
 
-        const outstanding = Number(line.quantity) - Number(line.received_qty);
+        const outstanding = Number(line.quantity) - Number(line.cancelled_qty) - Number(line.received_qty);
         if (qty > outstanding + 1e-9) {
           throw new AppError(
             `Cannot receive ${qty} of that line — only ${outstanding} is outstanding on ${po.po_number}. ` +
@@ -333,7 +390,10 @@ export async function createAndPostReceipt(
             source_po_id: po.id,
             po_number:    po.po_number,
             quantity:     qty,
+            original_quantity: qty,
+            source_type:  'PURCHASE_RECEIPT',
             unit_cost:    netUnitCost,
+            cost_currency_code: ledger.accountingCurrency,
             received_at:  new Date(),
           },
         });
@@ -417,9 +477,11 @@ export async function createAndPostReceipt(
 
       // ── Order status ──────────────────────────────────────────────────────
       const refreshed = await tx.purchaseOrderLine.findMany({
-        where: { po_id: po.id }, select: { quantity: true, received_qty: true },
+        where: { po_id: po.id }, select: { quantity: true, cancelled_qty: true, received_qty: true },
       });
-      const fullyReceived = refreshed.every(l => Number(l.received_qty) >= Number(l.quantity) - 1e-9);
+      const fullyReceived = refreshed.every(
+        l => Number(l.received_qty) >= Number(l.quantity) - Number(l.cancelled_qty) - 1e-9,
+      );
       await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {

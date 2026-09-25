@@ -1,4 +1,6 @@
+import type { Prisma } from '@prisma/client';
 import { db } from '../../infrastructure/database/client';
+import { reserve, release, issueReserved } from '../../shared/services/stockLedger.service';
 import { AppError } from '../../shared/errors/AppError';
 
 import { logger } from '../../shared/logger';
@@ -9,11 +11,124 @@ import { contextForSalesOrder } from '../../shared/services/dimension.service';
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
-import { InventoryService } from '../inventory/inventory.service';
+import { assertTenantReferences } from '../../shared/services/tenantReference.service';
 import { WarehouseService } from '../warehouse/warehouse.service';
+import { resolveDocumentCurrency, assertDocumentCurrencySupported } from '../../shared/services/currency/documentCurrency';
 
-const inventoryService = new InventoryService();
 const warehouseService = new WarehouseService();
+
+/** Statuses from which an order's reserved stock can be shipped. */
+const SHIPPABLE = ['CONFIRMED', 'PICKING', 'PACKED'];
+
+type Tx = Prisma.TransactionClient;
+
+/**
+ * An order that ships or is cancelled has no picking left to do. Open pick work for
+ * it is cancelled in the same transaction, so a worker cannot later complete it and
+ * move stock for an order that is gone (WORK-043 review).
+ */
+async function closeOpenPickWork(tx: Tx, tenantId: string, orderId: string) {
+  await tx.warehouseWork.updateMany({
+    where: {
+      tenant_id: tenantId, reference_id: orderId, work_type: 'PICK',
+      reference_type: { in: ['SALES_ORDER', 'sales_order'] }, status: { in: ['OPEN', 'IN_PROGRESS'] },
+    },
+    data: { status: 'CANCELLED' },
+  });
+}
+
+/** Hold an order's stocked lines in its warehouse (shared by ERP and storefront confirm). */
+export async function reserveOrderStock(
+  tx: Tx,
+  tenantId: string,
+  order: { id: string; order_number: string; warehouse_id: string | null; lines: Array<{ id: string; product_id: string; variant_id: string | null; quantity: number }> },
+) {
+  const policies = await resolveItemPolicies(tenantId, order.lines.map((l) => l.product_id), tx);
+  const stocked = order.lines.filter((l) => policies.get(l.product_id)?.stocked !== false);
+  if (stocked.length === 0) return;
+  if (!order.warehouse_id) {
+    throw new AppError(
+      `${order.order_number} has no warehouse, so its stock cannot be reserved. Set the warehouse on the order.`,
+      422,
+      'ORDER_WAREHOUSE_REQUIRED',
+    );
+  }
+  await reserve(tx, {
+    tenantId,
+    sourceType: 'SALES_ORDER',
+    sourceId: order.id,
+    warehouseId: order.warehouse_id,
+    lines: stocked.map((l) => ({ product_id: l.product_id, variant_id: l.variant_id ?? null, quantity: l.quantity, line_id: l.id })),
+  });
+}
+
+/**
+ * Post COGS for an issue from the cost it actually consumed, one debit/credit pair
+ * per item group.
+ *
+ * [OFFICIAL] the inventory posting profile resolves by item Table | Group | All,
+ * so products in different item groups may post COGS and inventory to different
+ * accounts. Non-stocked lines never reach here: they consume no layers.
+ * `require_balanced_posting` decides whether an unresolved account throws.
+ */
+export async function postIssueCogs(
+  tx: Tx,
+  tenantId: string,
+  opts: {
+    costByProduct: Map<string, number>;
+    document: string;
+    sourceModule: string;
+    sourceId: string;
+    userId: string | null;
+    dimensionsFor: () => Promise<any>;
+    reverse?: boolean;
+    description?: string;
+  },
+) {
+  const productIds = [...opts.costByProduct.keys()];
+  if (productIds.length === 0) return;
+  const policies = await resolveItemPolicies(tenantId, productIds, tx);
+  const buckets = groupByItemGroup(
+    productIds,
+    policies,
+    (id) => id,
+    (id) => opts.costByProduct.get(id) ?? 0,
+  ).filter((b) => b.amount > 0);
+  if (buckets.length === 0) return;
+
+  const resolved = [];
+  for (const b of buckets) {
+    const acc = await resolvePostingAccounts_orExplain(tenantId, ['COGS', 'INVENTORY'] as const, {
+      document: `COGS for ${opts.document}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
+      itemGroupId: b.itemGroupId ?? undefined,
+      client: tx,
+    });
+    if (acc) resolved.push({ bucket: b, acc });
+  }
+  if (resolved.length === 0) return;
+
+  const dimensions = await opts.dimensionsFor();
+  await postJournal({
+    tenantId,
+    tx,
+    description: opts.description ?? `COGS: ${opts.document}`,
+    source: { module: opts.sourceModule, id: opts.sourceId },
+    userId: opts.userId,
+    dimensions,
+    lines: resolved.flatMap(({ bucket, acc }) => {
+      const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
+      return opts.reverse
+        ? [
+            { accountId: acc.INVENTORY, debit: bucket.amount, description: `Inventory back${label} — ${opts.document}` },
+            { accountId: acc.COGS, credit: bucket.amount, description: `COGS reversal${label} — ${opts.document}` },
+          ]
+        : [
+            { accountId: acc.COGS, debit: bucket.amount, description: `COGS${label} — ${opts.document}` },
+            { accountId: acc.INVENTORY, credit: bucket.amount, description: `Inventory out${label} — ${opts.document}` },
+          ];
+    }),
+  });
+}
 
 /**
  * Coerce a date-only value to something Prisma will accept for a `@db.Date`.
@@ -50,6 +165,9 @@ export class SalesService {
       { warehouseId: data.warehouse_id, documentKind: 'sales order' },
     );
 
+    // Before the number is drawn, so a refused order spends no number.
+    await assertTenantReferences(tenantId, { customerId: data.customer_id ?? null, lines: data.lines });
+
     const orderNumber = await nextSalesOrderNumber(tenantId);
 
     // Calculate totals
@@ -69,6 +187,17 @@ export class SalesService {
     const taxAmount = orderTax.vat;
     const totalAmount = subtotal - (data.discount_amount ?? 0);
 
+    // The ledger decides the currency; a request may only name one the tenant has
+    // activated. A currency other than the ledger's accounting currency is refused
+    // here rather than at invoice: an order that can never be invoiced is worse for
+    // the user than a clear refusal, and the column stays so WORK-026 opens it by
+    // deleting a guard.
+    const currency = await resolveDocumentCurrency(tenantId, data.currency);
+    await assertDocumentCurrencySupported(tenantId, currency, {
+      errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+      capability: 'Sales orders and invoices',
+    });
+
     const order = await db.salesOrder.create({
       data: {
         tenant_id: tenantId,
@@ -79,7 +208,7 @@ export class SalesService {
         site_id: dims.site_id,
         warehouse_id: dims.warehouse_id,
         requested_delivery_date: toDateOrNull(data.requested_delivery_date),
-        currency: data.currency ?? 'BOB',
+        currency,
         subtotal,
         discount_amount: data.discount_amount ?? 0,
         tax_amount: taxAmount,
@@ -106,8 +235,12 @@ export class SalesService {
   }
 
   /**
-   * Confirm order: DRAFT → CONFIRMED
-   * Reserves stock for all line items
+   * Confirm order: DRAFT → CONFIRMED.
+   *
+   * One transaction: the status is claimed first (a second confirm finds nothing
+   * to claim), then every stocked line is held in the order's warehouse through
+   * InventoryReservation rows. A line that cannot be covered refuses the whole
+   * order and nothing is held.
    */
   async confirmOrder(tenantId: string, orderId: string, userId: string) {
     const order = await this.getOrderOrThrow(tenantId, orderId);
@@ -116,50 +249,47 @@ export class SalesService {
       throw new AppError(`Cannot confirm order in ${order.status} status`);
     }
 
-    // Check and reserve stock for each line
-    for (const line of order.lines) {
-      const available = await inventoryService.getAvailableStock(
-        tenantId,
-        line.product_id,
-        line.variant_id,
-        order.warehouse_id
-      );
-
-      if (available < line.quantity) {
-        const product = await db.product.findUnique({ where: { id: line.product_id }, select: { name: true, sku: true } });
-        throw new AppError(
-          `Insufficient stock for ${product?.name} (${product?.sku}). Available: ${available}, Required: ${line.quantity}`
-        );
+    const updated = await db.$transaction(async (tx) => {
+      const claimed = await tx.salesOrder.updateMany({
+        where: { id: orderId, tenant_id: tenantId, status: 'DRAFT' },
+        data: { status: 'CONFIRMED', confirmed_at: new Date() },
+      });
+      if (claimed.count === 0) {
+        throw new AppError(`${order.order_number} is no longer a draft.`, 409, 'ORDER_STATUS_CHANGED');
       }
-    }
 
-    // Reserve stock — in the SAME warehouse the availability check just used.
-    // Passing it is the whole point: without it, reservation and availability
-    // answered about different sets of stock.
-    await inventoryService.reserveStock(tenantId, order.lines, orderId, order.warehouse_id);
+      await reserveOrderStock(tx, tenantId, order);
 
-    const updated = await db.salesOrder.update({
-      where: { id: orderId },
-      data: { status: 'CONFIRMED', confirmed_at: new Date() },
-      include: { lines: true },
+      return tx.salesOrder.findUniqueOrThrow({ where: { id: orderId }, include: { lines: true } });
     });
 
-    // Create picking wave for warehouse
+    // Wave assignment runs after the reservation committed. It is best-effort: a
+    // failure here must not report an error for an order that is confirmed and
+    // holds its stock (a retry would create a second order). The order can still be
+    // picked; the failure is logged for the warehouse to act on.
     if (order.warehouse_id) {
-      await warehouseService.addOrderToWave(tenantId, orderId, order.warehouse_id);
+      try {
+        await warehouseService.addOrderToWave(tenantId, orderId, order.warehouse_id);
+      } catch (err) {
+        logger.error({ err, tenantId, order: order.order_number }, 'Confirmed order could not be added to a wave');
+      }
     }
 
     return updated;
   }
 
   /**
-   * Ship order: PACKED → SHIPPED
-   * Decrements actual inventory (removes reservation)
+   * Ship order: CONFIRMED | PICKING | PACKED → SHIPPED.
+   *
+   * One transaction: claim the status, issue exactly the stock the order holds —
+   * consuming FIFO cost layers at the locations it holds them — post COGS from the
+   * layers consumed, and write the shipment. Any failure rolls every part back, so
+   * a retried shipment can never deduct twice.
    */
   async shipOrder(tenantId: string, orderId: string, userId: string, shipmentData?: ShipmentDto) {
     const order = await this.getOrderOrThrow(tenantId, orderId);
 
-    if (!['CONFIRMED', 'PACKED'].includes(order.status)) {
+    if (!SHIPPABLE.includes(order.status)) {
       throw new AppError(`Cannot ship order in ${order.status} status`);
     }
 
@@ -179,7 +309,8 @@ export class SalesService {
         const picked = await db.warehouseWork.count({
           where: {
             tenant_id: tenantId,
-            reference_type: 'SALES_ORDER',
+            // Pick work was created with the lower-case reference until WORK-043.
+            reference_type: { in: ['SALES_ORDER', 'sales_order'] },
             reference_id: orderId,
             work_type: 'PICK',
             status: 'COMPLETED',
@@ -196,138 +327,101 @@ export class SalesService {
       }
     }
 
-    // Deduct stock and record transactions
-    await inventoryService.fulfillOrder(tenantId, order);
-
-    // ── Auto GL Journal Entry: COGS, per item group ───────────────────────────
-    //
-    // Two configuration rules are honoured here, and until they were wired both
-    // were merely declared:
-    //
-    //   stocked = false          the item has no inventory subledger, so there
-    //                            is nothing to relieve and no COGS to post. Its
-    //                            cost was already expensed on the way in.
-    //
-    //   item group               [OFFICIAL] the inventory posting profile
-    //                            resolves by item Table | Group | All, so two
-    //                            products in different groups may post COGS and
-    //                            inventory to different accounts. One journal
-    //                            line for the whole order cannot express that.
-    //
-    // Result: one debit/credit PAIR per item group, and non-stocked lines are
-    // excluded from the calculation entirely rather than valued at zero.
-    {
-      const productIds = order.lines.map((l: any) => l.product_id);
-      const policies = await resolveItemPolicies(tenantId, productIds);
-
-      const products = await db.product.findMany({
-        where: { id: { in: productIds } },
-        select: { id: true, cost_price: true },
+    return db.$transaction(async (tx) => {
+      const claimed = await tx.salesOrder.updateMany({
+        where: { id: orderId, tenant_id: tenantId, status: { in: SHIPPABLE } },
+        data: { status: 'SHIPPED', shipped_at: new Date() },
       });
-      const costMap = new Map(products.map((p: any) => [p.id, Number(p.cost_price ?? 0)]));
-
-      const stockedLines = order.lines.filter((l: any) => policies.get(l.product_id)?.stocked !== false);
-      const skipped = order.lines.length - stockedLines.length;
-      if (skipped > 0) {
-        logger.info(
-          { tenantId, order: order.order_number, skipped },
-          'COGS skipped for non-stocked lines — their cost is expensed, not relieved from inventory',
-        );
+      if (claimed.count === 0) {
+        throw new AppError(`${order.order_number} has already been shipped or cancelled.`, 409, 'ORDER_STATUS_CHANGED');
       }
 
-      const buckets = groupByItemGroup(
-        stockedLines,
-        policies,
-        (l: any) => l.product_id,
-        (l: any) => l.quantity * (costMap.get(l.product_id) ?? 0),
-      ).filter((b) => b.amount > 0);
+      await closeOpenPickWork(tx, tenantId, orderId);
 
-      if (buckets.length > 0) {
-        // Resolve per bucket so a group-scoped profile can win over the ALL one.
-        const resolved = [];
-        for (const b of buckets) {
-          const acc = await resolvePostingAccounts_orExplain(
-            tenantId, ['COGS', 'INVENTORY'] as const,
-            {
-              document: `COGS for ${order.order_number}${b.itemGroupCode ? ` (${b.itemGroupCode})` : ''}`,
-              itemGroupId: b.itemGroupId ?? undefined,
-            },
-          );
-          if (acc) resolved.push({ bucket: b, acc });
-        }
-
-        if (resolved.length > 0) {
-          await postJournal({
-            tenantId,
-            description: `COGS: ${order.order_number}`,
-            source: { module: 'SALES_COGS', id: orderId },
-            userId,
-            dimensions: await contextForSalesOrder(tenantId, orderId),
-            lines: resolved.flatMap(({ bucket, acc }) => {
-              const label = bucket.itemGroupCode ? ` [${bucket.itemGroupCode}]` : '';
-              return [
-                { accountId: acc.COGS,      debit:  bucket.amount, description: `COGS${label} — ${order.order_number}` },
-                { accountId: acc.INVENTORY, credit: bucket.amount, description: `Inventory out${label} — ${order.order_number}` },
-              ];
-            }),
-          });
-        }
-      }
-      // The swallowing `catch` that used to wrap this block is gone. A shipment
-      // that cannot post its COGS entry must not quietly succeed — that is D-4.
-      // `resolvePostingAccounts_orExplain` decides throw-vs-log-and-skip from the
-      // tenant's require_balanced_posting parameter.
-    }
-
-    // Create shipment record
-    const shipmentNumber = `SHP-${Date.now()}`;
-    await db.shipment.create({
-      data: {
-        tenant_id: tenantId,
-        shipment_number: shipmentNumber,
-        order_id: orderId,
-        status: 'SHIPPED',
-        carrier: shipmentData?.carrier,
-        tracking_number: shipmentData?.tracking_number,
-        shipped_at: new Date(),
-        from_warehouse_id: order.warehouse_id,
-      },
-    });
-
-    const updated = await db.salesOrder.update({
-      where: { id: orderId },
-      data: { status: 'SHIPPED', shipped_at: new Date() },
-    });
-
-    // Update customer lifetime value
-    if (order.customer_id) {
-      await db.customer.update({
-        where: { id: order.customer_id },
-        data: {
-          lifetime_value: { increment: order.total_amount },
-          total_orders: { increment: 1 },
+      const issue = await issueReserved(tx, {
+        sourceType: 'SALES_ORDER',
+        sourceId: orderId,
+        lines: order.lines.map((l: any) => ({ product_id: l.product_id, variant_id: l.variant_id ?? null, quantity: l.quantity })),
+        meta: {
+          tenantId,
+          transactionType: 'OUTBOUND',
+          referenceType: 'SALES_ORDER',
+          referenceId: orderId,
+          referenceNumber: order.order_number,
+          notes: `Shipment of ${order.order_number}`,
+          userId,
         },
       });
-    }
 
-    return updated;
+      await postIssueCogs(tx, tenantId, {
+        costByProduct: issue.costByProduct,
+        document: order.order_number,
+        sourceModule: 'SALES_COGS',
+        sourceId: orderId,
+        userId,
+        dimensionsFor: () => contextForSalesOrder(tenantId, orderId, tx),
+      });
+
+      // Create shipment record
+      await tx.shipment.create({
+        data: {
+          tenant_id: tenantId,
+          shipment_number: `SHP-${Date.now()}`,
+          order_id: orderId,
+          status: 'SHIPPED',
+          carrier: shipmentData?.carrier,
+          tracking_number: shipmentData?.tracking_number,
+          shipped_at: new Date(),
+          from_warehouse_id: order.warehouse_id,
+        },
+      });
+
+      // Update customer lifetime value
+      if (order.customer_id) {
+        await tx.customer.update({
+          where: { id: order.customer_id },
+          data: {
+            lifetime_value: { increment: order.total_amount },
+            total_orders: { increment: 1 },
+          },
+        });
+      }
+
+      return tx.salesOrder.findUniqueOrThrow({ where: { id: orderId } });
+    });
   }
 
+  /**
+   * Cancel an order that has not shipped. Frees exactly the holds this order has —
+   * in any status that can hold stock — and nothing belonging to another order.
+   * An invoiced order is not cancelled: its factura is a legal document that
+   * must be annulled or credited first.
+   */
   async cancelOrder(tenantId: string, orderId: string, userId: string) {
     const order = await this.getOrderOrThrow(tenantId, orderId);
 
-    if (['SHIPPED', 'COMPLETED'].includes(order.status)) {
+    if (['SHIPPED', 'COMPLETED', 'RETURNED', 'VOIDED', 'CANCELLED'].includes(order.status)) {
       throw new AppError(`Cannot cancel order in ${order.status} status`);
     }
-
-    // Release reserved stock if confirmed
-    if (order.status === 'CONFIRMED') {
-      await inventoryService.releaseReservation(tenantId, order.lines, orderId);
+    if (order.invoice_id) {
+      throw new AppError(
+        `${order.order_number} has been invoiced. Annul the factura or post a return instead of cancelling.`,
+        409,
+        'ORDER_INVOICED',
+      );
     }
 
-    return db.salesOrder.update({
-      where: { id: orderId },
-      data: { status: 'CANCELLED' },
+    return db.$transaction(async (tx) => {
+      const claimed = await tx.salesOrder.updateMany({
+        where: { id: orderId, tenant_id: tenantId, status: order.status, invoice_id: null },
+        data: { status: 'CANCELLED' },
+      });
+      if (claimed.count === 0) {
+        throw new AppError(`${order.order_number} changed while it was being cancelled.`, 409, 'ORDER_STATUS_CHANGED');
+      }
+      await release(tx, { tenantId, sourceType: 'SALES_ORDER', sourceId: orderId });
+      await closeOpenPickWork(tx, tenantId, orderId);
+      return tx.salesOrder.findUniqueOrThrow({ where: { id: orderId } });
     });
   }
 

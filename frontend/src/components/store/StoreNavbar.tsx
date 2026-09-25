@@ -5,9 +5,16 @@ import { useCartStore } from '@/stores/cartStore';
 import { useAuthStore } from '@/stores/authStore';
 import { ShoppingBag, User, LogOut, ChevronDown } from 'lucide-react';
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { fetchCategories } from '@/lib/storeCatalog';
 
 export function StoreNavbar() {
   const itemCount = useCartStore((s) => s.items.reduce((sum, i) => sum + i.quantity, 0));
+  // Same query key as the shop page, so the list is fetched once and shared.
+  const { data: categories } = useQuery<Array<{ id: string; name: string }>>({
+    queryKey: ['categories'],
+    queryFn: fetchCategories,
+  });
   const { user, logout } = useAuthStore();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -21,20 +28,21 @@ export function StoreNavbar() {
             <span className="text-[#C65306] font-black text-2xl tracking-tight">CALZADOS</span>
           </Link>
 
-          {/* Nav Links */}
+          {/* Nav Links — the tenant's real categories, so a link always filters
+              something (fixed slugs like "boots" pointed at nothing). */}
           <div className="hidden md:flex items-center gap-8">
             <Link href="/shop" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
               Shop
             </Link>
-            <Link href="/shop?category=sneakers" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
-              Sneakers
-            </Link>
-            <Link href="/shop?category=boots" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
-              Boots
-            </Link>
-            <Link href="/shop?category=sandals" className="text-gray-300 hover:text-white text-sm font-medium transition-colors">
-              Sandals
-            </Link>
+            {(categories ?? []).slice(0, 4).map((cat) => (
+              <Link
+                key={cat.id}
+                href={`/shop?category=${cat.id}#catalog`}
+                className="text-gray-300 hover:text-white text-sm font-medium transition-colors"
+              >
+                {cat.name}
+              </Link>
+            ))}
           </div>
 
           {/* Right side */}

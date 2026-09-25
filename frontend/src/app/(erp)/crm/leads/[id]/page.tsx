@@ -7,6 +7,8 @@ import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { DocumentChain } from '@/components/erp/DocumentChain';
 import { PageHeader, TableShell, Th, Td, EmptyRow } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
+import { AttachmentsPanel } from '@/components/erp/AttachmentsPanel';
 
 /**
  * One lead, and everything downstream of it.
@@ -16,6 +18,7 @@ import { PageHeader, TableShell, Th, Td, EmptyRow } from '@/components/erp/PageH
  * origin were not recorded in its own column (migration 006).
  */
 export default function LeadDetailPage() {
+  const { amount } = useMoney();
   const { id } = useParams<{ id: string }>();
 
   const { data: lead, isLoading } = useQuery({
@@ -90,7 +93,7 @@ export default function LeadDetailPage() {
           title="Conversion"
           rows={[
             ['Customer', lead.converted_customer ? `${lead.converted_customer.code}` : null],
-            ['Estimated', lead.estimated_amount ? Number(lead.estimated_amount).toLocaleString('es-BO', { minimumFractionDigits: 2 }) : null],
+            ['Estimated', lead.estimated_amount ? amount(lead.estimated_amount) : null],
             ['Currency', lead.currency],
             ['Created', new Date(lead.created_at).toLocaleDateString()],
           ]}
@@ -123,7 +126,7 @@ export default function LeadDetailPage() {
                 {o.customer ? `${o.customer.code} ${o.customer.first_name}` : 'this lead'}
               </Td>
               <Td className="text-right font-mono text-caption">
-                {Number(o.estimated_amount).toLocaleString('es-BO', { minimumFractionDigits: 2 })}
+                {amount(o.estimated_amount)}
               </Td>
               <Td className="text-right font-mono text-caption">{o.probability}%</Td>
               <Td><StatusPill status={o.status} /></Td>
@@ -152,7 +155,7 @@ export default function LeadDetailPage() {
                 </Link>
               </Td>
               <Td className="text-right font-mono text-caption">
-                {Number(q.total_amount).toLocaleString('es-BO', { minimumFractionDigits: 2 })}
+                {amount(q.total_amount)}
               </Td>
               <Td className="text-caption text-fg-muted">
                 {q.valid_until ? new Date(q.valid_until).toLocaleDateString() : '—'}
@@ -162,6 +165,7 @@ export default function LeadDetailPage() {
           ))}
         </tbody>
       </TableShell>
+      <AttachmentsPanel entityType="LEAD" entityId={id} />
     </div>
   );
 }

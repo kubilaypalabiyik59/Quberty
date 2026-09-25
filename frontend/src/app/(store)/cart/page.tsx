@@ -2,13 +2,16 @@
 
 import { useCartStore } from '@/stores/cartStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useMoney } from '@/components/CurrencyProvider';
 import { Trash2, ShoppingBag, ArrowLeft, Lock } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { ProductImage } from '@/components/store/ProductImage';
 
 export default function CartPage() {
   const { items, removeItem, updateQuantity, totalAmount } = useCartStore();
   const { user } = useAuthStore();
+  const { money } = useMoney();
   const router = useRouter();
 
   if (items.length === 0) {
@@ -36,23 +39,19 @@ export default function CartPage() {
         {items.map((item) => (
           <div key={`${item.product_id}-${item.variant_id}`} className="flex items-center gap-4 bg-white rounded-2xl border border-gray-100 p-4 shadow-sm">
             <div className="w-16 h-16 bg-gray-50 rounded-xl overflow-hidden shrink-0">
-              <img
-                src={`https://picsum.photos/seed/${parseInt(item.product_id.replace(/-/g, '').slice(0, 8), 16) % 100 || 1}/80/80`}
-                alt={item.name}
-                className="w-full h-full object-cover"
-              />
+              <ProductImage src={item.image} alt={item.name} className="[&_svg]:h-5 [&_svg]:w-5 [&_span]:hidden" />
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-gray-900 truncate">{item.name}</p>
               <p className="text-xs text-gray-400">{item.sku}</p>
-              <p className="text-sm font-bold text-[#C65306] mt-1">Bs. {Number(item.price).toLocaleString()}</p>
+              <p className="text-sm font-bold text-[#C65306] mt-1">{money(item.price)}</p>
             </div>
             <div className="flex items-center gap-2">
               <button onClick={() => updateQuantity(item.product_id, item.variant_id, item.quantity - 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-600 hover:bg-gray-50 font-bold">−</button>
               <span className="w-8 text-center text-sm font-semibold">{item.quantity}</span>
               <button onClick={() => updateQuantity(item.product_id, item.variant_id, item.quantity + 1)} className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-600 hover:bg-gray-50 font-bold">+</button>
             </div>
-            <p className="w-24 text-right font-bold text-gray-900">Bs. {(item.price * item.quantity).toLocaleString()}</p>
+            <p className="w-24 text-right font-bold text-gray-900">{money(item.price * item.quantity)}</p>
             <button onClick={() => removeItem(item.product_id, item.variant_id)} className="text-gray-300 hover:text-red-500 transition-colors ml-1">
               <Trash2 className="h-4 w-4" />
             </button>
@@ -63,7 +62,7 @@ export default function CartPage() {
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
         <div className="flex items-center justify-between text-lg font-bold text-gray-900 mb-2">
           <span>Total</span>
-          <span>Bs. {totalAmount().toLocaleString()}</span>
+          <span>{money(totalAmount())}</span>
         </div>
         <p className="text-xs text-gray-400 mb-5">Precios incluyen IVA 13%</p>
 

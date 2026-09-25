@@ -35,11 +35,11 @@ const money = (n: number) =>
 
 (async () => {
   const tenants = await db.tenant.findMany({
-    select: { id: true, slug: true, name: true, currency_code: true },
+    select: { id: true, slug: true, name: true, country: true },
   });
 
   for (const t of tenants) {
-    console.log(`\n${'='.repeat(94)}\n${t.name} (${t.slug}) — ${t.currency_code}\n${'='.repeat(94)}`);
+    console.log(`\n${'='.repeat(94)}\n${t.name} (${t.slug}) — ${t.country ?? 'no country set'}\n${'='.repeat(94)}`);
 
     const orders = await db.purchaseOrder.findMany({
       where: { tenant_id: t.id },

@@ -260,6 +260,38 @@
       "normal_balance": "DEBIT",
       "parent_code": "5000",
       "category": "PRICE_VARIANCE"
+    },
+    {
+      "code": "3003",
+      "name": "Opening Balance Equity",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": "3000",
+      "category": "OPENING_BALANCE_EQUITY"
+    },
+    {
+      "code": "4003",
+      "name": "Inventory Gains",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": "4000",
+      "category": "INVENTORY_PROFIT"
+    },
+    {
+      "code": "5006",
+      "name": "Inventory Shrinkage",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "INVENTORY_LOSS"
+    },
+    {
+      "code": "5007",
+      "name": "Cash Over and Short",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "5000",
+      "category": "CASH_DIFFERENCE"
     }
   ]
 }

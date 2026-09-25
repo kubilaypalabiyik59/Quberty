@@ -2,6 +2,7 @@
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LabelList } from 'recharts';
 import { useChartTokens } from '@/lib/chartTokens';
+import { useMoney } from '@/components/CurrencyProvider';
 
 interface SalesChartProps {
   data: { month?: string; day?: string; revenue: number; order_count: number }[];
@@ -17,12 +18,13 @@ interface SalesChartProps {
    * survives a filter.
    */
   highlightPeak?: boolean;
-  /** Tenant currency symbol. Not every tenant trades in bolivianos. */
-  currency?: string;
 }
 
-export function SalesChart({ data, mode = 'monthly', highlightPeak, currency = 'Bs.' }: SalesChartProps) {
+export function SalesChart({ data, mode = 'monthly', highlightPeak }: SalesChartProps) {
   const t = useChartTokens();
+  // The currency was a prop defaulting to 'Bs.', which every caller left alone —
+  // so the default WAS the currency. It now comes from the ledger (WORK-025).
+  const { money, code } = useMoney();
 
   if (!data.length) {
     return (
@@ -45,8 +47,6 @@ export function SalesChart({ data, mode = 'monthly', highlightPeak, currency = '
     ? formatted.reduce((best, d, i) => (d.revenue > formatted[best].revenue ? i : best), 0)
     : -1;
 
-  const money = (v: number) => `${currency} ${v.toLocaleString()}`;
-
   return (
     <ResponsiveContainer width="100%" height={200}>
       {/* top margin leaves room for the peak label; at 16 it clipped the text. */}
@@ -62,7 +62,7 @@ export function SalesChart({ data, mode = 'monthly', highlightPeak, currency = '
           tick={{ fontSize: 11, fill: t.axis }}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v) => (v >= 1000 ? `${currency}${(v / 1000).toFixed(0)}k` : `${currency}${v}`)}
+          tickFormatter={(v) => (v >= 1000 ? `${code} ${(v / 1000).toFixed(0)}k` : `${code} ${v}`)}
         />
         <Tooltip
           formatter={(v: number) => [money(v), 'Revenue']}

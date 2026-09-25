@@ -6,12 +6,19 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 
+/**
+ * The store this deployment sells for. Registration names its tenant explicitly;
+ * the API no longer guesses "the first active tenant" (WORK-030a). Resolving the
+ * tenant from the host name is the fuller SaaS form, recorded for later.
+ */
+const STOREFRONT_TENANT_SLUG = process.env.NEXT_PUBLIC_STOREFRONT_TENANT_SLUG ?? '';
+
 export default function StoreRegisterPage() {
   const router = useRouter();
   const { loadUser } = useAuthStore();
   const [form, setForm] = useState({
     first_name: '', last_name: '', email: '', password: '',
-    phone: '', address: '', city: '', country: 'Bolivia',
+    phone: '', address: '', city: '', country: '',
     date_of_birth: '',
   });
   const [error, setError] = useState('');
@@ -20,16 +27,22 @@ export default function StoreRegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (!STOREFRONT_TENANT_SLUG) {
+      setError('Online registration is not configured for this store yet. Please contact the store.');
+      return;
+    }
     setLoading(true);
     try {
-      const { data } = await api.post('/auth/register', form);
+      // Optional fields left blank are omitted rather than sent as empty strings.
+      const body = Object.fromEntries(Object.entries(form).filter(([, v]) => v !== ''));
+      const { data } = await api.post('/auth/register', { ...body, tenant_slug: STOREFRONT_TENANT_SLUG });
       localStorage.setItem('access_token', data.data.access_token);
       localStorage.setItem('refresh_token', data.data.refresh_token);
       localStorage.setItem('tenant_id', data.data.tenant_id);
       await loadUser();
       router.push('/shop');
     } catch (err: any) {
-      setError(err.response?.data?.message ?? 'Registration failed. Please try again.');
+      setError(err.response?.data?.error?.message ?? err.response?.data?.message ?? 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }

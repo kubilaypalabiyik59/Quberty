@@ -2,9 +2,9 @@ name: CI Pipeline
 
 on:
   pull_request:
-    branches: [main, develop]
+    branches: [master]
   push:
-    branches: [develop]
+    branches: [master]
 
 jobs:
   backend-ci:
@@ -33,6 +33,7 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://test:test@localhost:5432/skarpine_test
+      DIRECT_URL: postgresql://test:test@localhost:5432/skarpine_test
       REDIS_URL: redis://localhost:6379
       JWT_SECRET: test-jwt-secret-at-least-32-characters-long
       JWT_REFRESH_SECRET: test-refresh-secret-at-least-32-chars
@@ -61,9 +62,13 @@ jobs:
         working-directory: backend
         run: npx tsc --noEmit
 
-      - name: Run DB migrations
+      - name: Type-check scripts
         working-directory: backend
-        run: npx prisma migrate deploy
+        run: npm run typecheck:scripts
+
+      - name: Verify migration rebuild and schema drift
+        working-directory: backend
+        run: npm run verify:migration-ci
 
       - name: Run tests
         working-directory: backend

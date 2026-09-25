@@ -6,10 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/components/erp/PageHeader';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
-const qty = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { maximumFractionDigits: 2 });
-const day = (d: any) => (d ? new Date(d).toLocaleDateString('es-BO') : '—');
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * Product receipts.
@@ -24,6 +21,8 @@ const day = (d: any) => (d ? new Date(d).toLocaleDateString('es-BO') : '—');
  * invoiced. That is the number the accrual account holds.
  */
 export default function ProductReceiptsPage() {
+  // A receipt carries quantities and dates, no amounts (WORK-025).
+  const { quantity: qty, date: day } = useMoney();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({

@@ -4,8 +4,9 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, X, Users, Mail, Briefcase } from 'lucide-react';
+import { ROLE_OPTIONS } from '@/lib/access';
 
-const ROLES = ['employee', 'warehouse_worker', 'store_manager', 'admin', 'cashier'];
+const ROLES = ROLE_OPTIONS;
 
 const emptyForm = {
   first_name: '', last_name: '', email: '', password: '',
@@ -152,7 +153,7 @@ export default function HRPage() {
                   value={form.role}
                   onChange={e => setForm(p => ({ ...p, role: e.target.value }))}
                 >
-                  {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                  {ROLES.map(role => <option key={role.value} value={role.value}>{role.label}</option>)}
                 </select>
               </div>
 

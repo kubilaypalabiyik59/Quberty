@@ -14,13 +14,25 @@ export const LoginSchema = z.object({
   tenant_slug: z.string().optional(),
 });
 
+// A storefront account always belongs to a tenant the caller names. It used to
+// fall back to "the first active tenant", which with a second tenant attaches a
+// shopper to an arbitrary company (WORK-030a).
 export const RegisterSchema = z.object({
-  email:      z.string().email(),
-  password:   z.string().min(8, 'Password must be at least 8 characters'),
-  first_name: z.string().min(1),
-  last_name:  z.string().min(1),
-  tenant_id:  z.string().uuid().optional(),
-});
+  email:         z.string().email(),
+  password:      z.string().min(8, 'Password must be at least 8 characters'),
+  first_name:    z.string().min(1).max(120),
+  last_name:     z.string().min(1).max(120),
+  tenant_id:     z.string().uuid().optional(),
+  tenant_slug:   z.string().min(1).max(100).optional(),
+  phone:         z.string().max(40).optional(),
+  address:       z.string().max(300).optional(),
+  city:          z.string().max(120).optional(),
+  country:       z.string().max(80).optional(),
+  date_of_birth: z.string().max(20).optional(),
+}).strict().refine(
+  (b) => Boolean(b.tenant_id) !== Boolean(b.tenant_slug),
+  { message: 'Name exactly one of tenant_id or tenant_slug', path: ['tenant_id'] },
+);
 
 // ── Sales ─────────────────────────────────────────────────────────────────────
 
@@ -31,6 +43,21 @@ const SalesLineSchema = z.object({
   unit_price:   z.number().nonnegative('Unit price cannot be negative'),
   discount_pct: z.number().min(0).max(100).optional().default(0),
 });
+
+/**
+ * A storefront checkout (WORK-043). Products and quantities only: a shopper does
+ * not set a price, a discount, a warehouse or a currency, and a body that tries is
+ * refused rather than silently trimmed.
+ */
+export const StorefrontOrderSchema = z.object({
+  lines: z.array(z.object({
+    product_id: z.string().uuid(),
+    variant_id: z.string().uuid().nullable().optional(),
+    quantity:   z.number().int().positive().max(1000),
+  }).strict()).min(1, 'Cart is empty').max(100),
+  shipping_address: z.record(z.string(), z.unknown()).optional(),
+  notes: z.string().max(500).optional(),
+}).strict();
 
 export const CreateSalesOrderSchema = z.object({
   customer_id:  z.string().uuid().optional(),
@@ -105,19 +132,68 @@ export const OpenSessionSchema = z.object({
   warehouse_id:   z.string().uuid().optional(),
 });
 
+/**
+ * Closing a register (WORK-047). `declarations` counts each method whose policy is
+ * COUNT; `closing_float` is the older single cash count, still accepted and read as
+ * the declaration of the cash method.
+ */
 export const CloseSessionSchema = z.object({
-  closing_float: z.number().nonnegative(),
+  closing_float: z.number().nonnegative().optional(),
+  declarations:  z.array(z.object({
+    payment_method_id: z.string().uuid(),
+    counted:           z.number().nonnegative(),
+  }).strict()).max(20).optional(),
+}).refine((b) => b.closing_float !== undefined || (b.declarations?.length ?? 0) > 0, {
+  message: 'Declare what was counted: declarations[] or closing_float',
 });
 
+/** A void annuls a legal document, so it states why (WORK-047). */
+export const VoidPosSaleSchema = z.object({
+  reason: z.string().trim().min(3, 'State why the sale is voided').max(300),
+}).strict();
+
+/** How a customer pays (WORK-047). */
+export const SalesPaymentMethodSchema = z.object({
+  code:                  z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{1,20}$/, 'Use up to 20 letters, digits, _ or -'),
+  name:                  z.string().trim().min(1).max(80),
+  tender_type:           z.enum(['CASH', 'CARD', 'TRANSFER', 'QR', 'CUSTOMER_ACCOUNT', 'VOUCHER']),
+  account_id:            z.string().uuid(),
+  declaration_policy:    z.enum(['NONE', 'COUNT']).default('NONE'),
+  allow_change:          z.boolean().default(false),
+  max_difference_amount: z.number().min(0).nullable().optional(),
+  is_active:             z.boolean().optional(),
+}).strict().refine((m) => !m.allow_change || m.tender_type === 'CASH', { message: 'Only a cash method gives change', path: ['allow_change'] });
+
+export const UpdateSalesPaymentMethodSchema = z.object({
+  name:                  z.string().trim().min(1).max(80).optional(),
+  account_id:            z.string().uuid().optional(),
+  declaration_policy:    z.enum(['NONE', 'COUNT']).optional(),
+  allow_change:          z.boolean().optional(),
+  max_difference_amount: z.number().min(0).nullable().optional(),
+  is_active:             z.boolean().optional(),
+}).strict();
+
+/**
+ * A till sale (WORK-047). `tenders` lists how it was paid — one or more methods whose
+ * amounts add up to the total. `payment_method` + `cash_tendered` is the older single
+ * tender the Android POS still sends; it is mapped to the tenant's active method of
+ * that tender type.
+ */
 export const PosSaleSchema = z.object({
   session_id:     z.string().uuid(),
+  customer_id:    z.string().uuid().nullable().optional(),
   customer_name:  z.string().optional().default('Cliente Mostrador'),
   customer_nit:   z.string().optional(),
-  payment_method: z.enum(['CASH', 'CARD', 'TRANSFER']),
+  tenders:        z.array(z.object({
+    payment_method_id: z.string().uuid(),
+    amount:            z.number().positive(),
+    tendered:          z.number().nonnegative().optional(),
+  }).strict()).min(1).max(5).optional(),
+  payment_method: z.enum(['CASH', 'CARD', 'TRANSFER', 'QR']).optional(),
   cash_tendered:  z.number().nonnegative().optional(),
   lines:          z.array(PosLineSchema).min(1, 'At least one line is required'),
   factura_number: ManualDocumentNumber,
-});
+}).refine((b) => !!b.tenders?.length || !!b.payment_method, { message: 'State how the sale was paid: tenders[]' });
 
 // ── Finance ───────────────────────────────────────────────────────────────────
 
@@ -224,37 +300,181 @@ export const CreatePurchaseOrderSchema = z.object({
   warehouse_id:         z.string().uuid().optional(),
   receive_location_id:  z.string().uuid().optional(),
   expected_date:        z.string().optional(),
-  currency:             z.string().optional().default('BOB'),
+  // No default: the route falls back to the ledger's accounting currency and
+  // refuses a currency the tenant has not activated.
+  currency:             z.string().regex(/^[A-Z]{3}$/, 'currency must be a 3-letter uppercase code').optional(),
   notes:                z.string().optional(),
   lines:                z.array(PurchaseLineSchema).min(1),
 });
 
+// ── Sites ────────────────────────────────────────────────────────────────────
+// Allow-list, and the country is required and validated: a site's country is what
+// a tenant's jurisdiction is read from, and a defaulted one would choose a
+// statutory chart of accounts for a company it does not belong to (WORK-025a).
+
+export const CreateSiteSchema = z.object({
+  code:      z.string().min(1).max(40),
+  name:      z.string().min(1).max(200),
+  city:      z.string().min(1).max(120),
+  country:   z.string().regex(/^[A-Z]{2}$/, 'country must be a 2-letter ISO 3166-1 alpha-2 code'),
+  address:   z.string().max(300).nullable().optional(),
+  is_active: z.boolean().optional(),
+}).strict();
+
+// ── Suppliers ────────────────────────────────────────────────────────────────
+// Allow-list: `tenant_id` and `id` are system-owned and were writable through a
+// `...body` spread, and `currency` reached the column without resolution.
+
+export const UpdateSupplierSchema = z.object({
+  code:          z.string().min(1).max(40).optional(),
+  name:          z.string().min(1).max(200).optional(),
+  contact_name:  z.string().max(120).nullable().optional(),
+  email:         z.string().email().nullable().optional(),
+  phone:         z.string().max(40).nullable().optional(),
+  address:       z.string().max(300).nullable().optional(),
+  city:          z.string().max(120).nullable().optional(),
+  country:       z.string().max(120).nullable().optional(),
+  tax_id:        z.string().max(40).nullable().optional(),
+  payment_terms: z.number().int().min(0).max(365).nullable().optional(),
+  tax_group_id:  z.string().uuid().nullable().optional(),
+  currency:      z.string().regex(/^[A-Z]{3}$/, 'currency must be a 3-letter uppercase code').optional(),
+  is_active:     z.boolean().optional(),
+}).strict();
+
+// ── Inventory counting ───────────────────────────────────────────────────────
+
+export const UpdateCountLineSchema = z.object({
+  counted_qty: z.number().int().min(0),
+}).strict();
+
+// ── Customers ────────────────────────────────────────────────────────────────
+// Allow-list: `tenant_id`, `id`, `user_id`, `lifetime_value` and `total_orders`
+// are system-owned and were writable through a `...body` spread.
+
+const CustomerFields = {
+  code:          z.string().min(1).max(40).optional(),
+  first_name:    z.string().min(1).max(120),
+  last_name:     z.string().min(1).max(120),
+  email:         z.string().email().nullable().optional(),
+  phone:         z.string().max(40).nullable().optional(),
+  address:       z.string().max(300).nullable().optional(),
+  city:          z.string().max(120).nullable().optional(),
+  country:       z.string().max(120).nullable().optional(),
+  date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}/, 'date_of_birth must be YYYY-MM-DD').nullable().optional(),
+  segment:       z.string().max(40).optional(),
+  tags:          z.array(z.string().max(60)).optional(),
+  notes:         z.string().max(2000).nullable().optional(),
+  tax_group_id:  z.string().uuid().nullable().optional(),
+  tax_id:        z.string().max(40).nullable().optional(),
+};
+
+export const CreateCustomerSchema = z.object(CustomerFields).strict();
+export const UpdateCustomerSchema = z.object(CustomerFields).partial().strict();
+
+// ── Tenant administration ─────────────────────────────────────────────────────
+// Strict: unknown keys are refused rather than silently written, and `modules`
+// is not accepted at all — module entitlement belongs to the platform operator.
+
+export const UpdateTenantConfigSchema = z.object({
+  branding: z.record(z.unknown()).optional(),
+  // A BCP 47 language tag. Every screen formats money with it, and a tag Intl
+  // rejects (`es_BO`) throws during render (WORK-025b review).
+  language: z.string().min(2).max(10).refine((v) => {
+    try { return Intl.getCanonicalLocales(v).length === 1; } catch { return false; }
+  }, 'language must be a BCP 47 language tag, e.g. es or es-BO').optional(),
+  timezone: z.string().min(1).max(64).optional(),
+  // The jurisdiction this company files in: it decides the chart of accounts and
+  // the localization rules, and it is never inferred from the currency (WORK-025).
+  country:  z.string().regex(/^[A-Z]{2}$/, 'country must be a 2-letter ISO 3166-1 alpha-2 code').optional(),
+}).strict();
+
+export const TenantTaxConfigSchema = z.object({
+  vat_rate:           z.number().min(0).max(1),
+  vat_inclusive:      z.boolean(),
+  vat_label:          z.string().max(40).optional(),
+  secondary_tax_rate: z.number().min(0).max(1).optional(),
+  secondary_tax_name: z.string().max(40).optional(),
+  invoice_label:      z.string().max(40).optional(),
+}).strict();
+
+// Currency is not here: the ledger's currencies are set through
+// PUT /finance/ledger-currencies (WORK-024), which keeps the tenant in sync.
+export const UpdateTenantSetupSchema = z.object({
+  tax_config: TenantTaxConfigSchema,
+}).strict();
+
+// ── Currencies and exchange rates (WORK-024) ─────────────────────────────────
+
+const CurrencyCode = z.string().regex(/^[A-Z]{3}$/, 'must be a 3-letter uppercase code');
+const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a date (YYYY-MM-DD)');
+
+export const UpdateLedgerCurrenciesSchema = z.object({
+  accounting_currency_code: CurrencyCode,
+  reporting_currency_code:  CurrencyCode,
+  accounting_rate_type_id:  z.string().uuid(),
+  reporting_rate_type_id:   z.string().uuid().nullable().optional(),
+  exchange_rate_date_basis: z.enum(['POSTING_DATE', 'DOCUMENT_DATE']).optional(),
+}).strict();
+
+export const CreateTenantCurrencySchema = z.object({
+  currency_code:      CurrencyCode,
+  symbol:             z.string().max(8).nullable().optional(),
+  rounding_precision: z.number().min(0.01).max(99).optional(), // column is Decimal(6,4)
+  rounding_method:    z.enum(['NEAREST', 'UP', 'DOWN']).optional(),
+}).strict();
+
+export const UpdateTenantCurrencySchema = z.object({
+  symbol:             z.string().max(8).nullable().optional(),
+  rounding_precision: z.number().min(0.01).max(99).optional(), // column is Decimal(6,4)
+  rounding_method:    z.enum(['NEAREST', 'UP', 'DOWN']).optional(),
+  is_active:          z.boolean().optional(),
+}).strict();
+
+export const CreateExchangeRateTypeSchema = z.object({
+  code:        z.string().min(1).max(20).regex(/^[A-Z0-9_-]+$/, 'code must be uppercase letters, digits, _ or -'),
+  name:        z.string().min(1).max(120),
+  description: z.string().max(500).nullable().optional(),
+}).strict();
+
+export const UpdateExchangeRateTypeSchema = z.object({
+  name:        z.string().min(1).max(120).optional(),
+  description: z.string().max(500).nullable().optional(),
+  is_active:   z.boolean().optional(),
+}).strict();
+
+export const CreateExchangeRateSchema = z.object({
+  rate_type_id:       z.string().uuid(),
+  from_currency_code: CurrencyCode,
+  to_currency_code:   CurrencyCode,
+  valid_from:         IsoDate,
+  rate:               z.number().positive(),
+  conversion_factor:  z.number().int().positive().optional(),
+}).strict();
+
+export const UpdateExchangeRateSchema = z.object({
+  rate: z.number().positive(),
+}).strict();
+
 // ── HR ────────────────────────────────────────────────────────────────────────
+
+export const EMPLOYEE_ROLE_VALUES = [
+  'employee', 'warehouse_worker', 'store_manager', 'admin', 'cashier',
+  'purchasing_requester', 'buyer', 'receiver', 'ap_clerk', 'finance_approver', 'auditor',
+  'finance_manager',
+] as const;
 
 export const CreateEmployeeSchema = z.object({
   first_name:  z.string().min(1),
   last_name:   z.string().min(1),
   department:  z.string().optional(),
   position:    z.string().optional(),
-  role:        z.enum(['employee', 'warehouse_worker', 'store_manager', 'admin']).optional().default('employee'),
+  role:        z.enum(EMPLOYEE_ROLE_VALUES).optional().default('employee'),
   email:       z.string().email().optional(),
   password:    z.string().min(8).optional(),
 }).refine(
   (data) => !data.email || (data.email && data.password),
   { message: 'Password is required when creating a system account (email provided)', path: ['password'] }
 );
-
-// ── Customers ─────────────────────────────────────────────────────────────────
-
-export const CreateCustomerSchema = z.object({
-  first_name: z.string().min(1),
-  last_name:  z.string().min(1),
-  email:      z.string().email().optional(),
-  phone:      z.string().optional(),
-  nit:        z.string().optional(),
-  address:    z.string().optional(),
-  city:       z.string().optional(),
-});
 
 // ── Process front ends: Lead → Opportunity → Quotation, Requisition → RFQ ────
 //
@@ -449,6 +669,12 @@ export const UpdateNumberSequenceSchema = z.object({
    * an absent field can never be read as consent.
    */
   acknowledge_unverifiable_resume: z.boolean().optional().default(false),
+
+  /**
+   * REQUEST-ONLY. Never stored. Why a gapless legal series is deliberately moved
+   * forward past its next consecutive number; the audit log keeps the body.
+   */
+  acknowledge_gap_reason: z.string().trim().max(500).optional(),
 }).strict().superRefine((data, ctx) => {
   if (data.format === undefined) return;
   const { counters, unknown, malformed } = inspectSequenceFormat(data.format);
@@ -482,3 +708,61 @@ export const UpdateNumberSequenceSchema = z.object({
     });
   }
 });
+
+// ── Inventory journals (WORK-045) ─────────────────────────────────────────────
+
+const InventoryJournalLineSchema = z.object({
+  product_id:     z.string().uuid(),
+  variant_id:     z.string().uuid().nullable().optional(),
+  location_id:    z.string().uuid(),
+  quantity:       z.number().int().refine((q) => q !== 0, 'quantity must not be zero'),
+  unit_cost:      z.number().min(0).nullable().optional(),
+  reason_code_id: z.string().uuid().nullable().optional(),
+  notes:          z.string().trim().max(300).nullable().optional(),
+}).strict();
+
+/** COUNT journals are created by finalising a count, never through this schema. */
+export const CreateInventoryJournalSchema = z.object({
+  journal_type:   z.enum(['ADJUSTMENT', 'OPENING']),
+  warehouse_id:   z.string().uuid(),
+  description:    z.string().trim().max(500).nullable().optional(),
+  reason_code_id: z.string().uuid().nullable().optional(),
+  lines:          z.array(InventoryJournalLineSchema).min(1).max(500),
+}).strict();
+
+export const UpdateInventoryJournalSchema = z.object({
+  description:    z.string().trim().max(500).nullable().optional(),
+  reason_code_id: z.string().uuid().nullable().optional(),
+  lines:          z.array(InventoryJournalLineSchema).min(1).max(500),
+}).strict();
+
+export const InventoryReasonCodeSchema = z.object({
+  code:      z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{1,30}$/, 'Use up to 30 letters, digits, _ or -'),
+  name:      z.string().trim().min(1).max(80),
+  direction: z.enum(['INCREASE', 'DECREASE', 'BOTH']).default('BOTH'),
+  is_active: z.boolean().optional(),
+}).strict();
+
+export const UpdateInventoryReasonCodeSchema = z.object({
+  name:      z.string().trim().min(1).max(80).optional(),
+  direction: z.enum(['INCREASE', 'DECREASE', 'BOTH']).optional(),
+  is_active: z.boolean().optional(),
+}).strict();
+
+/** A one-line adjustment from the stock screen: signed quantity at one location. */
+export const StockAdjustmentSchema = z.object({
+  product_id:     z.string().uuid(),
+  variant_id:     z.string().uuid().nullable().optional(),
+  location_id:    z.string().uuid(),
+  quantity:       z.number().int().refine((q) => q !== 0, 'Quantity cannot be zero'),
+  unit_cost:      z.number().min(0).nullable().optional(),
+  reason_code_id: z.string().uuid().nullable().optional(),
+  notes:          z.string().trim().max(300).nullable().optional(),
+}).strict();
+
+/** Creating a count names its scope: a warehouse, optionally narrowed to one location. */
+export const CreateInventoryCountSchema = z.object({
+  warehouse_id: z.string().uuid(),
+  location_id:  z.string().uuid().nullable().optional(),
+  notes:        z.string().trim().max(500).nullable().optional(),
+}).strict();

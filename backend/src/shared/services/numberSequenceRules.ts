@@ -408,6 +408,97 @@ export interface SequenceUpdateInput {
   next_number?: number;
   /** Request-only. Must never reach the row. */
   acknowledge_unverifiable_resume?: boolean;
+  /** Request-only. Why a gapless series is deliberately moved forward. */
+  acknowledge_gap_reason?: string;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Gapless legal series (WORK-042)
+ * ════════════════════════════════════════════════════════════════════════ */
+
+export const GAPLESS = 'GAPLESS';
+export const GAP_REASON_MIN_LENGTH = 15;
+
+export interface GaplessRefusal { code: string; message: string }
+
+/**
+ * What a gapless legal series refuses, as a pure decision.
+ *
+ * 1. It never becomes non-continuous. A non-continuous allocation happens outside
+ *    the caller's transaction, so a rolled-back sale burns a number.
+ * 2. Its automatic counter never moves past the next consecutive number unless a
+ *    person states why (for example: a pad of pre-printed invoices was lost). The
+ *    reason travels in the request body, which the audit log records.
+ *
+ * `consecutive` is the number that continues the series without a gap: one above
+ * the highest issued when that is known and comparable, otherwise the counter as
+ * it stands. A non-comparable manual history is already refused or acknowledged
+ * by `checkManualToAutomatic`; this check does not second-guess it.
+ */
+export function gaplessSeriesRefusal(
+  row: { legal_series: string; continuous: boolean; manual: boolean; next_number: number },
+  request: {
+    continuous?: boolean; manual?: boolean; next_number?: number;
+    acknowledge_gap_reason?: string; acknowledge_unverifiable_resume?: boolean;
+  },
+  highest: HighestIssued | null,
+): GaplessRefusal | null {
+  if (row.legal_series !== GAPLESS) return null;
+
+  if (request.continuous === false) {
+    return {
+      code: 'NUMBER_SEQUENCE_GAPLESS_REQUIRED',
+      message:
+        'This is a legal invoice series and must stay continuous: a non-continuous series loses a number ' +
+        'whenever a sale or invoice is rolled back.',
+    };
+  }
+
+  // Only an automatic series allocates from the counter; a person types every
+  // number of a manual one.
+  const targetManual = request.manual ?? row.manual;
+  if (targetManual) return null;
+
+  // The counter the series will allocate from next: the one in the request, or —
+  // when the request only switches the series to automatic — the one already
+  // stored. Checking only a supplied `next_number` let a counter written while
+  // the series was manual take effect unexamined on the switch back.
+  const counterChanges = request.next_number !== undefined;
+  const resumes = row.manual && request.manual === false;
+  if (!counterChanges && !resumes) return null;
+  const proposed = request.next_number ?? row.next_number;
+
+  let consecutive: number;
+  if (highest && highest.comparable && highest.value !== null) {
+    const minimum = minimumResumeFrom(highest);
+    if (minimum === null) return null; // at the counter ceiling — refused elsewhere
+    consecutive = row.manual ? minimum : Math.max(minimum, row.next_number);
+  } else if (highest && !highest.comparable) {
+    // A resume from a history that cannot be ordered is decided by
+    // `checkManualToAutomatic`, which demands an explicit, acknowledged number.
+    // An already-automatic series still continues from its own counter.
+    if (row.manual) {
+      if (request.acknowledge_unverifiable_resume === true && counterChanges) return null;
+      consecutive = row.next_number;
+    } else {
+      consecutive = row.next_number;
+    }
+  } else {
+    consecutive = row.manual ? NEXT_NUMBER_MIN : row.next_number;
+  }
+
+  if (proposed <= consecutive) return null;
+
+  const reason = (request.acknowledge_gap_reason ?? '').trim();
+  if (reason.length >= GAP_REASON_MIN_LENGTH) return null;
+
+  return {
+    code: 'NUMBER_SEQUENCE_GAP_REASON_REQUIRED',
+    message:
+      `Setting the next number to ${proposed} skips ${proposed - consecutive} number(s) after ` +
+      `${consecutive} in a legal invoice series. If that is deliberate, state why ` +
+      `(at least ${GAP_REASON_MIN_LENGTH} characters); the reason is recorded in the audit log.`,
+  };
 }
 
 /**

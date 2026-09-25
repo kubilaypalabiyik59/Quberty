@@ -13,8 +13,10 @@ import {
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
 import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
+import { useMoney } from '@/components/CurrencyProvider';
 
 export default function FacturasPage() {
+  const { money, code } = useMoney();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
@@ -102,7 +104,7 @@ export default function FacturasPage() {
                 value={form.invoice_date} onChange={e => setForm(p => ({ ...p, invoice_date: e.target.value }))} />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Total Amount (Bs.) <span className="text-red-500">*</span></label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Total Amount ({code}) <span className="text-red-500">*</span></label>
               <input type="number" min="0" step="0.01" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="0.00" value={form.total_amount} onChange={e => setForm(p => ({ ...p, total_amount: e.target.value }))} />
             </div>
@@ -111,18 +113,18 @@ export default function FacturasPage() {
           {total > 0 && (
             <div className="bg-gray-50 rounded-xl p-4 mb-4 text-sm space-y-1">
               {/* Never rendered as zero while unknown: this is the breakdown of a
-                  legal document, and "IVA Bs. 0.00" is a claim, not a placeholder. */}
+                  legal document, and a zeroed IVA line is a claim, not a placeholder. */}
               {taxPreview.tax ? (
                 <>
                   <div className="flex justify-between text-gray-500">
                     <span>Subtotal</span>
-                    <span>Bs. {taxPreview.tax.subtotal.toFixed(2)}</span>
+                    <span>{money(taxPreview.tax.subtotal)}</span>
                   </div>
                   {taxPreview.tax.lines.length > 0
                     ? taxPreview.tax.lines.map(l => (
                         <div key={l.code} className="flex justify-between text-gray-500">
                           <span>{l.code} {formatRate(l.rate)}</span>
-                          <span>Bs. {l.amount.toFixed(2)}</span>
+                          <span>{money(l.amount)}</span>
                         </div>
                       ))
                     : (
@@ -131,12 +133,12 @@ export default function FacturasPage() {
                       <>
                         {taxPreview.tax.vat > 0 && (
                           <div className="flex justify-between text-gray-500">
-                            <span>IVA</span><span>Bs. {taxPreview.tax.vat.toFixed(2)}</span>
+                            <span>IVA</span><span>{money(taxPreview.tax.vat)}</span>
                           </div>
                         )}
                         {taxPreview.tax.turnover > 0 && (
                           <div className="flex justify-between text-gray-500">
-                            <span>IT</span><span>Bs. {taxPreview.tax.turnover.toFixed(2)}</span>
+                            <span>IT</span><span>{money(taxPreview.tax.turnover)}</span>
                           </div>
                         )}
                       </>
@@ -160,7 +162,7 @@ export default function FacturasPage() {
               )}
               <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-1">
                 <span>Total</span>
-                <span>Bs. {total.toFixed(2)}</span>
+                <span>{money(total)}</span>
               </div>
             </div>
           )}
@@ -266,10 +268,10 @@ export default function FacturasPage() {
                     <span className="text-xs text-gray-400">Manual</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-right text-gray-700">Bs. {Number(f.subtotal).toFixed(2)}</td>
-                <td className="px-4 py-3 text-right text-gray-700">Bs. {Number(f.iva_amount).toFixed(2)}</td>
-                <td className="px-4 py-3 text-right text-gray-700">Bs. {Number(f.it_amount).toFixed(2)}</td>
-                <td className="px-4 py-3 text-right font-bold text-gray-900">Bs. {Number(f.total_amount).toFixed(2)}</td>
+                <td className="px-4 py-3 text-right text-gray-700">{money(f.subtotal)}</td>
+                <td className="px-4 py-3 text-right text-gray-700">{money(f.iva_amount)}</td>
+                <td className="px-4 py-3 text-right text-gray-700">{money(f.it_amount)}</td>
+                <td className="px-4 py-3 text-right font-bold text-gray-900">{money(f.total_amount)}</td>
                 <td className="px-4 py-3">
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${f.status === 'ISSUED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
                     {f.status}

@@ -11,8 +11,7 @@ import { StatusPill } from '@/components/erp/StatusPill';
 import { DocumentChain } from '@/components/erp/DocumentChain';
 import { PageHeader, TableShell, Th, Td, ErrorNote } from '@/components/erp/PageHeader';
 import { cn } from '@/lib/utils';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * The comparison matrix.
@@ -23,6 +22,7 @@ const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFracti
  * the one a buyer takes.
  */
 export default function RfqDetailPage() {
+  const { amount: money } = useMoney();
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [error, setError] = useState('');

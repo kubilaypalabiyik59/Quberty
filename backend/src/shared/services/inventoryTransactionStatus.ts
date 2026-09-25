@@ -55,6 +55,7 @@ const RECEIPT_TYPES = new Set([
 const ISSUE_TYPES = new Set([
   'OUTBOUND',
   'TRANSFER_OUT',
+  'PURCHASE_RETURN',
 ]);
 
 /**

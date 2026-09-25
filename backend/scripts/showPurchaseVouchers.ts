@@ -5,7 +5,10 @@ import { db } from '../src/infrastructure/database/client';
  * Print the vouchers a purchase order produced, line by line, with the accrual
  * balance at the end.
  *
- *   npx tsx scripts/showPurchaseVouchers.ts PO-2026-00023
+ *   npx tsx scripts/showPurchaseVouchers.ts PO-2026-00023 [--tenant <slug>]
+ *
+ * PO numbers are unique per tenant (migration 031), so the same number can exist
+ * in several tenants. Pass --tenant when more than one tenant exists.
  *
  * Written for verifying the split posting by eye after driving the UI: the
  * assertion script proves the arithmetic, this shows the actual ledger rows so a
@@ -20,8 +23,17 @@ if (!poNumber) {
 const money = (n: number) => n.toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 (async () => {
+  const slugIndex = process.argv.indexOf('--tenant');
+  const tenantSlug = slugIndex !== -1 ? process.argv[slugIndex + 1] : undefined;
+  const tenants = await db.tenant.findMany({
+    where: tenantSlug ? { slug: tenantSlug } : {},
+    select: { id: true },
+  });
+  if (tenants.length !== 1) {
+    throw new Error(tenantSlug ? `tenant "${tenantSlug}" not found` : 'several tenants exist; pass --tenant <slug>');
+  }
   const po = await db.purchaseOrder.findFirst({
-    where: { po_number: poNumber },
+    where: { tenant_id: tenants[0].id, po_number: poNumber },
     include: {
       product_receipts: { select: { id: true, receipt_number: true, packing_slip: true, journal_entry_id: true } },
       vendor_invoices: { select: { id: true, invoice_number: true, internal_number: true, status: true, journal_entry_id: true } },

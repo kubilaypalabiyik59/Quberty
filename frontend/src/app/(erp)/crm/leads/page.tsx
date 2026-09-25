@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { Dialog, dialogField, apiErrorMessage } from '@/components/erp/Dialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * Leads — the first document in Prospect to Quote.
@@ -22,6 +23,7 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from
 const STATUSES = ['', 'OPEN', 'QUALIFIED', 'DISQUALIFIED'];
 
 export default function LeadsPage() {
+  const { amount } = useMoney();
   const qc = useQueryClient();
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
@@ -136,7 +138,7 @@ export default function LeadsPage() {
               <Td className="text-caption text-fg-muted">{l.source}</Td>
               <Td className="text-caption text-fg-muted">{l.rating}</Td>
               <Td className="text-right font-mono text-caption">
-                {l.estimated_amount ? Number(l.estimated_amount).toLocaleString('es-BO', { minimumFractionDigits: 2 }) : '—'}
+                {l.estimated_amount ? amount(l.estimated_amount) : '—'}
               </Td>
               <Td><StatusPill status={l.status} /></Td>
               <Td className="text-caption">

@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * The pipeline.
@@ -16,9 +17,8 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/compone
  * stage name — which is also why the stages themselves are ordinary data the
  * tenant can rename.
  */
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
 export default function OpportunitiesPage() {
+  const { amount: money } = useMoney();
   const [status, setStatus] = useState('OPEN');
 
   const { data: pipeline } = useQuery({

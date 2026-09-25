@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
+import { requirePermission, type Permission } from '../../shared/middleware/permissions';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, paginated } from '../../shared/response';
 import {
@@ -45,9 +45,37 @@ import {
  */
 const app = new Hono<AppEnv>();
 
+export const PROCUREMENT_ROUTE_PERMISSIONS = {
+  'GET /requisitions': ['purchase.requisition.read'],
+  'POST /requisitions': ['purchase.requisition.create'],
+  'GET /requisitions/:id': ['purchase.requisition.read'],
+  'POST /requisitions/:id/submit': ['purchase.requisition.submit'],
+  'POST /requisitions/:id/approve': ['purchase.requisition.approve'],
+  'POST /requisitions/:id/reject': ['purchase.requisition.approve'],
+  'POST /requisitions/:id/cancel': ['purchase.requisition.cancel'],
+  'POST /requisitions/:id/purchase-order': ['purchase.order.create'],
+  'POST /requisitions/:id/rfq': ['purchase.rfq.maintain'],
+  'GET /rfq': ['purchase.rfq.read'],
+  'POST /rfq': ['purchase.rfq.maintain'],
+  'GET /rfq/:id': ['purchase.rfq.read'],
+  'GET /rfq/:id/compare': ['purchase.rfq.read'],
+  'POST /rfq/:id/vendors': ['purchase.rfq.maintain'],
+  'POST /rfq/:id/send': ['purchase.rfq.send'],
+  'POST /rfq/:id/award': ['purchase.rfq.award'],
+  'POST /rfq/:id/cancel': ['purchase.rfq.cancel'],
+  'POST /rfq/bids/:requestId': ['purchase.rfq.response.manage'],
+  'POST /rfq/bids/:requestId/decline': ['purchase.rfq.response.manage'],
+  'POST /rfq/bids/:requestId/reject': ['purchase.rfq.response.manage'],
+} as const satisfies Record<string, readonly Permission[]>;
+
+function guard(route: keyof typeof PROCUREMENT_ROUTE_PERMISSIONS) {
+  const permissions = [...PROCUREMENT_ROUTE_PERMISSIONS[route]] as [Permission, ...Permission[]];
+  return requirePermission(...permissions);
+}
+
 /* ═════════════════════════════ REQUISITIONS ═══════════════════════════════ */
 
-app.get('/requisitions', async (c) => {
+app.get('/requisitions', guard('GET /requisitions'), async (c) => {
   const { status, warehouse_id, page = '1', limit = '20' } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = status;
@@ -70,12 +98,12 @@ app.get('/requisitions', async (c) => {
   return paginated(c, requisitions, total, Number(page), Number(limit));
 });
 
-app.post('/requisitions', validate(CreateRequisitionSchema), async (c) => {
+app.post('/requisitions', guard('POST /requisitions'), validate(CreateRequisitionSchema), async (c) => {
   const req = await createRequisition(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, req);
 });
 
-app.get('/requisitions/:id', async (c) => {
+app.get('/requisitions/:id', guard('GET /requisitions/:id'), async (c) => {
   const req = await db.purchaseRequisition.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -124,13 +152,13 @@ app.get('/requisitions/:id', async (c) => {
   return ok(c, { ...req, purchase_orders: orders });
 });
 
-app.post('/requisitions/:id/submit', async (c) => {
+app.post('/requisitions/:id/submit', guard('POST /requisitions/:id/submit'), async (c) => {
   return ok(c, await submitRequisition(c.get('tenantId'), c.req.param('id'), c.get('user').id));
 });
 
 app.post(
   '/requisitions/:id/approve',
-  requireRole('admin', 'store_manager'),
+  guard('POST /requisitions/:id/approve'),
   validate(RequisitionDecisionSchema),
   async (c) => {
     const body = c.get('body') as any;
@@ -143,7 +171,7 @@ app.post(
 
 app.post(
   '/requisitions/:id/reject',
-  requireRole('admin', 'store_manager'),
+  guard('POST /requisitions/:id/reject'),
   validate(RequisitionDecisionSchema),
   async (c) => {
     const body = c.get('body') as any;
@@ -154,7 +182,7 @@ app.post(
   },
 );
 
-app.post('/requisitions/:id/cancel', async (c) => {
+app.post('/requisitions/:id/cancel', guard('POST /requisitions/:id/cancel'), async (c) => {
   const { line_ids } = await c.req.json().catch(() => ({ line_ids: undefined }));
   return ok(c, await cancelRequisitionLines(c.get('tenantId'), c.req.param('id'), line_ids));
 });
@@ -162,7 +190,7 @@ app.post('/requisitions/:id/cancel', async (c) => {
 /** Approved requisition → purchase order. */
 app.post(
   '/requisitions/:id/purchase-order',
-  requireRole('admin', 'store_manager'),
+  guard('POST /requisitions/:id/purchase-order'),
   validate(RequisitionToPoSchema),
   async (c) => {
     const result = await createPurchaseOrderFromRequisition(
@@ -176,7 +204,7 @@ app.post(
 );
 
 /** Requisition → RFQ case, for when the price needs testing before ordering. */
-app.post('/requisitions/:id/rfq', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/requisitions/:id/rfq', guard('POST /requisitions/:id/rfq'), async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const rfq = await createRfqCaseFromRequisition(
     c.get('tenantId'),
@@ -189,7 +217,7 @@ app.post('/requisitions/:id/rfq', requireRole('admin', 'store_manager'), async (
 
 /* ════════════════════════════════ RFQ ═════════════════════════════════════ */
 
-app.get('/rfq', async (c) => {
+app.get('/rfq', guard('GET /rfq'), async (c) => {
   const { status, page = '1', limit = '20' } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = status;
@@ -212,30 +240,30 @@ app.get('/rfq', async (c) => {
   return paginated(c, cases, total, Number(page), Number(limit));
 });
 
-app.post('/rfq', requireRole('admin', 'store_manager'), validate(CreateRfqCaseSchema), async (c) => {
+app.post('/rfq', guard('POST /rfq'), validate(CreateRfqCaseSchema), async (c) => {
   const rfq = await createRfqCase(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, rfq);
 });
 
-app.get('/rfq/:id', async (c) => {
+app.get('/rfq/:id', guard('GET /rfq/:id'), async (c) => {
   return ok(c, await getRfqCase(c.get('tenantId'), c.req.param('id')));
 });
 
 /** The comparison matrix — one row per demand line, one cell per vendor. */
-app.get('/rfq/:id/compare', async (c) => {
+app.get('/rfq/:id/compare', guard('GET /rfq/:id/compare'), async (c) => {
   return ok(c, await compareReplies(c.get('tenantId'), c.req.param('id')));
 });
 
-app.post('/rfq/:id/vendors', requireRole('admin', 'store_manager'), validate(InviteVendorsSchema), async (c) => {
+app.post('/rfq/:id/vendors', guard('POST /rfq/:id/vendors'), validate(InviteVendorsSchema), async (c) => {
   const { supplier_ids } = c.get('body') as any;
   return ok(c, await inviteVendors(c.get('tenantId'), c.req.param('id'), supplier_ids));
 });
 
-app.post('/rfq/:id/send', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/rfq/:id/send', guard('POST /rfq/:id/send'), async (c) => {
   return ok(c, await sendRfq(c.get('tenantId'), c.req.param('id')));
 });
 
-app.post('/rfq/:id/award', requireRole('admin', 'store_manager'), validate(AwardRfqSchema), async (c) => {
+app.post('/rfq/:id/award', guard('POST /rfq/:id/award'), validate(AwardRfqSchema), async (c) => {
   const body = c.get('body') as any;
   const result = await awardRfq(
     c.get('tenantId'),
@@ -247,24 +275,24 @@ app.post('/rfq/:id/award', requireRole('admin', 'store_manager'), validate(Award
   return created(c, result);
 });
 
-app.post('/rfq/:id/cancel', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/rfq/:id/cancel', guard('POST /rfq/:id/cancel'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   return ok(c, await cancelRfqCase(c.get('tenantId'), c.req.param('id'), reason));
 });
 
 /* ── individual bids ──────────────────────────────────────────────────────── */
 
-app.post('/rfq/bids/:requestId', requireRole('admin', 'store_manager'), validate(RecordBidSchema), async (c) => {
+app.post('/rfq/bids/:requestId', guard('POST /rfq/bids/:requestId'), validate(RecordBidSchema), async (c) => {
   const bid = await recordReply(c.get('tenantId'), c.req.param('requestId'), c.get('body') as any);
   return ok(c, bid);
 });
 
-app.post('/rfq/bids/:requestId/decline', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/rfq/bids/:requestId/decline', guard('POST /rfq/bids/:requestId/decline'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   return ok(c, await declineReply(c.get('tenantId'), c.req.param('requestId'), reason));
 });
 
-app.post('/rfq/bids/:requestId/reject', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/rfq/bids/:requestId/reject', guard('POST /rfq/bids/:requestId/reject'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   return ok(c, await rejectReply(c.get('tenantId'), c.req.param('requestId'), reason));
 });

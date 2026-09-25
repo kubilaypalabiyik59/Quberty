@@ -71,3 +71,8 @@ skarpine-pos/
 
 # Next.js build info
 frontend/tsconfig.tsbuildinfo
+
+# Aider session state (configuration files are tracked)
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v*/

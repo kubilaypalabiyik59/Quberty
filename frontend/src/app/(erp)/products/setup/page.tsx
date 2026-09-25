@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/Button';
 import { apiErrorMessage } from '@/components/erp/Dialog';
 import { ItemModelGroupDialog } from '@/components/erp/ItemModelGroupDialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
+import { useAuthStore } from '@/stores/authStore';
+import { can } from '@/lib/access';
 
 /**
  * Released-product financial setup.
@@ -27,6 +29,26 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from
  * Full setup order and the backlog it implies: docs/architecture/ERP_SETUP_CHECKLIST.md
  */
 export default function ProductSetupPage() {
+  // Financial configuration: admin and finance manager (auditor reads). The
+  // server enforces it; this spares everyone else a page of 403s.
+  const permissions = useAuthStore((st) => st.user?.permissions);
+  if (!can(permissions, 'product.setup.read')) {
+    return (
+      <div>
+        <PageHeader title="Product financial setup" subtitle="Item groups and item model groups." />
+        <ErrorNote
+          message={
+            'Product financial setup is limited to administrators and finance managers. Ask one of them ' +
+            'if a product needs its item group or item model group changed.'
+          }
+        />
+      </div>
+    );
+  }
+  return <ProductSetup />;
+}
+
+function ProductSetup() {
   const qc = useQueryClient();
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<any | null>(null);
@@ -88,6 +110,41 @@ export default function ProductSetupPage() {
       },
     );
   };
+
+  // ── Bulk assignment ─────────────────────────────────────────────────────────
+  // One call for the whole catalogue: a shop with a thousand articles is set up
+  // here, not one dropdown at a time in the table below.
+  const [bulkIg, setBulkIg] = useState('');
+  const [bulkMg, setBulkMg] = useState('');
+  const [bulkOnlyEmpty, setBulkOnlyEmpty] = useState(true);
+  const [bulkResult, setBulkResult] = useState('');
+  const bulk = useMutation({
+    mutationFn: (force: boolean) =>
+      api.post('/products/setup/assign-groups', {
+        ...(bulkIg ? { item_group_id: bulkIg } : {}),
+        ...(bulkMg ? { item_model_group_id: bulkMg } : {}),
+        ...(bulkOnlyEmpty ? { only_unassigned: true } : { product_ids: (products ?? []).map((p: any) => p.id) }),
+        force,
+      }).then((r) => r.data.data as Record<string, { updated: number; skipped_with_transactions: string[] }>),
+    onSuccess: (res, force) => {
+      refresh();
+      const parts = Object.entries(res).map(([f, r]) =>
+        `${f === 'item_group_id' ? 'Item group' : 'Item model group'}: ${r.updated} product(s) updated` +
+        (r.skipped_with_transactions.length ? `, ${r.skipped_with_transactions.length} skipped (posted transactions)` : ''));
+      setBulkResult(parts.join(' · '));
+      const skipped = Object.values(res).flatMap((r) => r.skipped_with_transactions);
+      if (!force && skipped.length > 0 &&
+          window.confirm(
+            `${skipped.length} product(s) already have posted transactions (${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}).
+
+` +
+            'Regrouping them splits the ledger from the subledger: past postings stay on the old accounts. Include them anyway?',
+          )) {
+        bulk.mutate(true);
+      }
+    },
+    onError: (e: any) => setError(apiErrorMessage(e, 'Could not assign the groups.')),
+  });
 
   const missing = (coverage?.missing_item_group ?? 0) + (coverage?.missing_item_model_group ?? 0);
   const field =
@@ -231,6 +288,42 @@ export default function ProductSetupPage() {
             ledger. Re-shuffling the shop must never repoint the accounts.
           </p>
         </div>
+      </div>
+
+      <h2 className="mb-2 text-body font-semibold text-fg">Assign in bulk</h2>
+      <div className="mb-6 rounded-surface border border-border bg-surface p-4">
+        <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+          <label className="text-caption text-fg-muted">
+            Item group
+            <select className={`${field} mt-1`} value={bulkIg} onChange={(e) => setBulkIg(e.target.value)}>
+              <option value="">— leave as is —</option>
+              {(itemGroups ?? []).map((g: any) => <option key={g.id} value={g.id}>{g.code} — {g.name}</option>)}
+            </select>
+          </label>
+          <label className="text-caption text-fg-muted">
+            Item model group
+            <select className={`${field} mt-1`} value={bulkMg} onChange={(e) => setBulkMg(e.target.value)}>
+              <option value="">— leave as is —</option>
+              {(modelGroups ?? []).map((g: any) => <option key={g.id} value={g.id}>{g.code} — {g.name}</option>)}
+            </select>
+          </label>
+          <Button
+            onClick={() => { setBulkResult(''); bulk.mutate(false); }}
+            disabled={(!bulkIg && !bulkMg) || bulk.isPending}
+          >
+            {bulk.isPending ? 'Assigning…' : 'Assign'}
+          </Button>
+        </div>
+        <label className="mt-3 flex items-center gap-2 text-caption text-fg-muted">
+          <input type="checkbox" checked={bulkOnlyEmpty} onChange={(e) => setBulkOnlyEmpty(e.target.checked)} />
+          Only products that have no group yet (every product in the company, not just the list below)
+        </label>
+        {!bulkOnlyEmpty && (
+          <p className="mt-1 text-micro text-fg-subtle">
+            Unticked, the groups go to the {(products ?? []).length} product(s) listed below and replace what they have.
+          </p>
+        )}
+        {bulkResult && <p className="mt-2 text-caption text-success" role="status">{bulkResult}</p>}
       </div>
 
       <h2 className="mb-2 text-body font-semibold text-fg">Assignment</h2>

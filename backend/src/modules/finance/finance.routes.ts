@@ -2,6 +2,7 @@ import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { requireRole } from '../../shared/middleware/authMiddleware';
+import { requirePermission } from '../../shared/middleware/permissions';
 
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, message, paginated } from '../../shared/response';
@@ -9,6 +10,7 @@ import { CreateJournalEntrySchema, CreateManualFacturaSchema, TaxPreviewQuerySch
 import { postJournal } from '../../shared/services/journal.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
+import { getLedgerCurrencies } from '../../shared/services/currency/ledgerCurrency.service';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
@@ -103,7 +105,7 @@ app.get('/coa-templates', async (c) => {
 });
 
 // Seed CoA from a template (safe: skips existing account codes)
-app.post('/seed-coa', async (c) => {
+app.post('/seed-coa', requirePermission('finance.setup.maintain'), async (c) => {
   const { template_id } = await c.req.json();
   if (!template_id) throw new AppError('template_id is required');
 
@@ -353,7 +355,9 @@ app.post('/facturas', requireRole('admin', 'store_manager'), validate(CreateManu
         vat_label:          docTax.lines.find(l => l.tax_type === 'VAT')?.code      ?? 'IVA',
         secondary_tax_name: docTax.lines.find(l => l.tax_type === 'TURNOVER')?.code ?? 'IT',
         invoice_label:      (c.get('taxConfig') as any)?.invoice_label ?? 'Factura',
-        currency_code:      c.get('currencyCode') ?? 'BOB',
+        // Read from the ledger, not from a request-context mirror: this is a posting
+        // path, so a tenant without a ledger must fail here (WORK-025).
+        currency_code:      (await getLedgerCurrencies(c.get('tenantId'))).accountingCurrency,
         tax_source:         docTax.source,
         tax_lines:          docTax.lines.map(l => ({ code: l.code, base: l.base, rate: l.rate, amount: l.amount })),
       },

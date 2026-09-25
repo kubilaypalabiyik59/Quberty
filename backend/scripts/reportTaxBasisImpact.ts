@@ -38,17 +38,19 @@ const money = (n: number) => n.toLocaleString('es-BO', { minimumFractionDigits: 
  * currency because that is the least ambiguous signal a tenant row carries.
  * A list, not an `if` — adding a country is adding an entry.
  */
-const GROSS_BASE_BY_CURRENCY: Record<string, string> = {
-  BOB: 'Bolivia — Ley 843 art. 5/7 (IVA por dentro) and art. 74 (IT on ingresos brutos)',
+// Keyed by jurisdiction, not by currency: whether VAT sits inside the price is a
+// country's tax law, and several countries share a currency (WORK-025).
+const GROSS_BASE_BY_COUNTRY: Record<string, string> = {
+  BO: 'Bolivia — Ley 843 art. 5/7 (IVA por dentro) and art. 74 (IT on ingresos brutos)',
 };
 
 (async () => {
   const tenants = await db.tenant.findMany({
-    select: { id: true, slug: true, name: true, currency_code: true },
+    select: { id: true, slug: true, name: true, country: true },
   });
 
   for (const t of tenants) {
-    console.log(`\n${'='.repeat(78)}\n${t.name} (${t.slug}) — ${t.currency_code}\n${'='.repeat(78)}`);
+    console.log(`\n${'='.repeat(78)}\n${t.name} (${t.slug}) — ${t.country ?? 'no country set'}\n${'='.repeat(78)}`);
 
     const codes = await db.taxCode.findMany({
       where: { tenant_id: t.id },
@@ -64,8 +66,8 @@ const GROSS_BASE_BY_CURRENCY: Record<string, string> = {
       continue;
     }
 
-    const reason = GROSS_BASE_BY_CURRENCY[t.currency_code];
-    console.log(`  jurisdiction: ${reason ?? `${t.currency_code} — VAT on the net, base stays NET`}`);
+    const reason = t.country ? GROSS_BASE_BY_COUNTRY[t.country] : undefined;
+    console.log(`  jurisdiction: ${reason ?? `${t.country ?? 'unknown country'} — VAT on the net, base stays NET`}`);
 
     for (const c of codes) {
       const target = reason && (c.tax_type === 'VAT' || c.tax_type === 'TURNOVER') ? 'GROSS' : 'NET';

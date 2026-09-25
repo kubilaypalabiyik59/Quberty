@@ -31,7 +31,6 @@ jest.mock('../infrastructure/database/client', () => ({
 import { db } from '../infrastructure/database/client';
 import {
   nextSalesOrderNumber,
-  nextPurchaseOrderNumber,
   nextInventoryAdjNumber,
   nextTransferNumber,
 } from '../shared/utils/orderCounter';
@@ -92,22 +91,6 @@ describe('nextSalesOrderNumber()', () => {
   });
 });
 
-// ── Purchase Order Numbers ────────────────────────────────────────────────────
-
-describe('nextPurchaseOrderNumber()', () => {
-  it('formats correctly', async () => {
-    counterReturns(7);
-    const result = await nextPurchaseOrderNumber(TENANT);
-    expect(result).toBe(`PO-${YEAR}-00007`);
-  });
-
-  it('prefixes with PO', async () => {
-    counterReturns(1);
-    const result = await nextPurchaseOrderNumber(TENANT);
-    expect(result).toMatch(/^PO-/);
-  });
-});
-
 // ── Inventory Adjustment Numbers ──────────────────────────────────────────────
 
 describe('nextInventoryAdjNumber()', () => {
@@ -150,16 +133,6 @@ describe('DB interaction', () => {
     // its whitespace is not part of the contract.
     expect(sql).toContain('sales_orders');
     expect(sql).toContain('order_number');
-    expect(tenantId).toBe(TENANT);
-  });
-
-  it('scopes the maximum-suffix query to the purchase table and column', async () => {
-    counterReturns(1);
-    await nextPurchaseOrderNumber(TENANT);
-
-    const [sql, tenantId] = mockQueryRawUnsafe.mock.calls[0] as [string, string];
-    expect(sql).toContain('purchase_orders');
-    expect(sql).toContain('po_number');
     expect(tenantId).toBe(TENANT);
   });
 

@@ -6,8 +6,8 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
 const STATUSES = ['', 'DRAFT', 'SENT', 'AWARDED', 'CLOSED', 'CANCELLED'];
 
 /**
@@ -17,6 +17,7 @@ const STATUSES = ['', 'DRAFT', 'SENT', 'AWARDED', 'CLOSED', 'CANCELLED'];
  * the same demand lines, so their prices are actually comparable.
  */
 export default function RfqListPage() {
+  const { amount: money } = useMoney();
   const [status, setStatus] = useState('');
 
   const { data, isLoading } = useQuery({

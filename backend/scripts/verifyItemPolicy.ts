@@ -3,6 +3,7 @@ import { db } from '../src/infrastructure/database/client';
 import { resolveItemPolicies, groupByItemGroup } from '../src/shared/services/itemPolicy.service';
 import { InventoryService } from '../src/modules/inventory/inventory.service';
 import { SalesService } from '../src/modules/sales/sales.service';
+import { getLedgerCurrencies } from '../src/shared/services/currency/ledgerCurrency.service';
 
 /**
  * Proof that the item model group and item group are READ, not merely stored.
@@ -36,6 +37,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
 
 (async () => {
   const tenant = await db.tenant.findFirstOrThrow({ select: { id: true, slug: true } });
+  const costCurrency = (await getLedgerCurrencies(tenant.id)).accountingCurrency;
   const user = await db.user.findFirstOrThrow({ where: { tenant_id: tenant.id }, select: { id: true } });
   const warehouse = await db.warehouse.findFirstOrThrow({ where: { tenant_id: tenant.id }, select: { id: true, code: true } });
   const location = await db.warehouseLocation.findFirstOrThrow({
@@ -125,7 +127,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
   await db.inventoryCostLayer.create({
     data: {
       tenant_id: tenant.id, product_id: shoe.id, location_id: location.id,
-      quantity: 10, unit_cost: 200, received_at: new Date(),
+      quantity: 10, unit_cost: 200, cost_currency_code: costCurrency, received_at: new Date(),
     },
   });
   await db.inventoryStock.create({
@@ -134,7 +136,7 @@ function heading(s: string) { console.log(`\n${'─'.repeat(74)}\n${s}\n${'─'.
   await db.inventoryCostLayer.create({
     data: {
       tenant_id: tenant.id, product_id: accessory.id, location_id: location.id,
-      quantity: 10, unit_cost: 15, received_at: new Date(),
+      quantity: 10, unit_cost: 15, cost_currency_code: costCurrency, received_at: new Date(),
     },
   });
 

@@ -7,6 +7,7 @@ import { Plus, Search, Globe, EyeOff, Pencil, Package, X, Trash2 } from 'lucide-
 import { useState } from 'react';
 import { FilterPanel, FilterPanelTrigger, applyFilters } from '@/components/ui/FilterPanel';
 import type { FilterState } from '@/components/ui/FilterPanel';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const FILTER_FIELDS = [
   { key: 'name',       label: 'Product name' },
@@ -22,10 +23,11 @@ const FILTER_FIELDS = [
       { label: 'Unlisted', value: 'false' },
     ],
   },
-  { key: 'selling_price', label: 'Price (Bs.)', type: 'number' as const },
+  { key: 'selling_price', label: 'Price', type: 'number' as const },
 ];
 
 export default function ProductsPage() {
+  const { money } = useMoney();
   const qc = useQueryClient();
   const [search,     setSearch]     = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
@@ -204,10 +206,10 @@ export default function ProductsPage() {
                 <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.sku}</td>
                 <td className="px-4 py-3 text-gray-500">{p.category?.name ?? '—'}</td>
                 <td className="px-4 py-3 text-right font-medium text-gray-900">
-                  Bs. {Number(p.selling_price).toLocaleString()}
+                  {money(p.selling_price)}
                   {p.sale_price && (
                     <span className="ml-1 text-xs text-red-500 line-through">
-                      Bs. {Number(p.sale_price).toLocaleString()}
+                      {money(p.sale_price)}
                     </span>
                   )}
                 </td>

@@ -7,10 +7,8 @@ import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { Dialog } from '@/components/erp/Dialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
-const qty = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { maximumFractionDigits: 2 });
-const day = (d: any) => (d ? new Date(d).toLocaleDateString('es-BO') : '—');
 const today = () => new Date().toISOString().slice(0, 10);
 
 const STATUSES = ['', 'DRAFT', 'POSTED', 'CANCELLED'];
@@ -25,6 +23,9 @@ const STATUSES = ['', 'DRAFT', 'POSTED', 'CANCELLED'];
  * list of what exists.
  */
 export default function VendorInvoicesPage() {
+  // Amounts sit under a column header, so they render bare; the currency and the
+  // locale come from the ledger rather than a per-file `es-BO` copy (WORK-025).
+  const { amount: money, quantity: qty, date: day } = useMoney();
   const qc = useQueryClient();
   const [status, setStatus] = useState('');
   const [invoicing, setInvoicing] = useState<any | null>(null);

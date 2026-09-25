@@ -1,22 +1,29 @@
 'use client';
 
 import { useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Trophy, XCircle } from 'lucide-react';
+import { FilePlus2, Trophy, XCircle } from 'lucide-react';
+import { NewQuotationDialog } from '@/components/erp/NewQuotationDialog';
+import { useAuthStore } from '@/stores/authStore';
+import { can } from '@/lib/access';
 import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { DocumentChain } from '@/components/erp/DocumentChain';
 import { PageHeader, TableShell, Th, Td, EmptyRow, ErrorNote } from '@/components/erp/PageHeader';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
+import { AttachmentsPanel } from '@/components/erp/AttachmentsPanel';
 
 export default function OpportunityDetailPage() {
+  const { amount: money } = useMoney();
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [error, setError] = useState('');
+  const [quoting, setQuoting] = useState(false);
+  const router = useRouter();
+  const permissions = useAuthStore((s) => s.user?.permissions);
 
   const { data: opp, isLoading } = useQuery({
     queryKey: ['opportunity', id],
@@ -149,7 +156,22 @@ export default function OpportunityDetailPage() {
         </div>
       </div>
 
-      <h2 className="mb-2 text-body font-semibold text-fg">Quotations</h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-body font-semibold text-fg">Quotations</h2>
+        {opp.status === 'OPEN' && can(permissions, 'sales.quotation.create') && (
+          <Button size="sm" onClick={() => setQuoting(true)}>
+            <FilePlus2 className="h-3.5 w-3.5" aria-hidden /> New quotation
+          </Button>
+        )}
+      </div>
+      {quoting && (
+        <NewQuotationDialog
+          party={{ customer_id: opp.customer_id, lead_id: opp.lead_id }}
+          opportunityId={opp.id}
+          onClose={() => setQuoting(false)}
+          onCreated={(qid) => { setQuoting(false); refresh(); router.push(`/sales/quotations/${qid}`); }}
+        />
+      )}
       <TableShell>
         <thead>
           <tr>
@@ -184,6 +206,7 @@ export default function OpportunityDetailPage() {
           ))}
         </tbody>
       </TableShell>
+      <AttachmentsPanel entityType="OPPORTUNITY" entityId={id} />
     </div>
   );
 }

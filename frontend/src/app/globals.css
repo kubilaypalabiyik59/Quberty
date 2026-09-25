@@ -39,7 +39,6 @@
 
 @layer base {
   :root {
-    /* ── ground and surfaces ─────────────────────────────────────────── */
     --bg:            210 22% 97%;
     --surface:         0  0% 100%;
     --surface-raised:  0  0% 100%;

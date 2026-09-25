@@ -63,10 +63,13 @@ export type SequenceReference =
   | 'SALES_ORDER'
   | 'PURCHASE_ORDER'
   | 'INVENTORY_ADJUSTMENT'
+  | 'INVENTORY_COUNT'
   | 'TRANSFER'
   | 'PRODUCT_RECEIPT'
   | 'VENDOR_INVOICE'
   | 'PAYMENT'
+  | 'PURCHASE_RETURN'
+  | 'SUPPLIER_CREDIT'
   // ── Process front ends (migration 005) ──────────────────────────────────
   // None of these is legally numbered anywhere we sell, so all five are
   // non-continuous: a gap in a quotation series costs nothing, whereas making

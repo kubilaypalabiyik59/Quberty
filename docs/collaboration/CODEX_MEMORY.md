@@ -165,7 +165,7 @@
   cherry-pick — never by merge — only after the V2 remote checkpoint had been verified. That branch
   and its worktree remain in place; they were not deleted.
 
-## Resume checkpoint — 2026-09-08 — RECONSTRUCTION COMPLETE
+## Resume checkpoint — 2026-09-08 — RECONSTRUCTION COMPLETE (SUPERSEDED by 2026-09-09 below)
 
 **Start a new session here.**
 
@@ -197,6 +197,85 @@
   aware FACTURA history model; the header-level/per-line tax limitation; and backlog items P0.3–P0.6
   plus the security module, none of which has started.
 
+## Resume checkpoint — 2026-09-09 — CORE ERP ANALYSIS RESUMED
+
+**Start a new session here.**
+
+- The reconstruction remains complete and published at `d32af1d80169ce7c368aff9ee28e50e10cdc4ce8`.
+- WORK-011 is accepted as analysis. `docs/process/CORE_ERP_COMPLETION_MATRIX.md` maps the purchasing
+  golden flow (`75.40 -> 60.30 -> 75.50`) to the JUL-2026 Microsoft catalog and current repository.
+- WORK-012 is accepted as design only. `docs/architecture/VENDOR_PAYMENT_SETTLEMENT.md` defines the
+  proposed AP payment/open-transaction/immutable-settlement foundation. No implementation is
+  authorized by either document.
+- The candidate next functional slice is `75.50.090.000 Issue and settle supplier payments`, with
+  cancel/correct scenarios. Do not create its migration or code until the purchasing-route 99.25
+  permission audit is resolved or Kubi explicitly re-scopes that gate.
+- Bolivia decisions that can change posting behavior remain explicit validation items in WORK-012.
+  Current IT 3% behavior stays on the sales side and must not be reused as supplier withholding.
+- The WORK-011 and WORK-012 analysis documents are currently uncommitted. No database, migration,
+  seed, provisioning, build, test, or push was run for those items.
+- WORK-013 is accepted as analysis in `docs/architecture/CORE_ERP_READINESS_GATES.md`. It defines two
+  serial gates before AP payment implementation: migration integrity, then purchasing authorization.
+- WORK-014's custom runner, checksum ledger, and transaction-scoped advisory lock are accepted
+  locally. WORK-015 adds a historical baseline, forward-only schema reconciliation, loopback-only CI
+  verifier, exact drift snapshot, and a separately gated Supabase verification wrapper. Its isolated
+  Supabase run rebuilt all 25 migrations, proved rollback/concurrency/ledger/repeatability, produced
+  empty Prisma drift, and removed `work015_verify_20260909`. Both items remain uncommitted.
+- Purchasing security findings: 45 routes comprise 29 fixed-role and 16 authentication-only entry
+  points; no production purchasing route uses `requirePermission`. The route-to-permission conversion
+  map is complete in WORK-013.
+- The next serial gate is WORK-016 purchasing permissions. Vendor payment implementation remains
+  behind it.
+- WORK-015 did not touch the shared Supabase `public` schema, Auth, or Storage. No commit, push, or
+  deployment has been performed; the analysis documents and WORK-014/015 patches remain uncommitted.
+- **Standing test-database authorization — Kubi, 2026-09-10, valid until explicitly revoked.** Codex
+  may execute reviewed database and migration operations against the repository-recorded Supabase
+  **test/development** project without requesting a new per-operation approval. For D365-shaped
+  functional decisions, the relevant process/data-model claim must first be validated through the
+  Microsoft Learn MCP. Every operation must still have an exact target and effect, reviewed SQL or
+  data action, rollback/recovery path, and isolated/preflight evidence appropriate to its risk.
+  Microsoft Learn does not validate Prisma/PostgreSQL migration safety; repository review and
+  isolated Supabase verification remain mandatory. This standing authorization does not cover an
+  unknown or future production database, Git push, deployment, or exposing credentials.
+
+## Resume checkpoint — 2026-09-10 — WORK-018 complete locally and applied to TEST
+
+- WORK-016 and WORK-017 remain accepted. WORK-018 implements the BOB/BOB vendor-payment runtime:
+  payment-method setup, draft/post payment, invoice/payment AP open transactions, row-locked partial
+  and many-invoice settlement, and immutable payment/settlement reversal.
+- Vendor invoice posting creates its CREDIT AP transaction atomically. Payment posting writes
+  `Dr AP / Cr configured payment account` and creates the DEBIT AP transaction in the same database
+  transaction. Unallocated payments remain open for later settlement.
+- The old purchase-order `/pay` posting route is removed. Its UI action opens the Vendor Payments
+  workspace so there is one AP payment model. User-facing pages exist at `/purchase/payments` and
+  `/purchase/setup/payment-methods`.
+- Migration `027` only snapshots rate `1` when tenant and invoice currencies are both proven BOB;
+  migration `028` also refuses any non-BOB posted invoice left outside AP inquiry. Supabase TEST now
+  has ledger ordinals 000–028, 2 posted
+  invoices, 2 matching AP open transactions, 0 posted invoices without one, and 1 PAYMENT series.
+- Validation passes: backend build; frontend TypeScript; `git diff --check`; 16 suites / 362 tests;
+  repeat migration no-op; isolated 29-migration Supabase rebuild and cleanup. The loopback CI URL is
+  absent in this desktop environment, so that local-only wrapper could not start.
+- Live Supabase TEST acceptance also passes. The `WORK018-1789028756197` scenario posted a full BOB
+  payment for invoice `F-UI-77012`, verified the balanced journal and invoice settlement, reversed
+  it, restored the invoice balance, cleared `paid_at`, and retained the fully reversed audit chain.
+- Cross-currency settlement, discounts, write-offs, withholding, bank files, and live approval
+  workflow remain deferred. Their schema hooks are not exposed as active settings.
+- WORK-019 supplier returns and supplier credits is accepted in Supabase TEST. Migration 029,
+  physical shipment, exact receipt-cost provenance, supplier credit, AP settlement, permissions,
+  numbering, and end-user forms are present. Live marker `WORK019-1789045833082` closed a 100 BOB
+  test invoice and produced balanced shipment and credit vouchers.
+- WORK-011–019 are checkpointed locally in commit `57b8bd27557d0234387f6e9edae0adb42ce6c473`.
+  The commit is unpushed; push still requires explicit authorization.
+- WORK-020 refreshed `60.30.030.000 Put away received goods` against Microsoft Learn and Supabase
+  TEST. `verify:putaway` passed 14/14 assertions and cleaned its temporary records. The catalog row
+  is now VERIFIED. The next bounded design candidate is `75.40.050.000 Manage open purchases`.
+- WORK-021 accepted the bounded SME open-purchase slice. Migration `030` adds cancellation remainder,
+  requested/confirmed delivery dates, immutable change snapshots, row-locked services, API routes,
+  and a Manage dialog. Confirmed direct editing is closed; generic approval/reapproval and
+  price/quantity approval remain deferred. Supabase TEST migration verification passed 000–030,
+  repeat migration was a no-op, `verify:open-purchase` passed 7/7, and the full suite passed 17/372.
+
 ## Maintenance rule
 
 After each approval, implementation report, Codex review, or accepted checkpoint:
@@ -204,3 +283,17 @@ After each approval, implementation report, Codex review, or accepted checkpoint
 1. Update the detailed state in `CODEX_CLAUDE_WORKLOG.md`.
 2. Update only the resume checkpoint in this file when the next-session starting point changes.
 3. Never silently change an earlier decision; record the new decision and what it supersedes.
+
+## Resume pointer — 2026-09-11
+
+**Superseded checkpoint, 2026-09-18:** begin with HANDOVER.md and
+docs/collaboration/WORK-048B_051A_LOCAL_REVIEW.md. Bounded return/UI and receipt-location patches
+are approved but uncommitted. WORK-048A remains open at its correction cap. The worklog contains
+current coordination evidence; no Claude job is active. Do not use the older ledger/checkpoint
+numbers below as fresh verification.
+
+The concise restart state now lives in `docs/collaboration/CODEX_RESUME.md`. Treat it together with
+`HANDOVER.md` and the completion matrix as the required entry point after context loss. At this
+checkpoint WORK-011–021 are accepted, migration 030 is applied to Supabase TEST, and the next
+step is a fresh catalog-aligned review. `75.40.050.000 Manage open purchases` remains partial only
+for its explicitly deferred generic workflow and price/quantity approval gaps.

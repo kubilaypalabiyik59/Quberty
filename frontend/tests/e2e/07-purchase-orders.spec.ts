@@ -56,7 +56,7 @@ test.describe('Purchase Orders — UI', () => {
 
 // ── Full lifecycle test ───────────────────────────────────────────────────────
 
-test('Purchase Order full lifecycle: DRAFT → CONFIRMED → RECEIVED → Paid', async ({ page, request }) => {
+test('Purchase Order full lifecycle: DRAFT → CONFIRMED → RECEIVED → vendor payments', async ({ page, request }) => {
   // ── 1. API setup ────────────────────────────────────────────────────────────
   const auth = await apiLogin(request);
 
@@ -135,8 +135,10 @@ test('Purchase Order full lifecycle: DRAFT → CONFIRMED → RECEIVED → Paid',
   const locSelect = page.locator('select').filter({ has: page.locator('option[value=""]') }).last();
   await locSelect.selectOption({ index: 1 });
 
-  // Choose "No, just receive" to skip packing slip
-  await page.getByRole('button', { name: 'No, just receive' }).click();
+  // The packing slip is the receipt's audit anchor and is required; the factura
+  // did not arrive with the goods, so this is a goods-only receipt.
+  await page.getByPlaceholder("the number on the supplier's delivery note").fill(`E2E-SLIP-${Date.now()}`);
+  await page.getByRole('button', { name: /No — goods only/ }).click();
 
   await page.getByRole('button', { name: 'Confirm & Receive' }).click();
   await expect(page.getByRole('heading', { name: 'Receive Purchase Order' })).not.toBeVisible({ timeout: 8_000 });
@@ -145,20 +147,14 @@ test('Purchase Order full lifecycle: DRAFT → CONFIRMED → RECEIVED → Paid',
   await expect(row.locator('text=RECEIVED')).toBeVisible({ timeout: 8_000 });
 
   // ── 5. Pay Supplier ──────────────────────────────────────────────────────────
+  // Payment is not taken on the order: it goes through the vendor invoice and
+  // the vendor payment screen (settled against the invoice), which the backend
+  // run verify:vendor-payment covers. Here: the order hands the user over.
   const payBtn = row.locator('button:has-text("Pay Supplier")');
   await expect(payBtn).toBeVisible({ timeout: 5_000 });
   await payBtn.click();
-
-  // Pay modal
-  await expect(page.getByRole('heading', { name: 'Pay Supplier' })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByText('Cuentas por Pagar')).toBeVisible();
-  await expect(page.locator('input[type="date"]').first()).toBeVisible();
-
-  await page.getByRole('button', { name: 'Record Payment' }).click();
-  await expect(page.getByRole('heading', { name: 'Pay Supplier' })).not.toBeVisible({ timeout: 8_000 });
-
-  // Paid badge
-  await expect(row.locator('text=Paid').first()).toBeVisible({ timeout: 8_000 });
+  await expect(page).toHaveURL(/\/purchase\/payments/, { timeout: 8_000 });
+  await expect(page.getByRole('main').getByRole('heading', { level: 1, name: 'Vendor payments' })).toBeVisible();
 });
 
 // ── Suppliers sub-section ─────────────────────────────────────────────────────

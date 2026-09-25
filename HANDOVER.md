@@ -1,5 +1,29 @@
 # HANDOVER — Skarpine ERP
 
+## Active coordination — 2026-09-17
+
+Kubi explicitly resumed Codex architectural leadership and authorized bounded Claude CLI fixes
+concurrently with independent review. The review-only pause in earlier notes is superseded;
+the defect-remediation feature freeze remains. Start with
+`docs/architecture/CODEX_INDEPENDENT_REVIEW_2026-09-17.md` and the newest worklog entry.
+
+WORK-048A (sales invoice/payment admission) remains OPEN: the initial Claude request and its
+three correction attempts produced no applicable patch. The skill's correction cap is reached;
+do not silently restart it under another item/session. WORK-051A
+(receipt location containment) is reviewed and approved in the uncommitted worktree: 10 focused
+tests pass. Claude uses subscription authentication and zero executable tools;
+Codex reviews/applies patches and runs offline verification. Do not treat an in-progress patch as
+accepted.
+WORK-048B (uninvoiced shipment return plus UI) is reviewed and approved in the uncommitted worktree
+after correction 3. Combined verification: 37 Jest suites / 1,035 tests, backend and frontend
+TypeScript, and diff whitespace check PASS. No browser or real PostgreSQL concurrency verification.
+The return lock does not repair the still-open invoice/pay races. Historical invoice-tax/payment
+reversal and general factura cancellation remain OPEN. See WORK-048B_051A_LOCAL_REVIEW.md.
+The CLI now supports optional effort/thinking-budget selection; isolation remains unchanged.
+
+No database operation, migration, fiscal-number consumption, push or deployment in this review.
+Preserve the earlier uncommitted dashboard/Next.js changes. Detailed results belong to the worklog.
+
 > Living context document. Read this first in a new session.
 >
 > **Codex/Claude collaboration:** after this file, read
@@ -43,8 +67,112 @@
 > The registry of what each module owns, what is built and what is missing:
 > [docs/architecture/MODULE_SETUP_AND_PARAMETERS.md](docs/architecture/MODULE_SETUP_AND_PARAMETERS.md).
 
-**Last updated**: 2026-08-18 — **a Setup UI so all of it is configurable without this repo**
-(§4i). Earlier: **seven setup tasks: financial dimensions + department master,
+**Last updated**: 2026-09-14 — **Remediation programme (defect-fix freeze) in progress.** Resume pointer:
+
+- **Branch and state:** `codex/rebuild-2026-09-07`, HEAD `e0fb194`, 31 commits ahead of origin,
+  **unpushed** (Kubi pushes). Tree clean. `skarpine-pos/` and the sibling `skarpine` folder untouched.
+- **Why the freeze:** Kubi ruled (2026-09-13/14) that every suspected defect from `docs/testing/`
+  (test plan `00_MASTER_TEST_PLAN.md` + area lists 01–04) is fixed, and every backend structure gets a
+  managing UI, before new features. Plan: `docs/process/REMEDIATION_PLAN_WORK-042_054.md`.
+  Order: 042 → 030b → 043 → 044 → 045 → 047 → **048** → 049 → 046 → 051 → 030c → 050 → 052 → 053 → 054.
+- **Done and accepted by the solution-architect agent:** WORK-042 (gapless FACTURA, error mapping),
+  WORK-030b (stock/product/warehouse permission registry), WORK-043/044 (reservations, FIFO issue
+  costing per warehouse, no double deduction), WORK-045 (inventory journals and counts that post
+  value), WORK-047 (POS split tenders, register declarations with difference voucher, void as
+  annulment, register session row lock). Migrations 036–040 applied to Supabase TEST.
+- **Verification last run (2026-09-14):** backend + frontend tsc, frontend build; Jest 35 suites /
+  1001 tests. TEST harnesses: pos-ledger 24/24 (no-FACTURA mode), stock-ledger 29, inventory-journals
+  35, o2c-permissions 45, o2c-containment 12, putaway 14, tenant-numbering 27, currency-foundation 40,
+  open-purchase 7. vendor-payment and supplier-return lack fixtures since the TEST reset.
+- **TEST facts:** transactional data was reset (master data and users kept). FACTURA allowance is max
+  3 numbers per work item; 043/044 and 047 each used theirs. Harnesses skip FACTURA steps afterwards.
+  Always redirect harness output to a log file — prisma query logging hides FAIL lines.
+- **Open decisions for Kubi:** POS self-approval (manager voids / approves own shortage); register
+  ownership (any cashier, any register); SIN annulment window and Libro de Ventas status of annulled
+  facturas (V-2).
+- **Known residuals** (detail in the worklog): purchase-return ship not on the stock ledger; missing
+  FKs on journal/count/tender reference columns; no UI for `pos_void_mode`, stock policies (WORK-053);
+  IVA report hides CANCELLED facturas and `/finance/facturas/:id/cancel` bypasses reversal (WORK-049);
+  no `usePermission` hook, pages gate by role name (WORK-052); customer create/edit, role assignment
+  UI still missing (WORK-052/054).
+- **Next bounded action:** WORK-048 (sales order lifecycle: uninvoiced return without credit note,
+  pay guards, SalesPaymentMethod on customer payment, shipment sequence, discount, quotation validity).
+  Read the WORK-048 section of the remediation plan, then the last entries of
+  `docs/collaboration/CODEX_CLAUDE_WORKLOG.md`. Implement → verify → worklog → commit → architect review.
+
+---
+
+**Previous status**: 2026-09-12 — **Claude interim directing role. WORK-022, WORK-023, WORK-029 and
+WORK-024 (a and b) and WORK-025 (a and b) are committed locally and unpushed; Kubi pushes them himself.** Resume pointer:
+
+- **Branch and state:** `codex/rebuild-2026-09-07`, ahead of origin and unpushed. The tree is clean.
+- **Done:**
+  - WORK-022 made tenant administration auth-only; tenants are now created with the operator CLI
+    `backend/scripts/createTenant.ts`.
+  - WORK-023 made document numbers tenant-scoped (migration 031, applied to TEST at ordinal 31).
+  - WORK-029 contained cross-tenant writes in Order to Cash and scoped POS stock to the register's
+    warehouse.
+  - WORK-028's matrix extension was merged into `docs/process/CORE_ERP_COMPLETION_MATRIX.md` as
+    §7–§12 (Order to Cash, inventory, Record to Report, schema hooks D-1…D-13, the WORK-029…041
+    queue). Its catalog IDs stay `UNVERIFIED` until the JUL-2026 workbook is available.
+  - WORK-024a built the currency foundation: the ISO currency master, tenant currencies with their
+    own rounding, exchange-rate types, pairs and dated rates, and the ledger's accounting and
+    reporting currencies on `FinanceParameters` (migration 032, applied to TEST at ordinal 32 as
+    `claude-work-024a`; the TEST rate type is BCB). Country currency defaults are gone from the
+    ledger and purchase-to-pay path, and a document outside the ledger's accounting currency is now
+    refused before any number, stock, cost layer or voucher is written — it used to post USD at face
+    value. Design: `docs/process/WORK-024_CURRENCY_FOUNDATION.md`.
+  - WORK-024b completed the currency foundation: every journal line now carries the amount as
+    transacted, as accounted and as reported, with the rate used for each, and the AP subledger
+    carries the same reporting basis (migration 033, TEST ledger ordinal 33 as `claude-work-024b`).
+    `debit_amount`/`credit_amount` are still the accounting amounts, so no report changed, and a
+    voucher with no currency reads no exchange rate at all. A reversal copies the amounts, the rates
+    and the original's rate date, so a rate move between posting and reversal still nets to zero.
+    The reporting currency stays locked to the accounting one until inventory has a reporting cost
+    basis (WORK-031).
+  - WORK-025a made the sales side parametric and closed the defect hiding behind its `'BOB'` literal:
+    the invoice route never read the order's currency and order creation validated nothing, so a
+    foreign-currency order would have posted at face value. Sales, storefront, POS, CRM and quotations
+    now resolve the ledger's currency, and the invoice, payment and credit-note paths refuse anything
+    else before a FACTURA number is drawn. `Tenant.currency_code` is gone — the ledger is the only
+    source — and the chart of accounts is chosen by the new `Tenant.country`, not by the currency.
+    `PUT /purchase/suppliers/:id` no longer accepts a body that could move a supplier to another
+    tenant. The review then found that the jurisdiction was being seeded from `Site.country`, which
+    itself defaulted to `'TR'` — a Bolivian tenant whose sites were left at the default would have
+    been provisioned with the Turkish statutory chart. On TEST the sites disagree (two BO, two TR), so
+    the "only where every site agrees" rule had left the country NULL and nothing was mis-stamped;
+    migration 035 drops that default and both site-creating routes now require a real ISO country.
+    Migrations 034 and 035, TEST ledger ordinal 35 as `claude-work-025a`. Design:
+    `docs/process/WORK-025_CURRENCY_LITERAL_SWEEP.md`.
+  - WORK-025b swept the frontend (2026-09-13, local, unreviewed): every screen renders money through
+    `useMoney()` fed by the new `GET /tenant/currency` (authentication only, no permission), and
+    `setup.tenant.read` was taken back off cashier/employee. No `Bs.`/`es-BO`/`'BOB'` literal is left
+    in `frontend/src` outside comments and the wizard's country presets. tsc, `next build` and Jest
+    514/514 pass. **Not done:** browser pass and TRY stand-in render; harness not re-run on TEST.
+    Details in the worklog. Then WORK-030's permission registry.
+- **Decided:** the O2C posting, costing, localization, payment-terms and partial-invoicing
+  decisions are in the worklog entries dated 2026-09-11. Everything is parametric; Bolivia is only
+  one configured jurisdiction.
+- **Found:** FIFO does not work today. On TEST the open cost layers are worth 40,277, GL inventory
+  is 5,397, and stock × `cost_price` is 234,650. POS sales inflate AR. Both have queued fixes:
+  WORK-031 and WORK-033.
+- **WORK-030a (2026-09-13, local):** customers and unknown roles are confined to a five-route
+    storefront surface by the workforce gate; sales orders, quotations, CRM, customers and POS run on
+    exported permission manifests; registration needs an explicit tenant and never yields an admin;
+    `/auth/make-admin` is gone. Design `docs/process/WORK-030_O2C_PERMISSION_REGISTRY.md`. Jest 704,
+    TEST `verify:o2c-permissions` 32/32. Deploy note: set `NEXT_PUBLIC_STOREFRONT_TENANT_SLUG`.
+- **Next:**
+  1. Kubi: browser pass for WORK-025b and WORK-030a (and a TRY stand-in render).
+  2. D-15 storefront integrity (server-side prices, published/active products only, allow-list
+     projection) — before any external shopper.
+  3. WORK-030b (inventory/warehouse/product/import), then WORK-030c (finance/reports/setup/HR/audit).
+- **Operator action on TEST:** close and reopen the open register session against a warehouse.
+- **Environment:** this worktree now has its own git-ignored `backend/.env`, a copy of the TEST
+  credentials. The migration runner requires `MIGRATION_APPLIED_BY=<actor>-work-NNN`.
+
+Earlier: 2026-09-10 — **WORK-018 BOB vendor payments and AP settlement**.
+Earlier: **a Setup UI so all configuration is manageable without this repo** (§4i), and seven setup
+tasks: **financial dimensions + department master,
 WH-MAIN putaway, the IT tax side, the correction journals POSTED, trade agreements, factura
 lines** (§4h — read §4h.8, one switch is deliberately off).
 
@@ -134,6 +262,56 @@ All five reconstruction slices are independently accepted by Codex and published
 
 > **Historical, superseded:** earlier revisions of this section said V2 was local-only and that V3
 > had not started. Both were true when written and are not true now.
+
+### Core ERP analysis checkpoint — 2026-09-09
+
+- WORK-011 maps the purchasing golden flow to the JUL-2026 Microsoft catalog in
+  [docs/process/CORE_ERP_COMPLETION_MATRIX.md](docs/process/CORE_ERP_COMPLETION_MATRIX.md).
+- WORK-012 defines the proposed AP payment, open-transaction, and immutable-settlement foundation in
+  [docs/architecture/VENDOR_PAYMENT_SETTLEMENT.md](docs/architecture/VENDOR_PAYMENT_SETTLEMENT.md).
+- WORK-013 defines the serial migration-integrity and purchasing-authorization gates in
+  [docs/architecture/CORE_ERP_READINESS_GATES.md](docs/architecture/CORE_ERP_READINESS_GATES.md).
+- All three are analysis/design artifacts. No schema or runtime implementation is authorized by them.
+- The purchasing-route 99.25 permission gate is complete locally: all 45 routes consume stable
+  business permissions, specialized purchasing roles are assignable, and mounted-route denial is
+  tested before database handlers.
+- The `75.50.090.000 Issue and settle supplier payments` BOB runtime slice is complete locally.
+  Payment-method setup, invoice/payment AP open transactions, locked partial settlement, immutable
+  reversal, inquiries, and end-user forms are implemented. Migrations `024`–`028` are applied to
+  Supabase TEST; its two posted invoices both have matching AP open transactions.
+- WORK-014's runner/ledger/advisory-lock patch and WORK-015's ephemeral rebuild/drift CI are accepted
+  locally and remain uncommitted. WORK-015 was proven against the Supabase test project in the
+  isolated `work015_verify_20260909` schema: all 25 migrations rebuilt, concurrent execution
+  serialized, checksums and repeatability matched, Prisma drift was empty, and the temporary schema
+  was removed. The next serial gate is WORK-016 purchasing route permissions before vendor payment
+  implementation.
+- WORK-018 validation passes: backend build, frontend TypeScript, 16 suites / 362 tests, repeat
+  migration no-op, and an isolated 29-migration Supabase rebuild whose temporary schema was removed.
+  Live Supabase TEST acceptance also passed with `WORK018-1789028756197`: payment posting and
+  settlement closed `F-UI-77012`, then immutable reversal restored its balance and retained the
+  complete audit chain.
+  WORK-011–019 are checkpointed locally at `57b8bd27557d0234387f6e9edae0adb42ce6c473` and remain
+  unpushed.
+- WORK-019 supplier returns and supplier credits is accepted locally and on Supabase TEST. Migration
+  `029` is ledger ordinal 29. End-user return/credit forms use selectable invoices, matched receipts,
+  locations, and shipped return lines rather than UUID entry. Marker `WORK019-1789045833082` proved
+  exact stock/cost-layer reduction, balanced shipment and credit vouchers, a DEBIT AP transaction,
+  exact settlement, and invoice closure. The accepted boundary remains BOB, separate receipt-ledger,
+  physical receipt-linked lines, and recoverable tax; unsupported cases fail closed.
+- WORK-020 verifies catalog process `60.30.030.000 Put away received goods`. Microsoft Learn confirms
+  the receive/work/put structure. The permanent Supabase TEST harness passed 14/14 assertions for
+  pick-only availability, stock and FIFO-cost movement, transfer transactions, duplicate-completion
+  refusal, parameter restoration, and cleanup. WORK-021 then completed the bounded SME slice for
+  `75.40.050.000 Manage open purchases`.
+- WORK-021 is accepted locally and on Supabase TEST. It adds the bounded SME open-purchase controls:
+  confirmed-order direct edits are refused; delivery dates can be updated with reasoned immutable
+  history; unreceived remainders can be cancelled per line or order; receiving and invoicing enforce
+  the remaining quantity. Migration `030` is applied and repeatable. Generic approval/reapproval and
+  price/quantity approval remain deferred. Durable continuation notes are in
+  `docs/collaboration/PROJECT_CONTEXT_2026-09-11.md`.
+- The backend's pre-existing `npm run lint` script cannot start because ESLint is absent from both
+  `package.json` and `package-lock.json`; repairing that dependency/lockfile debt was outside
+  WORK-015.
 
 Backend and frontend modules are broadly at MVP: sales, purchase, inventory, warehouse,
 CRM, HR, reporting, data import, storefront, and a fairly deep finance module (chart of
@@ -1840,6 +2018,12 @@ be an empty shell. **Shipment lines + a Load model + outbound work come first.**
 
 ### Still missing UI (stated, not hidden)
 
+- **Item Groups administration** — the backend already supports listing, creating, and updating
+  item groups, but `/products/setup` exposes them as a read-only table while Item Model Groups has
+  its `New group` dialog. This is a deferred UI-completeness gap, not a deliberate business rule.
+  When Core ERP strengthening reaches this item, first revalidate the intended setup and maintenance
+  behaviour against Microsoft Learn through the Learn MCP, then add end-user `New` and `Edit` forms
+  and verify their transaction/setup integration. Do not implement it from the current screen alone.
 - **Trade agreements** — API exists (`/procurement/setup/trade-agreements`), no page.
 - **Sales / Procurement parameters** — the hub links to them; the pages do not exist.
 - **Dimension picker on the manual journal.** `STORE` is now REQUIRED on revenue and

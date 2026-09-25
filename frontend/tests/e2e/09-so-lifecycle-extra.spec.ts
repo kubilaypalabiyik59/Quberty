@@ -10,19 +10,36 @@ import { erpLogin, apiLogin, apiGet, apiPost, authHeaders, API_URL, TEST_ADMIN }
 async function createConfirmedSO(request: any, auth: any, product: any) {
   const soRes = await apiPost(request, '/sales/orders', {
     currency: 'BOB',
-    warehouse_id: undefined,
+    warehouse_id: product.warehouse_id,
     lines: [{ product_id: product.id, quantity: 1, unit_price: 115 }],
   }, auth);
   const so = (await soRes.json()).data;
-  await apiPost(request, `/sales/orders/${so.id}/confirm`, {}, auth);
+  const confirmRes = await apiPost(request, `/sales/orders/${so.id}/confirm`, {}, auth);
+  // Fail here, with the server's reason, rather than later at a step that
+  // only fails because this one did.
+  expect(confirmRes.ok(), JSON.stringify(await confirmRes.json())).toBeTruthy();
   return so;
 }
 
+// A product the order can actually take: no variants (the lines here carry no
+// variant) and available stock. A variant product can show stock held on the
+// product rather than on a size, which confirmation rightly refuses.
 async function firstProductWithStock(request: any, auth: any) {
-  const res = await apiGet(request, '/products?limit=5&inStock=true', auth);
+  const res = await apiGet(request, '/products?limit=100&inStock=true', auth);
   const body = await res.json();
   const products = Array.isArray(body.data) ? body.data : (body.data?.products ?? body.data?.data ?? []);
-  return products[0];
+  for (const p of products.filter((x: any) => (x.variants?.length ?? 0) === 0 && (x.total_stock ?? 0) > 0)) {
+    // The order is placed in a warehouse that holds it: availability is per warehouse.
+    const rows: any[] = (await (await apiGet(request, `/products/${p.id}/stock`, auth)).json()).data ?? [];
+    const free = new Map<string, number>();
+    for (const r of rows) {
+      const wh = r.location?.zone?.warehouse?.id;
+      if (wh) free.set(wh, (free.get(wh) ?? 0) + Number(r.quantity) - Number(r.reserved_qty ?? 0));
+    }
+    const warehouseId = Array.from(free.entries()).find(([, q]) => q > 0)?.[0];
+    if (warehouseId) return { ...p, warehouse_id: warehouseId };
+  }
+  return undefined;
 }
 
 test('SO: confirm → ship → complete → return (full chain via API)', async ({ request }) => {

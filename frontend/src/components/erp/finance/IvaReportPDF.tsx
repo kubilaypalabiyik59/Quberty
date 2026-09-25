@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { formatMoney, safeLocale, type TenantCurrency } from '@/lib/money';
 
 const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
   'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -132,12 +133,8 @@ const styles = StyleSheet.create({
   pageNum: { fontSize: 6.5, color: '#9ca3af' },
 });
 
-function fmt(n: number) {
-  return `Bs. ${Number(n).toFixed(2)}`;
-}
-
-function fmtDate(d: string | Date) {
-  return new Date(d).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+function fmtDate(d: string | Date, locale: string | undefined) {
+  return new Date(d).toLocaleDateString(safeLocale(locale), { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 interface Factura {
@@ -165,9 +162,12 @@ interface Props {
   totals: Totals;
   year: number;
   month: number;
+  /** Required, no default: a react-pdf document cannot read context (WORK-025). */
+  currency: TenantCurrency;
 }
 
-export function IvaReportPDF({ facturas, totals, year, month }: Props) {
+export function IvaReportPDF({ facturas, totals, year, month, currency }: Props) {
+  const fmt = (n: number) => formatMoney(n, currency);
   const period = `${MONTHS[month - 1]} ${year}`;
 
   return (
@@ -218,7 +218,7 @@ export function IvaReportPDF({ facturas, totals, year, month }: Props) {
         {facturas.map((f, i) => (
           <View key={f.id} style={i % 2 === 0 ? styles.tableRow : styles.tableRowAlt}>
             <View style={styles.colNum}><Text style={styles.tdMono}>{f.factura_number}</Text></View>
-            <View style={styles.colDate}><Text style={styles.tdText}>{fmtDate(f.invoice_date)}</Text></View>
+            <View style={styles.colDate}><Text style={styles.tdText}>{fmtDate(f.invoice_date, currency.locale)}</Text></View>
             <View style={styles.colClient}><Text style={styles.tdText}>{f.customer_name}</Text></View>
             <View style={styles.colNit}><Text style={styles.tdMono}>{f.customer_nit ?? 'CF'}</Text></View>
             <View style={styles.colAmount}><Text style={styles.tdText}>{fmt(Number(f.subtotal))}</Text></View>
@@ -258,7 +258,7 @@ export function IvaReportPDF({ facturas, totals, year, month }: Props) {
 
         {/* Footer */}
         <View style={styles.footer} fixed>
-          <Text style={styles.footerText}>Quberty ERP • Libro de Ventas {period} • Generado {new Date().toLocaleDateString('es-BO')}</Text>
+          <Text style={styles.footerText}>Quberty ERP • Libro de Ventas {period} • Generado {new Date().toLocaleDateString(safeLocale(currency.locale))}</Text>
           <Text render={({ pageNumber, totalPages }) => `Página ${pageNumber} de ${totalPages}`} style={styles.pageNum} />
         </View>
 

@@ -43,7 +43,7 @@ async function nextCounter(tenantId: string, docType: DocType, currentMax = 0): 
  * Numbers are formatted `PREFIX-YYYY-NNNNN`, so we parse the trailing segment.
  * Returns 0 when the table is empty.
  */
-async function maxDocSuffix(table: 'sales_orders' | 'purchase_orders', column: 'order_number' | 'po_number', tenantId: string): Promise<number> {
+async function maxDocSuffix(table: 'sales_orders', column: 'order_number', tenantId: string): Promise<number> {
   // Document numbers are `PREFIX-YYYY-NNNNN`; the 3rd dash-segment is the counter.
   const sql = `
     SELECT COALESCE(MAX(NULLIF(split_part("${column}", '-', 3), '')::bigint), 0) AS max
@@ -62,11 +62,8 @@ export async function nextSalesOrderNumber(tenantId: string): Promise<string> {
   return `SO-${year()}-${String(n).padStart(5, '0')}`;
 }
 
-export async function nextPurchaseOrderNumber(tenantId: string): Promise<string> {
-  const max = await maxDocSuffix('purchase_orders', 'po_number', tenantId);
-  const n = await nextCounter(tenantId, 'PO', max);
-  return `PO-${year()}-${String(n).padStart(5, '0')}`;
-}
+// Purchase-order numbers are allocated from the PURCHASE_ORDER number sequence
+// (migration 031), not from order_counters. The 'PO' counter row is inert.
 
 export async function nextInventoryAdjNumber(tenantId: string): Promise<string> {
   const n = await nextCounter(tenantId, 'ADJ');

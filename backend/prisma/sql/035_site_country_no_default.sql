@@ -1,0 +1,34 @@
+-- =============================================================================
+-- 035  A site's country is stated, never defaulted
+--
+-- Migration 034 reads a tenant's jurisdiction from its sites, and a jurisdiction
+-- decides which statutory chart of accounts the company is provisioned with. But
+-- `sites.country` carried a 'TR' default, so a site created without one was
+-- silently Turkish — and a Bolivian tenant whose sites were all left at the
+-- default would have been seeded TR and provisioned with the Turkish chart.
+--
+-- That is the same inference WORK-025 exists to remove, moved from the currency to
+-- a defaulted column. The default goes; both site-creating routes now require an
+-- ISO 3166-1 alpha-2 country.
+--
+-- Metadata-only: no row is rewritten, nothing is made NOT NULL that was not
+-- already, no lock is held. Existing rows keep whatever country they carry — this
+-- migration does not correct a site that was stamped by the old default, because
+-- which country it should have been is a question about a real company. The
+-- reporting query below names them instead.
+--
+--   SELECT t.slug, s.code, s.country
+--     FROM sites s JOIN tenants t ON t.id = s.tenant_id
+--    ORDER BY t.slug, s.code;
+--
+-- On TEST, 2026-09-12: skarpine-demo has four sites, two BO and two TR, so
+-- migration 034 correctly left `tenants.country` NULL rather than guessing, and
+-- provisioning refuses to pick a chart until an operator sets it.
+--
+-- Design reference: WORK-025a review finding 3.
+--
+-- Manual rollback (for reference only; not executed):
+--   ALTER TABLE sites ALTER COLUMN country SET DEFAULT 'TR';
+-- =============================================================================
+
+ALTER TABLE "sites" ALTER COLUMN "country" DROP DEFAULT;

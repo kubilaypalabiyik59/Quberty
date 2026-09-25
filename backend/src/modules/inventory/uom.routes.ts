@@ -1,4 +1,5 @@
 import { Hono }    from 'hono';
+import { routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
 import { ok, created } from '../../shared/response';
@@ -6,8 +7,18 @@ import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
 
+/** Units of measure are product master data (WORK-030b). */
+export const UOM_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /': ['product.read'],
+  'POST /': ['product.maintain'],
+  'PUT /:id': ['product.maintain'],
+  'POST /seed-defaults': ['product.maintain'],
+} satisfies RouteGuards);
+
+const guard = routeGuard(UOM_ROUTE_PERMISSIONS);
+
 // List all UoMs for tenant
-app.get('/', async (c) => {
+app.get('/', guard('GET /'), async (c) => {
   const units = await db.unitOfMeasure.findMany({
     where:   { tenant_id: c.get('tenantId'), is_active: true },
     orderBy: { name: 'asc' },
@@ -16,7 +27,7 @@ app.get('/', async (c) => {
 });
 
 // Create UoM
-app.post('/', async (c) => {
+app.post('/', guard('POST /'), async (c) => {
   const { code, name, symbol } = await c.req.json();
   if (!code || !name || !symbol) throw new AppError('code, name, symbol are required');
 
@@ -37,7 +48,7 @@ app.post('/', async (c) => {
 });
 
 // Update UoM
-app.put('/:id', async (c) => {
+app.put('/:id', guard('PUT /:id'), async (c) => {
   const { name, symbol, is_active } = await c.req.json();
   const uom = await db.unitOfMeasure.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
@@ -52,7 +63,7 @@ app.put('/:id', async (c) => {
 });
 
 // Seed defaults for tenant (call once on setup)
-app.post('/seed-defaults', async (c) => {
+app.post('/seed-defaults', guard('POST /seed-defaults'), async (c) => {
   const tenantId = c.get('tenantId');
   const defaults = [
     { code: 'PCS',  name: 'Pieces',     symbol: 'pcs'  },

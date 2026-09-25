@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { useAuthStore } from '@/stores/authStore';
+import { CurrencyProvider } from '@/components/CurrencyProvider';
 
 function AuthLoader({ children }: { children: React.ReactNode }) {
   const loadUser = useAuthStore((s) => s.loadUser);
@@ -25,7 +26,11 @@ const queryClient = new QueryClient({
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthLoader>{children}</AuthLoader>
+      <AuthLoader>
+        {/* One currency for every screen that renders an amount — read from the
+            ledger, never a literal (WORK-025). */}
+        <CurrencyProvider>{children}</CurrencyProvider>
+      </AuthLoader>
     </QueryClientProvider>
   );
 }

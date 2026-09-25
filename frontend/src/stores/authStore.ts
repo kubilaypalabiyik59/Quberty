@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, setAccessToken, getAccessToken } from '@/lib/api';
+import { clearActivity, isIdleExpired, setIdleTimeoutMinutes, setSignoutReason } from '@/lib/sessionActivity';
 
 interface User {
   id: string;
@@ -7,6 +8,8 @@ interface User {
   first_name: string;
   last_name: string;
   role: string;
+  /** From the server; shapes the UI only. See lib/access.ts. */
+  permissions?: string[];
 }
 
 interface AuthState {
@@ -46,15 +49,20 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   login: async (email, password) => {
     const { data } = await api.post('/auth/login', { email, password });
-    const { access_token, user, tenant_id } = data.data;
+    const { access_token, user, tenant_id, session } = data.data;
     // refresh_token is set as httpOnly cookie by the server — not stored here
     setAccessToken(access_token);
+    setIdleTimeoutMinutes(session?.idle_timeout_minutes);
     localStorage.setItem('tenant_id', tenant_id);
     set({ user, tenantId: tenant_id });
   },
 
   logout: () => {
     setAccessToken(null);
+    clearActivity();
+    // Drop the httpOnly refresh cookie too, or the next page load would sign
+    // straight back in. Best effort: local state is cleared either way.
+    api.post('/auth/logout').catch(() => {});
     localStorage.removeItem('tenant_id');
     // Cleared with the session. Tenant-scoped queries key on this, so dropping
     // it also stops them the moment the user signs out.
@@ -67,8 +75,19 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (!getAccessToken()) {
         const tenantId = localStorage.getItem('tenant_id');
         if (!tenantId) { set({ isLoading: false }); return; }
+        // A workforce session left idle past the limit — tab closed or not —
+        // must not be revived by the refresh cookie.
+        if (isIdleExpired()) {
+          setSignoutReason('idle');
+          clearActivity();
+          await api.post('/auth/logout').catch(() => {});
+          localStorage.removeItem('tenant_id');
+          set({ user: null, tenantId: null, isLoading: false });
+          return;
+        }
         const { data: rd } = await api.post('/auth/refresh', {});
         setAccessToken(rd.data.access_token);
+        setIdleTimeoutMinutes(rd.data.session?.idle_timeout_minutes);
       }
       const { data } = await api.get('/auth/me');
       // `/auth/me` returns the user only, so the tenant comes from the same

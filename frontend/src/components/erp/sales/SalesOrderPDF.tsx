@@ -1,5 +1,6 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
 import { formatRate, type TaxPreview } from '@/lib/useTaxPreview';
+import { formatMoney, safeLocale, type TenantCurrency } from '@/lib/money';
 
 const STATUS_ES: Record<string, string> = {
   DRAFT: 'Borrador', CONFIRMED: 'Confirmado', PICKING: 'En Preparación',
@@ -67,9 +68,8 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 7, color: '#9ca3af' },
 });
 
-function fmt(n: number) { return `Bs. ${Number(n).toFixed(2)}`; }
-function fmtDate(d: string | Date) {
-  return new Date(d).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+function fmtDate(d: string | Date, locale: string | undefined) {
+  return new Date(d).toLocaleDateString(safeLocale(locale), { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 interface OrderLine {
@@ -101,6 +101,12 @@ interface SalesOrderPDFProps {
    * document a customer keeps.
    */
   tax: TaxPreview;
+  /**
+   * REQUIRED, and with no default, for the same reason as `tax`: a react-pdf
+   * document cannot read React context, and the only available fallback is
+   * somebody else's currency printed on a customer's document (WORK-025).
+   */
+  currency: TenantCurrency;
 }
 
 function variantLabel(line: OrderLine): string {
@@ -122,7 +128,8 @@ function variantLabel(line: OrderLine): string {
  * answer down; that also keeps this component pure, which is what react-pdf
  * wants.
  */
-export function SalesOrderPDF({ order, tax }: SalesOrderPDFProps) {
+export function SalesOrderPDF({ order, tax, currency }: SalesOrderPDFProps) {
+  const fmt = (n: number) => formatMoney(n, currency);
   const total = Number(order.total_amount);
   const customerName = order.customer
     ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
@@ -149,7 +156,7 @@ export function SalesOrderPDF({ order, tax }: SalesOrderPDFProps) {
         <View style={styles.metaRow}>
           <View style={styles.metaCard}>
             <Text style={styles.metaLabel}>FECHA</Text>
-            <Text style={styles.metaValue}>{fmtDate(order.created_at)}</Text>
+            <Text style={styles.metaValue}>{fmtDate(order.created_at, currency.locale)}</Text>
           </View>
           <View style={styles.metaCard}>
             <Text style={styles.metaLabel}>CLIENTE</Text>
@@ -251,7 +258,7 @@ export function SalesOrderPDF({ order, tax }: SalesOrderPDFProps) {
         {/* Footer */}
         <View style={styles.footer} fixed>
           <Text style={styles.footerText}>Quberty ERP • Pedido {order.order_number}</Text>
-          <Text style={styles.footerText}>Generado el {new Date().toLocaleDateString('es-BO')}</Text>
+          <Text style={styles.footerText}>Generado el {new Date().toLocaleDateString(safeLocale(currency.locale))}</Text>
         </View>
       </Page>
     </Document>

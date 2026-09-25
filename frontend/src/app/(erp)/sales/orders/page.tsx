@@ -12,6 +12,7 @@ import {
   MANUAL_FACTURA_NUMBER_MAX,
 } from '@/lib/facturaNumbering';
 import { useTaxPreview, formatRate } from '@/lib/useTaxPreview';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * Two surfaces on this page issue a legal invoice number: the invoice modal and
@@ -155,6 +156,7 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
   const [facturaNumber, setFacturaNumber] = useState('');
+  const { money } = useMoney();
 
   // The modal exists only while it is open, so mounting IS opening — the hook
   // revalidates on mount and blocks until the answer arrives.
@@ -230,25 +232,25 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
             {taxPreview.tax ? (
               <>
                 <div className="flex justify-between text-gray-600">
-                  <span>Subtotal</span><span>Bs. {taxPreview.tax.subtotal.toFixed(2)}</span>
+                  <span>Subtotal</span><span>{money(taxPreview.tax.subtotal)}</span>
                 </div>
                 {taxPreview.tax.lines.length > 0
                   ? taxPreview.tax.lines.map(l => (
                       <div key={l.code} className="flex justify-between text-blue-700">
                         <span>{l.code} {formatRate(l.rate)}</span>
-                        <span>Bs. {l.amount.toFixed(2)}</span>
+                        <span>{money(l.amount)}</span>
                       </div>
                     ))
                   : (
                     <>
                       {taxPreview.tax.vat > 0 && (
                         <div className="flex justify-between text-blue-700">
-                          <span>IVA</span><span>Bs. {taxPreview.tax.vat.toFixed(2)}</span>
+                          <span>IVA</span><span>{money(taxPreview.tax.vat)}</span>
                         </div>
                       )}
                       {taxPreview.tax.turnover > 0 && (
                         <div className="flex justify-between text-orange-600">
-                          <span>IT</span><span>Bs. {taxPreview.tax.turnover.toFixed(2)}</span>
+                          <span>IT</span><span>{money(taxPreview.tax.turnover)}</span>
                         </div>
                       )}
                     </>
@@ -274,7 +276,7 @@ function InvoiceModal({ order, onClose, onSuccess }: { order: any; onClose: () =
                 <span>{taxPreview.status === 'loading' ? 'calculating…' : '—'}</span>
               </div>
             )}
-            <div className="flex justify-between font-bold text-gray-900 border-t border-blue-200 pt-2"><span>Total</span><span>Bs. {total.toFixed(2)}</span></div>
+            <div className="flex justify-between font-bold text-gray-900 border-t border-blue-200 pt-2"><span>Total</span><span>{money(total)}</span></div>
           </div>
           <SequenceBlockedNote sequence={sequence} />
           {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-2">{error}</p>}
@@ -301,6 +303,7 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
 }) {
   const [form, setForm] = useState({ customer_id: '', warehouse_id: '', notes: '', discount_amount: '' });
   const [lines, setLines] = useState<SOLine[]>([{ product_id: '', variant_id: '', quantity: '1', unit_price: '0' }]);
+  const { money, code } = useMoney();
 
   const { data: customers } = useQuery({
     queryKey: ['customers-list'],
@@ -357,7 +360,7 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Discount Amount (Bs.)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Discount Amount ({code})</label>
           <input type="number" min="0" step="0.01" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="0.00" value={form.discount_amount} onChange={e => setForm(p => ({ ...p, discount_amount: e.target.value }))} />
         </div>
@@ -383,7 +386,7 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Product</th>
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 w-44">Variant</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-20">Qty</th>
-                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Price (Bs.)</th>
+                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Price ({code})</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-24">Total</th>
                 <th className="w-10" />
               </tr>
@@ -426,7 +429,7 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
                         value={line.unit_price} onChange={e => updateLine(i, 'unit_price', e.target.value)} />
                     </td>
                     <td className="px-3 py-2 text-right text-xs font-medium text-gray-700">
-                      Bs. {((Number(line.quantity) || 0) * (Number(line.unit_price) || 0)).toLocaleString()}
+                      {money((Number(line.quantity) || 0) * (Number(line.unit_price) || 0))}
                     </td>
                     <td className="px-3 py-2">
                       {lines.length > 1 && (
@@ -441,20 +444,20 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
               {discount > 0 && (
                 <tr>
                   <td colSpan={4} className="px-3 py-1.5 text-right text-xs text-gray-500">Subtotal:</td>
-                  <td className="px-3 py-1.5 text-right text-xs text-gray-600">Bs. {subtotal.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-xs text-gray-600">{money(subtotal)}</td>
                   <td />
                 </tr>
               )}
               {discount > 0 && (
                 <tr>
                   <td colSpan={4} className="px-3 py-1.5 text-right text-xs text-red-500">Discount:</td>
-                  <td className="px-3 py-1.5 text-right text-xs text-red-500">-Bs. {discount.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-xs text-red-500">-{money(discount)}</td>
                   <td />
                 </tr>
               )}
               <tr>
                 <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-gray-700">Total:</td>
-                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">Bs. {total.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">{money(total)}</td>
                 <td />
               </tr>
             </tfoot>
@@ -474,7 +477,9 @@ function SOForm({ onSubmit, onCancel, isPending, error }: {
           warehouse_id: form.warehouse_id || undefined,
           notes: form.notes || undefined,
           discount_amount: Number(form.discount_amount) || 0,
-          currency: 'BOB',
+          // No currency is sent. The server resolves the ledger currency for the
+          // document and refuses anything else, so a literal here could only ever
+          // disagree with it (WORK-025a).
           lines: lines.filter(l => l.product_id).map(l => ({
             product_id: l.product_id,
             variant_id: l.variant_id || null,
@@ -508,6 +513,7 @@ function SOEditForm({ order, onSubmit, onCancel, isPending, error }: {
     notes: order.notes ?? '',
     discount_amount: String(order.discount_amount ?? '0'),
   });
+  const { money, code } = useMoney();
   const [lines, setLines] = useState<SOLine[]>(
     (order.lines ?? []).map((l: any) => ({
       product_id: l.product_id ?? '',
@@ -574,7 +580,7 @@ function SOEditForm({ order, onSubmit, onCancel, isPending, error }: {
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Discount Amount (Bs.)</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Discount Amount ({code})</label>
           <input type="number" min="0" step="0.01" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
             value={form.discount_amount} onChange={e => setForm(p => ({ ...p, discount_amount: e.target.value }))} />
         </div>
@@ -600,7 +606,7 @@ function SOEditForm({ order, onSubmit, onCancel, isPending, error }: {
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Product</th>
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 w-44">Variant</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-20">Qty</th>
-                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Price (Bs.)</th>
+                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Price ({code})</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-24">Total</th>
                 <th className="w-10" />
               </tr>
@@ -643,7 +649,7 @@ function SOEditForm({ order, onSubmit, onCancel, isPending, error }: {
                         value={line.unit_price} onChange={e => updateLine(i, 'unit_price', e.target.value)} />
                     </td>
                     <td className="px-3 py-2 text-right text-xs font-medium text-gray-700">
-                      Bs. {((Number(line.quantity) || 0) * (Number(line.unit_price) || 0)).toLocaleString()}
+                      {money((Number(line.quantity) || 0) * (Number(line.unit_price) || 0))}
                     </td>
                     <td className="px-3 py-2">
                       {lines.length > 1 && (
@@ -659,19 +665,19 @@ function SOEditForm({ order, onSubmit, onCancel, isPending, error }: {
                 <>
                   <tr>
                     <td colSpan={4} className="px-3 py-1.5 text-right text-xs text-gray-500">Subtotal:</td>
-                    <td className="px-3 py-1.5 text-right text-xs text-gray-600">Bs. {subtotal.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right text-xs text-gray-600">{money(subtotal)}</td>
                     <td />
                   </tr>
                   <tr>
                     <td colSpan={4} className="px-3 py-1.5 text-right text-xs text-red-500">Discount:</td>
-                    <td className="px-3 py-1.5 text-right text-xs text-red-500">-Bs. {discount.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right text-xs text-red-500">-{money(discount)}</td>
                     <td />
                   </tr>
                 </>
               )}
               <tr>
                 <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-gray-700">Total:</td>
-                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">Bs. {total.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">{money(total)}</td>
                 <td />
               </tr>
             </tfoot>
@@ -716,6 +722,7 @@ function ARPayModal({ order, onClose, onSuccess }: { order: any; onClose: () => 
   const [accountCode, setAccountCode] = useState('1102');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+  const { money } = useMoney();
 
   const pay = useMutation({
     mutationFn: () => api.post(`/sales/orders/${order.id}/pay`, { payment_date: paymentDate, account_code: accountCode, notes: notes || undefined }),
@@ -733,7 +740,7 @@ function ARPayModal({ order, onClose, onSuccess }: { order: any; onClose: () => 
             </div>
             <div>
               <h2 className="text-base font-bold text-gray-900">Collect Payment</h2>
-              <p className="text-xs text-gray-500 font-mono">{order.order_number} · Bs. {Number(order.total_amount).toLocaleString()}</p>
+              <p className="text-xs text-gray-500 font-mono">{order.order_number} · {money(order.total_amount)}</p>
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
@@ -781,6 +788,7 @@ function ARPayModal({ order, onClose, onSuccess }: { order: any; onClose: () => 
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function SalesOrdersPage() {
+  const { money } = useMoney();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [formError, setFormError] = useState('');
@@ -975,7 +983,7 @@ export default function SalesOrdersPage() {
                   <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{new Date(order.created_at).toLocaleString()}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs font-mono">{order.created_by ? order.created_by.substring(0, 8) : '—'}</td>
                   <td className="px-4 py-3 text-right font-medium text-gray-900">
-                    Bs. {Number(order.total_amount).toLocaleString()}
+                    {money(order.total_amount)}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">

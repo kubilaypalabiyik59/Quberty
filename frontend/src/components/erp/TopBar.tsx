@@ -4,6 +4,10 @@ import { useAuthStore } from '@/stores/authStore';
 import { useRouter, usePathname } from 'next/navigation';
 import { Search, Bell, LogOut, Settings, User, ChevronDown, Package, ShoppingCart, Truck, FileText, UserPlus, X } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle } from 'lucide-react';
+import { api } from '@/lib/api';
+import { can } from '@/lib/access';
 
 const PATH_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -18,6 +22,10 @@ const PATH_TITLES: Record<string, string> = {
   '/procurement/rfq': 'Requests for Quotation',
   '/purchase/orders': 'Purchase Orders',
   '/purchase/suppliers': 'Suppliers',
+  '/purchase/payments': 'Vendor Payments',
+  '/purchase/returns': 'Supplier Returns',
+  '/purchase/credits': 'Supplier Credits',
+  '/purchase/setup/payment-methods': 'Payment Methods',
   '/inventory/stock': 'Inventory',
   '/inventory/transactions': 'Transactions',
   '/inventory/counting': 'Counting',
@@ -34,6 +42,8 @@ const PATH_TITLES: Record<string, string> = {
   '/finance/balance-sheet': 'Balance Sheet',
   '/finance/aging': 'Aging Report',
   '/finance/periods': 'Accounting Periods',
+  '/finance/exchange-rates': 'Exchange Rates',
+  '/setup/finance/currencies': 'Currencies',
   '/finance/bank-reconciliation': 'Bank Reconciliation',
   '/reports': 'Reports',
   '/hr': 'HR',
@@ -84,6 +94,21 @@ export function TopBar() {
   const avatarRef = useRef<HTMLDivElement>(null);
 
   const fullName = `${user?.first_name ?? ''} ${user?.last_name ?? ''}`.trim() || 'User';
+
+  // Notifications are live conditions, not a log: today, the products at or
+  // below their reorder point. Because it is the current state, a product that
+  // stays low is one line, not a new alert on every stock movement. A persisted
+  // inbox with read state is the next step when events (approvals, payments)
+  // join it.
+  const seesStock = can(user?.permissions, 'inventory.stock.read');
+  const { data: lowStock } = useQuery<Array<{ id: string; name: string; sku: string; available: number; reorder_point: number }>>({
+    queryKey: ['low-stock'],
+    queryFn: () => api.get('/inventory/low-stock').then(r => r.data.data ?? []),
+    enabled: seesStock,
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
+  const alerts = seesStock ? (lowStock ?? []) : [];
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -188,6 +213,11 @@ export function TopBar() {
             className={`p-1.5 rounded-lg transition-colors relative ${bellOpen ? 'bg-gray-100 text-gray-700' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'}`}
           >
             <Bell className="h-4 w-4" />
+            {alerts.length > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white">
+                {alerts.length > 99 ? '99+' : alerts.length}
+              </span>
+            )}
           </button>
           {bellOpen && (
             <div className="absolute right-0 top-10 w-72 bg-white border border-gray-200 rounded-xl shadow-xl z-50">
@@ -195,11 +225,43 @@ export function TopBar() {
                 <p className="text-sm font-semibold text-gray-800">Notifications</p>
                 <button onClick={() => setBellOpen(false)} className="text-gray-400 hover:text-gray-600"><X className="h-4 w-4" /></button>
               </div>
-              <div className="p-6 text-center">
-                <Bell className="h-8 w-8 text-gray-200 mx-auto mb-2" />
-                <p className="text-sm text-gray-400">No notifications yet</p>
-                <p className="text-xs text-gray-300 mt-1">You're all caught up!</p>
-              </div>
+              {alerts.length === 0 ? (
+                <div className="p-6 text-center">
+                  <Bell className="h-8 w-8 text-gray-200 mx-auto mb-2" />
+                  <p className="text-sm text-gray-400">No notifications</p>
+                  <p className="text-xs text-gray-300 mt-1">You're all caught up!</p>
+                </div>
+              ) : (
+                <div>
+                  <p className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                    Low stock · {alerts.length}
+                  </p>
+                  <ul className="max-h-72 overflow-y-auto">
+                    {alerts.slice(0, 8).map(a => (
+                      <li key={a.id}>
+                        <button
+                          onClick={() => { router.push('/inventory/low-stock'); setBellOpen(false); }}
+                          className="w-full flex items-start gap-2.5 px-4 py-2.5 text-left hover:bg-gray-50"
+                        >
+                          <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${a.available === 0 ? 'text-red-500' : 'text-amber-500'}`} />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm text-gray-800">{a.name}</span>
+                            <span className="block text-xs text-gray-400">
+                              {a.available === 0 ? 'Out of stock' : `${a.available} left`} · reorder at {a.reorder_point}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    onClick={() => { router.push('/inventory/low-stock'); setBellOpen(false); }}
+                    className="w-full border-t border-gray-100 px-4 py-2.5 text-center text-xs font-medium text-blue-600 hover:bg-gray-50"
+                  >
+                    View all low stock
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -9,6 +9,8 @@ import {
   Target, ClipboardList,
 } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
+import { useAuthStore } from '@/stores/authStore';
+import { can } from '@/lib/access';
 import { useState, useEffect, useRef } from 'react';
 
 const NAV = [
@@ -27,7 +29,7 @@ const NAV = [
           { href: '/products', label: 'All Products' },
           { href: '/products/variants', label: 'Variant Types' },
           { href: '/products/categories', label: 'Categories' },
-          { href: '/products/setup', label: 'Financial Setup' },
+          { href: '/products/setup', label: 'Financial Setup', permission: 'product.setup.read' },
         ],
       },
       // Prospect to Quote (85) — the documents in front of the sales order.
@@ -43,6 +45,8 @@ const NAV = [
           { href: '/sales/quotations', label: 'Quotations' },
           { href: '/sales/orders', label: 'Orders' },
           { href: '/sales/customers', label: 'Customers' },
+          { href: '/sales/register-sessions', label: 'Register Sessions' },
+          { href: '/sales/payment-methods', label: 'Payment Methods' },
         ],
       },
       // Source to Pay (75) upstream — requisition and tender, before the order.
@@ -59,7 +63,11 @@ const NAV = [
           // the documents are actually raised.
           { href: '/purchase/receipts', label: 'Product Receipts' },
           { href: '/purchase/invoices', label: 'Vendor Invoices' },
+          { href: '/purchase/returns', label: 'Supplier Returns' },
+          { href: '/purchase/credits', label: 'Supplier Credits' },
+          { href: '/purchase/payments', label: 'Vendor Payments' },
           { href: '/purchase/suppliers', label: 'Suppliers' },
+          { href: '/purchase/setup/payment-methods', label: 'Payment Methods' },
         ],
       },
     ],
@@ -73,6 +81,7 @@ const NAV = [
           { href: '/inventory/low-stock', label: 'Low Stock' },
           { href: '/inventory/transactions', label: 'Transactions' },
           { href: '/inventory/counting', label: 'Counting' },
+          { href: '/inventory/journals', label: 'Inventory Journals' },
           { href: '/inventory/transfers', label: 'Transfers' },
         ],
       },
@@ -99,6 +108,7 @@ const NAV = [
           { href: '/finance/balance-sheet', label: 'Balance Sheet' },
           { href: '/finance/aging', label: 'Aging Report' },
           { href: '/finance/periods', label: 'Accounting Periods' },
+          { href: '/finance/exchange-rates', label: 'Exchange Rates' },
           { href: '/finance/bank-reconciliation', label: 'Bank Reconciliation' },
         ],
       },
@@ -120,6 +130,7 @@ const NAV = [
           { href: '/hr/payroll', label: 'Payroll' },
         ],
       },
+      { href: '/settings/users', icon: Users, label: 'Users & Roles', permission: 'admin:all' },
       { href: '/audit', icon: ShieldCheck, label: 'Audit Log' },
       { href: '/settings', icon: Settings, label: 'Settings' },
       {
@@ -127,8 +138,9 @@ const NAV = [
           { href: '/setup', label: 'Overview' },
           { href: '/setup/organisation', label: 'Organisation' },
           { href: '/setup/finance', label: 'Financial Dimensions' },
+          { href: '/setup/finance/currencies', label: 'Currencies' },
           { href: '/setup/warehouse', label: 'Warehouse' },
-          { href: '/products/setup', label: 'Products' },
+          { href: '/products/setup', label: 'Products', permission: 'product.setup.read' },
           { href: '/setup/wizard', label: 'New company wizard' },
         ],
       },
@@ -147,6 +159,13 @@ const SHORTCUTS = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  // A link that names a permission is shown only to those who hold it, so a
+  // user is not sent to a page that answers 403. The server still decides.
+  const permissions = useAuthStore((st) => st.user?.permissions);
+  const visible = (entry: object) => {
+    const needed = (entry as { permission?: string }).permission;
+    return !needed || can(permissions, needed);
+  };
   const { theme, resolved, setTheme } = useTheme();
   const [helpOpen,    setHelpOpen]    = useState(false);
   const helpRef = useRef<HTMLDivElement>(null);
@@ -224,7 +243,7 @@ export function Sidebar() {
               {section.label}
             </p>
             <ul className="space-y-0.5">
-              {section.items.map((item) => {
+              {section.items.filter(visible).map((item) => {
                 const Icon = item.icon;
                 const isActive = pathname.startsWith(item.href);
                 const hasChildren = 'children' in item && item.children;
@@ -263,7 +282,7 @@ export function Sidebar() {
 
                     {hasChildren && isExpanded && (
                       <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-border pl-3">
-                        {(item as any).children.map((child: any) => (
+                        {(item as any).children.filter(visible).map((child: any) => (
                           <li key={child.href}>
                             <Link
                               href={child.href}

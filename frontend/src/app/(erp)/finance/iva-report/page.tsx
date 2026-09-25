@@ -5,11 +5,13 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { BarChart3, Download } from 'lucide-react';
 import { IvaReportPDFButton } from '@/components/erp/finance/IvaReportPDFButton';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
 
 export default function IvaReportPage() {
+  const { money } = useMoney();
   const currentDate = new Date();
   const [year, setYear] = useState(currentDate.getFullYear());
   const [month, setMonth] = useState(currentDate.getMonth() + 1);
@@ -69,7 +71,7 @@ export default function IvaReportPage() {
           ].map(card => (
             <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-4">
               <p className="text-xs text-gray-500 font-medium mb-1">{card.label}</p>
-              <p className={`text-xl font-bold ${card.color}`}>Bs. {card.value.toFixed(2)}</p>
+              <p className={`text-xl font-bold ${card.color}`}>{money(card.value)}</p>
             </div>
           ))}
         </div>
@@ -109,10 +111,10 @@ export default function IvaReportPage() {
                 <td className="px-4 py-2 text-xs text-gray-500">{new Date(f.invoice_date).toLocaleDateString()}</td>
                 <td className="px-4 py-2 text-gray-900">{f.customer_name}</td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-400">{f.customer_nit ?? '—'}</td>
-                <td className="px-4 py-2 text-right">Bs. {Number(f.subtotal).toFixed(2)}</td>
-                <td className="px-4 py-2 text-right text-blue-600">Bs. {Number(f.iva_amount).toFixed(2)}</td>
-                <td className="px-4 py-2 text-right text-orange-600">Bs. {Number(f.it_amount).toFixed(2)}</td>
-                <td className="px-4 py-2 text-right font-bold">Bs. {Number(f.total_amount).toFixed(2)}</td>
+                <td className="px-4 py-2 text-right">{money(f.subtotal)}</td>
+                <td className="px-4 py-2 text-right text-blue-600">{money(f.iva_amount)}</td>
+                <td className="px-4 py-2 text-right text-orange-600">{money(f.it_amount)}</td>
+                <td className="px-4 py-2 text-right font-bold">{money(f.total_amount)}</td>
               </tr>
             ))}
           </tbody>
@@ -126,16 +128,16 @@ export default function IvaReportPage() {
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-red-50 rounded-lg p-3 text-center">
               <p className="text-xs text-red-600 font-semibold mb-1">Débito Fiscal (Sales)</p>
-              <p className="text-lg font-bold text-red-700">Bs. {ivaNet.debito_fiscal.toFixed(2)}</p>
+              <p className="text-lg font-bold text-red-700">{money(ivaNet.debito_fiscal)}</p>
             </div>
             <div className="bg-green-50 rounded-lg p-3 text-center">
               <p className="text-xs text-green-600 font-semibold mb-1">Crédito Fiscal (Purchases)</p>
-              <p className="text-lg font-bold text-green-700">Bs. {ivaNet.credito_fiscal.toFixed(2)}</p>
+              <p className="text-lg font-bold text-green-700">{money(ivaNet.credito_fiscal)}</p>
             </div>
             <div className={`rounded-lg p-3 text-center ${ivaNet.net_payable >= 0 ? 'bg-orange-50' : 'bg-blue-50'}`}>
               <p className={`text-xs font-semibold mb-1 ${ivaNet.net_payable >= 0 ? 'text-orange-600' : 'text-blue-600'}`}>Net IVA Payable to SIN</p>
               <p className={`text-lg font-bold ${ivaNet.net_payable >= 0 ? 'text-orange-700' : 'text-blue-700'}`}>
-                Bs. {ivaNet.net_payable.toFixed(2)}
+                {money(ivaNet.net_payable)}
               </p>
               <p className="text-xs text-gray-400 mt-0.5">{ivaNet.net_payable >= 0 ? 'You owe the government' : 'Credit in your favour'}</p>
             </div>
@@ -166,10 +168,10 @@ export default function IvaReportPage() {
                   <td className="px-4 py-2 font-mono text-xs text-gray-400">{a.code}</td>
                   <td className="px-4 py-2 font-medium text-gray-900">{a.name}</td>
                   <td className="px-4 py-2 text-xs text-gray-500">{a.type}</td>
-                  <td className="px-4 py-2 text-right text-xs">{a.total_debit > 0 ? `Bs. ${a.total_debit.toFixed(2)}` : '—'}</td>
-                  <td className="px-4 py-2 text-right text-xs">{a.total_credit > 0 ? `Bs. ${a.total_credit.toFixed(2)}` : '—'}</td>
+                  <td className="px-4 py-2 text-right text-xs">{a.total_debit > 0 ? money(a.total_debit) : '—'}</td>
+                  <td className="px-4 py-2 text-right text-xs">{a.total_credit > 0 ? money(a.total_credit) : '—'}</td>
                   <td className={`px-4 py-2 text-right font-bold text-xs ${a.balance > 0 ? 'text-blue-600' : a.balance < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                    Bs. {a.balance.toFixed(2)}
+                    {money(a.balance)}
                   </td>
                 </tr>
               ))}

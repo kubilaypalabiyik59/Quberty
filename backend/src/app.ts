@@ -12,6 +12,7 @@ import { errorHandler }    from './shared/middleware/errorHandler';
 import { tenantMiddleware } from './shared/middleware/tenantMiddleware';
 import { authMiddleware }   from './shared/middleware/authMiddleware';
 import { auditLog }         from './shared/middleware/auditLog';
+import { workforceGate }     from './shared/middleware/workforceGate';
 import { logger }           from './shared/logger';
 import { db }               from './infrastructure/database/client';
 import type { AppEnv }      from './shared/context';
@@ -33,13 +34,18 @@ import tenantRoutes         from './modules/tenants/tenant.routes';
 import variantTypeRoutes    from './modules/inventory/variant-types.routes';
 import uomRoutes            from './modules/inventory/uom.routes';
 import inventoryCountRoutes from './modules/inventory/inventory-count.routes';
+import inventoryJournalRoutes from './modules/inventory/inventory-journal.routes';
+import salesPaymentMethodRoutes from './modules/sales/salesPaymentMethod.routes';
 import financeRoutes        from './modules/finance/finance.routes';
+import currencyRoutes       from './modules/finance/currency.routes';
 import posRoutes            from './modules/pos/pos.routes';
 import auditRoutes          from './modules/audit/audit.routes';
 // Process front ends — the documents before the order (migration 005).
 import crmRoutes            from './modules/crm/crm.routes';
 import quotationRoutes      from './modules/sales/quotation.routes';
 import procurementRoutes    from './modules/purchase/procurement.routes';
+import publicCatalogRoutes  from './modules/storefront/publicCatalog.routes';
+import attachmentRoutes     from './modules/attachments/attachment.routes';
 
 const app = new Hono<AppEnv>();
 
@@ -155,8 +161,12 @@ app.get('/api/docs/spec', (c) => c.json(openApiSpec));
 app.get('/api/docs', swaggerUI({ url: '/api/docs/spec' }));
 
 // ── Public routes (no tenant/auth required) ───────────────────────────────────
+// Tenant administration is NOT public: it is mounted below as /tenant, inside
+// tenant + auth middleware. Tenants are created by the operator CLI only.
 app.route('/api/v1/auth',    authRoutes);
-app.route('/api/v1/tenants', tenantRoutes);
+// The storefront catalogue a visitor browses before signing in: read-only,
+// published products, tenant named by slug (no stock quantities, no costs).
+app.route('/api/v1/storefront', publicCatalogRoutes);
 
 // ── Tenant-scoped routes ──────────────────────────────────────────────────────
 const v1 = new Hono<AppEnv>();
@@ -164,6 +174,9 @@ v1.use('*', tenantMiddleware);
 
 // Audit all write operations on authenticated routes
 v1.use('*', authMiddleware, auditLog);
+// Storefront accounts and unknown roles reach only the storefront surface; every
+// other route is refused here, before its own guard (WORK-030a).
+v1.use('*', workforceGate);
 
 v1.route('/products',         productRoutes);
 v1.route('/inventory',        inventoryRoutes);
@@ -172,6 +185,7 @@ v1.route('/warehouse',        warehouseRoutes);
 // Registered BEFORE /sales/orders so the more specific prefix wins regardless
 // of how the router resolves overlapping mounts.
 v1.route('/sales/quotations', quotationRoutes);
+v1.route('/sales/payment-methods', salesPaymentMethodRoutes);
 v1.route('/sales/orders',     salesRoutes);
 v1.route('/crm',              crmRoutes);
 // Source to Pay upstream: requisitions and RFQs, before the purchase order.
@@ -184,10 +198,15 @@ v1.route('/import',           importRoutes);
 v1.route('/variant-types',    variantTypeRoutes);
 v1.route('/uom',              uomRoutes);
 v1.route('/inventory-counts', inventoryCountRoutes);
+v1.route('/inventory-journals', inventoryJournalRoutes);
+v1.route('/finance',          currencyRoutes);
 v1.route('/finance',          financeRoutes);
 v1.route('/pos',              posRoutes);
 v1.route('/audit',            auditRoutes);
+// Files on business documents; each route checks the parent document's permission.
+v1.route('/attachments',      attachmentRoutes);
 v1.route('/setup',            setupRoutes);
+v1.route('/tenant',           tenantRoutes);
 
 app.route('/api/v1', v1);
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useCartStore } from '@/stores/cartStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useMoney } from '@/components/CurrencyProvider';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, CheckCircle, Lock } from 'lucide-react';
@@ -12,6 +13,7 @@ const IVA_RATE = 0.13;
 export default function CheckoutPage() {
   const { items, totalAmount, checkout, isCheckingOut } = useCartStore();
   const { user } = useAuthStore();
+  const { money } = useMoney();
   const router = useRouter();
   const [order, setOrder] = useState<{ order_id: string; order_number: string } | null>(null);
   const [error, setError] = useState('');
@@ -120,21 +122,21 @@ export default function CheckoutPage() {
             {items.map(item => (
               <div key={`${item.product_id}-${item.variant_id}`} className="flex justify-between text-sm">
                 <span className="text-gray-600">{item.name} × {item.quantity}</span>
-                <span className="font-medium">Bs. {(item.price * item.quantity).toLocaleString()}</span>
+                <span className="font-medium">{money(item.price * item.quantity)}</span>
               </div>
             ))}
             <div className="border-t border-gray-200 pt-3 space-y-2">
               <div className="flex justify-between text-sm text-gray-500">
                 <span>Subtotal (IVA incl.)</span>
-                <span>Bs. {grandTotal.toLocaleString()}</span>
+                <span>{money(grandTotal)}</span>
               </div>
               <div className="flex justify-between text-sm text-gray-500">
                 <span>IVA 13% (incluido)</span>
-                <span>Bs. {ivaAmount.toFixed(2)}</span>
+                <span>{money(ivaAmount)}</span>
               </div>
               <div className="flex justify-between font-bold text-gray-900 text-lg pt-1">
                 <span>Total</span>
-                <span>Bs. {grandTotal.toLocaleString()}</span>
+                <span>{money(grandTotal)}</span>
               </div>
             </div>
             <p className="text-xs text-gray-400 pt-1">Precios incluyen IVA 13% según ley boliviana.</p>

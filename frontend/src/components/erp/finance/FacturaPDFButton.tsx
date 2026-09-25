@@ -16,6 +16,7 @@ const BlobProvider = dynamic(
 
 // FacturaPDF is also dynamic since it imports from @react-pdf/renderer
 import { FacturaPDF } from './FacturaPDF';
+import { useMoney } from '@/components/CurrencyProvider';
 
 interface Props {
   factura: any;
@@ -23,7 +24,15 @@ interface Props {
 }
 
 export function FacturaPDFButton({ factura, variant = 'both' }: Props) {
-  const doc = <FacturaPDF factura={factura} />;
+  // A react-pdf document cannot read context, so the currency is resolved here.
+  // No document is offered until it is known — printing a legal invoice with a
+  // guessed currency is the failure this prevents (WORK-025).
+  const { currency } = useMoney();
+  if (!currency) {
+    return <span className="text-xs text-gray-400 px-2 py-1">Loading currency…</span>;
+  }
+
+  const doc = <FacturaPDF factura={factura} currency={currency} />;
   const fileName = `Factura-${factura.factura_number}.pdf`;
 
   return (

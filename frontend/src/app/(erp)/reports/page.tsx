@@ -7,18 +7,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell
 } from 'recharts';
 import { useChartTokens } from '@/lib/chartTokens';
-
-/**
- * ⚠️ Every figure on this page used to be rendered with `₺` — Turkish lira, on a
- * Bolivian tenant. A leftover from the template this repo started life as, in
- * the same family as `PurchaseOrder.currency` defaulting to `TRY`.
- *
- * This is one hardcode replacing six, not a fix. The real fix is a tenant
- * currency read from configuration; it is not done here because there is still
- * no exchange-rate table and no single owner of "what currency is this tenant
- * in". Tracked with the other currency-default leftovers in HANDOVER §6.
- */
-const CURRENCY = 'Bs.';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * An empty chart area, with the reason stated.
@@ -38,6 +27,14 @@ function EmptyChart({ children }: { children: ReactNode }) {
 
 export default function ReportsPage() {
   const t = useChartTokens();
+  /**
+   * Every figure here was once rendered with `₺` — Turkish lira on a Bolivian
+   * tenant, a leftover from the template this repo started from. It was then
+   * replaced by a single `Bs.` constant, which was one hardcode standing in for
+   * six. It now comes from the ledger, which is the owner of "what currency is
+   * this tenant in" that the earlier note said did not yet exist (WORK-025).
+   */
+  const { money, code } = useMoney();
   const currentYear = new Date().getFullYear();
   const [from, setFrom] = useState(`${currentYear}-01-01`);
   const [to, setTo] = useState(`${currentYear}-12-31`);
@@ -133,9 +130,9 @@ export default function ReportsPage() {
             <CartesianGrid strokeDasharray="3 3" stroke={t.grid} vertical={false} />
             <XAxis dataKey="month" tick={{ fontSize: 12, fill: t.axis }} tickLine={false} axisLine={false} />
             <YAxis tick={{ fontSize: 12, fill: t.axis }} tickLine={false} axisLine={false}
-              tickFormatter={(v) => `${CURRENCY}${(v / 1000).toFixed(0)}k`} />
+              tickFormatter={(v) => `${code} ${(v / 1000).toFixed(0)}k`} />
             <Tooltip
-              formatter={(v: number) => [`${CURRENCY} ${v.toLocaleString()}`, 'Revenue']}
+              formatter={(v: number) => [money(v), 'Revenue']}
               contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 'var(--radius-control)', color: t.fg, fontSize: 12 }}
               labelStyle={{ color: t.fgMuted }}
               cursor={{ fill: t.cursor }}
@@ -204,7 +201,7 @@ export default function ReportsPage() {
                 ))}
               </Pie>
               <Tooltip
-                formatter={(v: number) => `${CURRENCY} ${v.toLocaleString()}`}
+                formatter={(v: number) => money(v)}
                 contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 'var(--radius-control)', color: t.fg, fontSize: 12 }}
               />
             </PieChart>
@@ -236,9 +233,9 @@ export default function ReportsPage() {
                     <div className="text-gray-400 text-xs">{p.sku}</div>
                   </td>
                   <td className="py-3 px-2 text-right">{p.units_sold}</td>
-                  <td className="py-3 px-2 text-right">{CURRENCY}{Number(p.revenue).toLocaleString()}</td>
-                  <td className="py-3 px-2 text-right">{CURRENCY}{Number(p.cogs ?? 0).toLocaleString()}</td>
-                  <td className="py-3 px-2 text-right text-green-600">{CURRENCY}{Number(p.gross_profit ?? 0).toLocaleString()}</td>
+                  <td className="py-3 px-2 text-right">{money(p.revenue)}</td>
+                  <td className="py-3 px-2 text-right">{money(p.cogs ?? 0)}</td>
+                  <td className="py-3 px-2 text-right text-green-600">{money(p.gross_profit ?? 0)}</td>
                   <td className="py-3 px-2 text-right">
                     <span className={`font-medium ${Number(p.margin_pct) > 30 ? 'text-green-600' : 'text-yellow-600'}`}>
                       {p.margin_pct}%

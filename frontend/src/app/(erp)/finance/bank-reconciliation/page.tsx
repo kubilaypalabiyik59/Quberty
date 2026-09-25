@@ -4,11 +4,11 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { CheckCircle, XCircle, Landmark } from 'lucide-react';
-
-const fmt = (n: number) =>
-  n.toLocaleString('es-BO', { style: 'currency', currency: 'BOB', minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
 
 export default function BankReconciliationPage() {
+  // The ledger's currency and the tenant's locale, not Bolivia's (WORK-025).
+  const { money: fmt, code, locale } = useMoney();
   const today = new Date();
   const [year, setYear]   = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth() + 1);
@@ -67,13 +67,13 @@ export default function BankReconciliationPage() {
           >
             {Array.from({ length: 12 }, (_, i) => (
               <option key={i + 1} value={i + 1}>
-                {new Date(2000, i).toLocaleString('es-BO', { month: 'long' })}
+                {new Date(2000, i).toLocaleString(locale, { month: 'long' })}
               </option>
             ))}
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Bank Statement Balance (BOB)</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Bank Statement Balance ({code})</label>
           <input
             type="number"
             step="0.01"
@@ -154,7 +154,7 @@ export default function BankReconciliationPage() {
                   {data.ledger.map((row: any, i: number) => (
                     <tr key={i} className="hover:bg-gray-50">
                       <td className="px-4 py-2 font-mono text-xs text-gray-600">{row.entry_number}</td>
-                      <td className="px-4 py-2 text-gray-600">{new Date(row.entry_date).toLocaleDateString('es-BO')}</td>
+                      <td className="px-4 py-2 text-gray-600">{new Date(row.entry_date).toLocaleDateString(locale)}</td>
                       <td className="px-4 py-2 text-gray-800">
                         <div>{row.description}</div>
                         {row.line_description && <div className="text-xs text-gray-400">{row.line_description}</div>}

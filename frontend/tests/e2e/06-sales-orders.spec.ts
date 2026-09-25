@@ -49,7 +49,7 @@ test.describe('Sales Orders — UI', () => {
     await page.getByRole('main').getByRole('button', { name: 'New Order' }).click();
     await expect(page.getByText('Customer', { exact: true })).toBeVisible();
     await expect(page.getByText('Warehouse (for stock picking)')).toBeVisible();
-    await expect(page.getByText('Discount Amount (Bs.)')).toBeVisible();
+    await expect(page.getByText(/^Discount Amount/)).toBeVisible(); // currency label follows the tenant (WORK-025b)
     await expect(page.getByText('Notes', { exact: true })).toBeVisible();
   });
 

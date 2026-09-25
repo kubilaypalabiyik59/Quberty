@@ -1,31 +1,85 @@
 import { Hono }    from 'hono';
+import { hasPermission, routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
 import { WarehouseService } from './warehouse.service';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import { planLocations, segmentsOf, MAX_LOCATION_NAME, type Segment } from './locationFormat.service';
+import { CreateSiteSchema } from '../../shared/schemas';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
+
+/**
+ * Warehouse structure, work, waves, arrival and setup (WORK-030b). Creating a site
+ * is the admin's (it decides a jurisdiction); everything else in the store's own
+ * warehouse is the store manager's. Workers execute work; they do not configure it.
+ */
+export const WAREHOUSE_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /sites': ['warehouse.structure.read'],
+  'POST /sites': ['warehouse.site.maintain'],
+  'GET /warehouses': ['warehouse.structure.read'],
+  'GET /overview': ['warehouse.structure.read'],
+  'POST /warehouses': ['warehouse.structure.maintain'],
+  'GET /zones': ['warehouse.structure.read'],
+  'POST /zones': ['warehouse.structure.maintain'],
+  'GET /locations': ['warehouse.structure.read'],
+  'POST /locations': ['warehouse.structure.maintain'],
+  'POST /locations/bulk': ['warehouse.structure.maintain'],
+  'GET /work': ['warehouse.work.read'],
+  'POST /work/:id/start': ['warehouse.work.execute'],
+  'POST /work/:id/lines/:lineId/complete': ['warehouse.work.execute'],
+  'GET /waves': ['warehouse.wave.read'],
+  'POST /waves/:id/release': ['warehouse.wave.release'],
+  'GET /arrival-journals': ['warehouse.arrival.read'],
+  'POST /arrival-journals': ['warehouse.arrival.create'],
+  'POST /arrival-journals/:id/post': ['warehouse.arrival.post'],
+  // Quick setup creates a site, so it needs the site duty as well (S-8).
+  'POST /setup': ['warehouse.setup.maintain', 'warehouse.site.maintain'],
+  'GET /location-directives': ['warehouse.setup.read'],
+  'POST /location-directives': ['warehouse.setup.maintain'],
+  'GET /parameters': ['warehouse.setup.read'],
+  'PUT /parameters/:warehouseId': ['warehouse.setup.maintain'],
+  'POST /location-directives/:id/lines': ['warehouse.setup.maintain'],
+  'DELETE /location-directives/:id': ['warehouse.setup.maintain'],
+} satisfies RouteGuards);
+
+const guard = routeGuard(WAREHOUSE_ROUTE_PERMISSIONS);
 const warehouseService = new WarehouseService();
 
 // ── Sites ─────────────────────────────────────────────────────────────────────
 
-app.get('/sites', async (c) => {
+app.get('/sites', guard('GET /sites'), async (c) => {
   const sites = await db.site.findMany({ where: { tenant_id: c.get('tenantId') }, orderBy: { name: 'asc' } });
   return ok(c, sites);
 });
 
-app.post('/sites', requireRole('admin'), async (c) => {
-  const body = await c.req.json();
-  const site = await db.site.create({ data: { ...body, tenant_id: c.get('tenantId') } });
+app.post('/sites', guard('POST /sites'), async (c) => {
+  // An allow-list rather than a body spread, and a real country: the tenant's
+  // jurisdiction is read from its sites, and a jurisdiction decides which
+  // statutory chart of accounts the company is provisioned with (WORK-025a).
+  const parsed = CreateSiteSchema.safeParse(await c.req.json());
+  if (!parsed.success) {
+    throw new AppError(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '), 400, 'VALIDATION_ERROR');
+  }
+  // Listed field by field rather than spread: `strictNullChecks` is off, so zod
+  // infers every key as optional and a spread would let a missing required column
+  // through the type checker.
+  const { code, name, city, country, address, is_active } = parsed.data;
+  const site = await db.site.create({
+    data: {
+      tenant_id: c.get('tenantId'),
+      code: code!, name: name!, city: city!, country: country!,
+      address: address ?? null,
+      ...(is_active !== undefined ? { is_active } : {}),
+    },
+  });
   return created(c, site);
 });
 
 // ── Warehouses ────────────────────────────────────────────────────────────────
 
-app.get('/warehouses', async (c) => {
+app.get('/warehouses', guard('GET /warehouses'), async (c) => {
   const warehouses = await db.warehouse.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: {
@@ -60,7 +114,7 @@ app.get('/warehouses', async (c) => {
  * many locations each zone actually has, and whether stock is sitting in a
  * warehouse nobody sells from.
  */
-app.get('/overview', async (c) => {
+app.get('/overview', guard('GET /overview'), async (c) => {
   const tenantId = c.get('tenantId');
 
   const [warehouses, params, stock] = await Promise.all([
@@ -112,7 +166,7 @@ app.get('/overview', async (c) => {
   });
 });
 
-app.post('/warehouses', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/warehouses', guard('POST /warehouses'), async (c) => {
   const { code, name, type, site_id, site_name, site_city, site_country, create_site } = await c.req.json();
   if (!code || !name) throw new AppError('code and name are required');
 
@@ -134,12 +188,20 @@ app.post('/warehouses', requireRole('admin', 'store_manager'), async (c) => {
         422,
       );
     }
+    // Creating a site decides a jurisdiction, which is the admin's duty (S-8) —
+    // the same rule as POST /sites, not a side door around it.
+    if (!hasPermission(c.get('user').role, 'warehouse.site.maintain')) {
+      throw new AppError('Permission denied: warehouse.site.maintain', 403);
+    }
     if (!site_name || !site_city || !site_country) {
       throw new AppError(
         'Creating a site needs site_name, site_city and site_country. These are not defaulted: ' +
           'a hardcoded city is wrong in every country but one.',
         422,
       );
+    }
+    if (!/^[A-Z]{2}$/.test(String(site_country))) {
+      throw new AppError('site_country must be a 2-letter ISO 3166-1 alpha-2 code', 400, 'SITE_COUNTRY_REQUIRED');
     }
     const siteCode = `SITE-${code}`;
     const existingSite = await db.site.findFirst({ where: { tenant_id: c.get('tenantId'), code: siteCode } });
@@ -173,7 +235,7 @@ app.post('/warehouses', requireRole('admin', 'store_manager'), async (c) => {
 
 // ── Zones ─────────────────────────────────────────────────────────────────────
 
-app.get('/zones', async (c) => {
+app.get('/zones', guard('GET /zones'), async (c) => {
   const { warehouse_id } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (warehouse_id) where.warehouse_id = warehouse_id;
@@ -185,7 +247,7 @@ app.get('/zones', async (c) => {
   return ok(c, zones);
 });
 
-app.post('/zones', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/zones', guard('POST /zones'), async (c) => {
   const { warehouse_id, code, name, zone_type } = await c.req.json();
   if (!warehouse_id || !code || !name) throw new AppError('warehouse_id, code and name are required');
   const zone = await db.warehouseZone.create({
@@ -196,7 +258,7 @@ app.post('/zones', requireRole('admin', 'store_manager'), async (c) => {
 
 // ── Locations ─────────────────────────────────────────────────────────────────
 
-app.get('/locations', async (c) => {
+app.get('/locations', guard('GET /locations'), async (c) => {
   const { zone_id, warehouse_id } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (zone_id) where.zone_id = zone_id;
@@ -204,13 +266,13 @@ app.get('/locations', async (c) => {
 
   const locations = await db.warehouseLocation.findMany({
     where,
-    include: { zone: { select: { name: true, zone_type: true } } },
+    include: { zone: { select: { name: true, zone_type: true, warehouse_id: true } } },
     orderBy: { code: 'asc' },
   });
   return ok(c, locations);
 });
 
-app.post('/locations', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/locations', guard('POST /locations'), async (c) => {
   const { zone_id, code, aisle, rack, shelf, bin, location_type, is_pick_location, is_receive_location } = await c.req.json();
   if (!zone_id || !code) throw new AppError('zone_id and code are required');
   const location = await db.warehouseLocation.create({
@@ -246,7 +308,7 @@ app.post('/locations', requireRole('admin', 'store_manager'), async (c) => {
  * Existing codes are skipped rather than erroring, so re-running after widening
  * a range does the obvious thing instead of failing on the first collision.
  */
-app.post('/locations/bulk', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/locations/bulk', guard('POST /locations/bulk'), async (c) => {
   const body = await c.req.json();
   const { zone_id, segments, location_type, is_pick_location, is_receive_location } = body;
   const dryRun = body.dry_run !== false;
@@ -314,7 +376,7 @@ app.post('/locations/bulk', requireRole('admin', 'store_manager'), async (c) => 
 
 // ── Work ──────────────────────────────────────────────────────────────────────
 
-app.get('/work', async (c) => {
+app.get('/work', guard('GET /work'), async (c) => {
   const { status, warehouse_id, assigned_to } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = { in: status.split(',') };
@@ -338,7 +400,7 @@ app.get('/work', async (c) => {
   return ok(c, work);
 });
 
-app.post('/work/:id/start', async (c) => {
+app.post('/work/:id/start', guard('POST /work/:id/start'), async (c) => {
   const work = await db.warehouseWork.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'OPEN' },
     data: { status: 'IN_PROGRESS', assigned_to: c.get('user').id, started_at: new Date() },
@@ -346,7 +408,7 @@ app.post('/work/:id/start', async (c) => {
   return ok(c, work);
 });
 
-app.post('/work/:id/lines/:lineId/complete', async (c) => {
+app.post('/work/:id/lines/:lineId/complete', guard('POST /work/:id/lines/:lineId/complete'), async (c) => {
   const { quantity_done } = await c.req.json();
   await warehouseService.completeWorkLine(
     c.get('tenantId'),
@@ -358,17 +420,13 @@ app.post('/work/:id/lines/:lineId/complete', async (c) => {
   return ok(c, null);
 });
 
-app.post('/work/:id/complete', async (c) => {
-  await db.warehouseWork.updateMany({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
-    data: { status: 'COMPLETED', completed_at: new Date() },
-  });
-  return ok(c, null);
-});
+// There is deliberately no "complete the whole work" route. It marked work
+// COMPLETED without moving any stock — which also satisfied the picking gate on
+// shipment. Work completes when its last line is completed (WORK-043).
 
 // ── Waves ─────────────────────────────────────────────────────────────────────
 
-app.get('/waves', async (c) => {
+app.get('/waves', guard('GET /waves'), async (c) => {
   const waves = await db.wave.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: { _count: { select: { work: true } } },
@@ -377,14 +435,14 @@ app.get('/waves', async (c) => {
   return ok(c, waves);
 });
 
-app.post('/waves/:id/release', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/waves/:id/release', guard('POST /waves/:id/release'), async (c) => {
   const wave = await warehouseService.releaseWave(c.get('tenantId'), c.req.param('id'));
   return ok(c, wave);
 });
 
 // ── Arrival Journals ──────────────────────────────────────────────────────────
 
-app.get('/arrival-journals', async (c) => {
+app.get('/arrival-journals', guard('GET /arrival-journals'), async (c) => {
   const journals = await db.arrivalJournal.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: { lines: true },
@@ -393,7 +451,7 @@ app.get('/arrival-journals', async (c) => {
   return ok(c, journals);
 });
 
-app.post('/arrival-journals', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/arrival-journals', guard('POST /arrival-journals'), async (c) => {
   const body = await c.req.json();
   const count = await db.arrivalJournal.count({ where: { tenant_id: c.get('tenantId') } });
   const journal = await db.arrivalJournal.create({
@@ -407,7 +465,7 @@ app.post('/arrival-journals', requireRole('admin', 'store_manager'), async (c) =
   return created(c, journal);
 });
 
-app.post('/arrival-journals/:id/post', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/arrival-journals/:id/post', guard('POST /arrival-journals/:id/post'), async (c) => {
   await warehouseService.postArrivalJournal(c.get('tenantId'), c.req.param('id'), c.get('user').id);
   return ok(c, null);
 });
@@ -416,12 +474,23 @@ app.post('/arrival-journals/:id/post', requireRole('admin', 'store_manager'), as
 // Creates a full warehouse structure in one call:
 // Site → Warehouse → 3 Zones (Receiving / Storage / Shipping) → 5 locations each
 
-app.post('/setup', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/setup', guard('POST /setup'), async (c) => {
   const { name = 'Main Warehouse', city = '', country = '', type = 'standard' } = await c.req.json();
   const tenantId = c.get('tenantId');
 
+  // The country is required and real. It used to fall back to 'XX', and since the
+  // tenant's jurisdiction is read from its sites, an invented country would pick a
+  // statutory chart of accounts for the wrong country (WORK-025a).
+  if (!/^[A-Z]{2}$/.test(String(country))) {
+    throw new AppError(
+      'country is required and must be a 2-letter ISO 3166-1 alpha-2 code, e.g. BO or TR.',
+      400,
+      'SITE_COUNTRY_REQUIRED',
+    );
+  }
+
   const site = await db.site.create({
-    data: { tenant_id: tenantId, code: 'SITE-MAIN', name: `${name} Site`, city: city || 'Main City', country: country || 'XX' },
+    data: { tenant_id: tenantId, code: 'SITE-MAIN', name: `${name} Site`, city: city || 'Main City', country },
   });
 
   const warehouse = await db.warehouse.create({
@@ -460,7 +529,7 @@ app.post('/setup', requireRole('admin', 'store_manager'), async (c) => {
 
 // ── Location Directives ───────────────────────────────────────────────────────
 
-app.get('/location-directives', requireRole('admin'), async (c) => {
+app.get('/location-directives', guard('GET /location-directives'), async (c) => {
   const directives = await db.locationDirective.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: { lines: true },
@@ -469,7 +538,7 @@ app.get('/location-directives', requireRole('admin'), async (c) => {
   return ok(c, directives);
 });
 
-app.post('/location-directives', requireRole('admin'), async (c) => {
+app.post('/location-directives', guard('POST /location-directives'), async (c) => {
   const body = await c.req.json();
   const directive = await db.locationDirective.create({
     data: { ...body, tenant_id: c.get('tenantId') },
@@ -486,7 +555,7 @@ app.post('/location-directives', requireRole('admin'), async (c) => {
 // Migration 017 created the table and switched nothing on. This is where a person
 // switches it on, instead of running a script from the repo.
 
-app.get('/parameters', requireRole('admin', 'store_manager'), async (c) => {
+app.get('/parameters', guard('GET /parameters'), async (c) => {
   const warehouses = await db.warehouse.findMany({
     where: { tenant_id: c.get('tenantId') },
     include: {
@@ -540,7 +609,7 @@ app.get('/parameters', requireRole('admin', 'store_manager'), async (c) => {
   return ok(c, rows);
 });
 
-app.put('/parameters/:warehouseId', requireRole('admin', 'store_manager'), async (c) => {
+app.put('/parameters/:warehouseId', guard('PUT /parameters/:warehouseId'), async (c) => {
   const warehouseId = c.req.param('warehouseId');
   const wh = await db.warehouse.findFirst({
     where: { id: warehouseId, tenant_id: c.get('tenantId') },
@@ -603,7 +672,7 @@ app.put('/parameters/:warehouseId', requireRole('admin', 'store_manager'), async
 // Directives get a full editor, including lines — the two-action sequence
 // **[OFFICIAL]** Microsoft prescribes (Consolidate, then Empty location with no
 // incoming work) is not something a person should have to write SQL for.
-app.post('/location-directives/:id/lines', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/location-directives/:id/lines', guard('POST /location-directives/:id/lines'), async (c) => {
   const directive = await db.locationDirective.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
   });
@@ -631,7 +700,7 @@ app.post('/location-directives/:id/lines', requireRole('admin', 'store_manager')
   return created(c, line);
 });
 
-app.delete('/location-directives/:id', requireRole('admin', 'store_manager'), async (c) => {
+app.delete('/location-directives/:id', guard('DELETE /location-directives/:id'), async (c) => {
   const d = await db.locationDirective.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
   });

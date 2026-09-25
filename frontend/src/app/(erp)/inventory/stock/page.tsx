@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/stores/authStore';
+import { apiErrorMessage } from '@/components/erp/Dialog';
 import { Search, SlidersHorizontal, Package, Plus, Minus, X, History } from 'lucide-react';
 import { TransactionsModal } from '@/components/erp/TransactionsModal';
 import { FilterPanel, FilterPanelTrigger, applyFilters } from '@/components/ui/FilterPanel';
@@ -37,6 +39,12 @@ export default function StockPage() {
   const [adjustType,  setAdjustType]  = useState<'add' | 'subtract'>('add');
   const [adjustNote,  setAdjustNote]  = useState('');
   const [adjustError, setAdjustError] = useState('');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjustCost, setAdjustCost] = useState('');
+  const { data: reasonCodes } = useQuery({
+    queryKey: ['inventory-reason-codes'],
+    queryFn: () => api.get('/inventory-journals/reason-codes').then((r) => r.data.data),
+  });
   const [txStock,     setTxStock]     = useState<any | null>(null);
 
   const { data: stock, isLoading } = useQuery({
@@ -50,7 +58,10 @@ export default function StockPage() {
       variant_id: adjustModal.variant_id,
       location_id: adjustModal.location_id,
       quantity: adjustType === 'add' ? Number(adjustQty) : -Number(adjustQty),
-      notes: adjustNote,
+      notes: adjustNote || null,
+      reason_code_id: adjustReason || null,
+      // Adds stock at this cost (blank = the item's newest cost); removals use FIFO cost.
+      unit_cost: adjustType === 'add' && adjustCost !== '' ? Number(adjustCost) : null,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['inventory-stock'] });
@@ -59,7 +70,7 @@ export default function StockPage() {
       setAdjustNote('');
       setAdjustError('');
     },
-    onError: (err: any) => setAdjustError(err.response?.data?.message ?? 'Adjustment failed'),
+    onError: (err: any) => setAdjustError(apiErrorMessage(err, 'Adjustment failed')),
   });
 
   // Enrich rows with _available for filter logic
@@ -212,7 +223,7 @@ export default function StockPage() {
                   <td className="px-4 py-3 text-center">
                     <div className="flex items-center justify-center gap-1.5">
                       <button
-                        onClick={() => { setAdjustModal(s); setAdjustQty(''); setAdjustType('add'); setAdjustNote(''); setAdjustError(''); }}
+                        onClick={() => { setAdjustModal(s); setAdjustQty(''); setAdjustType('add'); setAdjustNote(''); setAdjustError(''); setAdjustReason(''); setAdjustCost(''); }}
                         className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors"
                       >
                         <SlidersHorizontal className="h-3.5 w-3.5" /> Adjust
@@ -282,6 +293,22 @@ export default function StockPage() {
                 onChange={e => setAdjustNote(e.target.value)}
               />
             </div>
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Reason code</label>
+              <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={adjustReason} onChange={e => setAdjustReason(e.target.value)}>
+                <option value="">—</option>
+                {(reasonCodes ?? []).filter((r: any) => r.is_active && (r.direction === 'BOTH' || (adjustType === 'add' ? r.direction === 'INCREASE' : r.direction === 'DECREASE'))).map((r: any) => (
+                  <option key={r.id} value={r.id}>{r.code} — {r.name}</option>
+                ))}
+              </select>
+            </div>
+            {adjustType === 'add' && useAuthStore.getState().user?.role === 'admin' && (
+              <div className="mb-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Unit cost (optional)</label>
+                <input type="number" min="0" step="0.01" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="Blank uses the item's newest cost" value={adjustCost} onChange={e => setAdjustCost(e.target.value)} />
+              </div>
+            )}
+            <p className="text-xs text-gray-500 mb-3">Posts an inventory journal: stock and its value move together (inventory profit or loss).</p>
             {adjustError && <p className="text-sm text-red-600 mb-3">{adjustError}</p>}
             <button
               onClick={() => adjust.mutate()}

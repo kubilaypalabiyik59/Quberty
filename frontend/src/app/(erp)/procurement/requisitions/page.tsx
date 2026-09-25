@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { Dialog, dialogField, apiErrorMessage } from '@/components/erp/Dialog';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * Purchase requisitions — the internal request that comes before the purchase
@@ -17,10 +18,10 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows, ErrorNote } from
  * Whether an approval step exists at all is a tenant parameter, not a code
  * branch: with approval switched off, submitting approves immediately.
  */
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
 const STATUSES = ['', 'DRAFT', 'IN_REVIEW', 'APPROVED', 'REJECTED', 'CLOSED', 'CANCELLED'];
 
 export default function RequisitionsPage() {
+  const { amount: money } = useMoney();
   const qc = useQueryClient();
   const [status, setStatus] = useState('');
   const [creating, setCreating] = useState(false);

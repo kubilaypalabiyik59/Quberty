@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Clock } from 'lucide-react';
 import Link from 'next/link';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const BUCKETS = ['0-30', '31-60', '61-90', '90+'];
 const BUCKET_COLOR: Record<string, string> = {
@@ -15,6 +16,7 @@ const BUCKET_COLOR: Record<string, string> = {
 };
 
 export default function AgingPage() {
+  const { money } = useMoney();
   const [tab, setTab] = useState<'ap' | 'ar'>('ap');
 
   const apQuery = useQuery({
@@ -60,7 +62,7 @@ export default function AgingPage() {
                 <Clock className="h-4 w-4 text-gray-400" />
                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${BUCKET_COLOR[b]}`}>{b} days</span>
               </div>
-              <p className="text-xl font-bold text-gray-900">Bs. {(data.summary[b] ?? 0).toFixed(2)}</p>
+              <p className="text-xl font-bold text-gray-900">{money(data.summary[b] ?? 0)}</p>
             </div>
           ))}
         </div>
@@ -70,7 +72,7 @@ export default function AgingPage() {
       {data && (
         <div className="bg-gray-800 text-white rounded-xl p-4 flex items-center justify-between mb-6">
           <span className="font-semibold">{tab === 'ap' ? 'Total Outstanding AP' : 'Total Outstanding AR'}</span>
-          <span className="text-xl font-bold">Bs. {(data.total ?? 0).toFixed(2)}</span>
+          <span className="text-xl font-bold">{money(data.total ?? 0)}</span>
         </div>
       )}
 
@@ -121,7 +123,7 @@ export default function AgingPage() {
                   </span>
                 </td>
                 <td className="px-4 py-2 text-right font-medium text-gray-900">
-                  Bs. {Number(row.total_amount).toFixed(2)}
+                  {money(row.total_amount)}
                 </td>
               </tr>
             ))}

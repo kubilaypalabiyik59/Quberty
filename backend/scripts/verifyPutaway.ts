@@ -12,10 +12,12 @@
  * restored in a `finally` so a failure halfway cannot leave a tenant configured
  * differently than it was found.
  */
+import 'dotenv/config';
 import { db } from '../src/infrastructure/database/client';
 import { InventoryService } from '../src/modules/inventory/inventory.service';
 import { WarehouseService } from '../src/modules/warehouse/warehouse.service';
 import { AppError } from '../src/shared/errors/AppError';
+import { getLedgerCurrencies } from '../src/shared/services/currency/ledgerCurrency.service';
 
 const inventory = new InventoryService();
 const warehouse = new WarehouseService();
@@ -88,6 +90,7 @@ async function main() {
       data: {
         tenant_id: tenant.id, product_id: product.id, variant_id: null,
         location_id: receiveLoc.id, quantity: 40, unit_cost: 12.5,
+        cost_currency_code: (await getLedgerCurrencies(tenant.id)).accountingCurrency,
         po_number: 'VERIFY-PUTAWAY',
       },
     });
@@ -170,7 +173,9 @@ async function main() {
     try {
       await warehouse.completeWorkLine(tenant.id, work.id, work.lines[0].id, 40, user!.id);
     } catch (err) {
-      refused = err instanceof AppError && (err as any).code === 'WORK_LINE_ALREADY_DONE';
+      // WORK_NOT_OPEN since WORK-043: the work closed with its last line, so a second
+      // completion is refused at the work before it reaches the line.
+      refused = err instanceof AppError && ['WORK_LINE_ALREADY_DONE', 'WORK_NOT_OPEN'].includes((err as any).code);
     }
     check('completing the same line twice is refused', refused,
       'otherwise the stock moves twice');
@@ -191,7 +196,7 @@ async function main() {
     for (const ref of cleanup.txRefs) {
       await db.inventoryTransaction.deleteMany({ where: { reference_number: ref } });
     }
-    await db.inventoryCostLayer.deleteMany({ where: { po_number: 'VERIFY-PUTAWAY' } });
+    await db.inventoryCostLayer.deleteMany({ where: { tenant_id: tenant.id, po_number: 'VERIFY-PUTAWAY' } });
     for (const id of cleanup.workIds) {
       await db.warehouseWorkLine.deleteMany({ where: { work_id: id } });
       await db.warehouseWork.deleteMany({ where: { id } });
@@ -203,7 +208,7 @@ async function main() {
 
   const restored = await db.warehouseParameters.findUnique({ where: { id: params.id } });
   check('warehouse parameters restored', restored?.availability_counts === original.availability_counts);
-  const strayWork = await db.warehouseWork.count({ where: { work_id_code: { startsWith: 'WRK-VERIFY-' } } });
+  const strayWork = await db.warehouseWork.count({ where: { tenant_id: tenant.id, work_id_code: { startsWith: 'WRK-VERIFY-' } } });
   check('no verification work left behind', strayWork === 0, `${strayWork}`);
 
   console.log(`\n${passed} passed, ${failed} failed`);

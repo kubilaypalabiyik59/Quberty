@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { db } from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate } from '../../shared/middleware/validate';
 import { ok, created, paginated } from '../../shared/response';
 import { CreateLeadSchema, QualifyLeadSchema, CreateOpportunitySchema } from '../../shared/schemas';
+import { routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
 import type { AppEnv } from '../../shared/context';
 import {
   createLead,
@@ -26,9 +26,38 @@ import {
  */
 const app = new Hono<AppEnv>();
 
+/**
+ * The permission each route requires (WORK-030a). Exported so a test can pin the
+ * map and prove every route in this file has exactly one entry; the guard is the
+ * first middleware, so a denial happens before validation and before the database.
+ */
+export const CRM_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /stages': ['crm.opportunity.read'],
+  'POST /stages': ['crm.setup.maintain'],
+  'PUT /stages/:id': ['crm.setup.maintain'],
+  'GET /leads': ['crm.lead.read'],
+  'POST /leads': ['crm.lead.maintain'],
+  'GET /leads/:id': ['crm.lead.read'],
+  'PUT /leads/:id': ['crm.lead.maintain'],
+  'POST /leads/:id/qualify': ['crm.lead.maintain', 'crm.opportunity.maintain', 'customer.create'],
+  'POST /leads/:id/disqualify': ['crm.lead.maintain'],
+  'POST /leads/:id/reopen': ['crm.lead.maintain'],
+  'POST /leads/:id/convert-to-customer': ['crm.lead.maintain', 'customer.create'],
+  'GET /opportunities': ['crm.opportunity.read'],
+  'GET /opportunities/pipeline': ['crm.opportunity.read'],
+  'POST /opportunities': ['crm.opportunity.maintain'],
+  'GET /opportunities/:id': ['crm.opportunity.read'],
+  'PUT /opportunities/:id': ['crm.opportunity.maintain'],
+  'POST /opportunities/:id/stage': ['crm.opportunity.maintain'],
+  'POST /opportunities/:id/close': ['crm.opportunity.close'],
+} satisfies RouteGuards);
+
+const guard = routeGuard(CRM_ROUTE_PERMISSIONS);
+
+
 /* ────────────────────────────── pipeline stages ──────────────────────────── */
 
-app.get('/stages', async (c) => {
+app.get('/stages', guard('GET /stages'), async (c) => {
   const stages = await db.salesPipelineStage.findMany({
     where: { tenant_id: c.get('tenantId') },
     orderBy: { sort_order: 'asc' },
@@ -36,7 +65,7 @@ app.get('/stages', async (c) => {
   return ok(c, stages);
 });
 
-app.post('/stages', requireRole('admin'), async (c) => {
+app.post('/stages', guard('POST /stages'), async (c) => {
   const { code, name, sort_order, default_probability } = await c.req.json();
   if (!code || !name) throw new AppError('code and name are required', 400);
   const stage = await db.salesPipelineStage.create({
@@ -51,7 +80,7 @@ app.post('/stages', requireRole('admin'), async (c) => {
   return created(c, stage);
 });
 
-app.put('/stages/:id', requireRole('admin'), async (c) => {
+app.put('/stages/:id', guard('PUT /stages/:id'), async (c) => {
   const body = await c.req.json();
   const { count } = await db.salesPipelineStage.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
@@ -68,7 +97,7 @@ app.put('/stages/:id', requireRole('admin'), async (c) => {
 
 /* ───────────────────────────────── leads ────────────────────────────────── */
 
-app.get('/leads', async (c) => {
+app.get('/leads', guard('GET /leads'), async (c) => {
   const { status, search, source, page = '1', limit = '20' } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = status;
@@ -99,12 +128,12 @@ app.get('/leads', async (c) => {
   return paginated(c, leads, total, Number(page), Number(limit));
 });
 
-app.post('/leads', validate(CreateLeadSchema), async (c) => {
+app.post('/leads', guard('POST /leads'), validate(CreateLeadSchema), async (c) => {
   const lead = await createLead(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, lead);
 });
 
-app.get('/leads/:id', async (c) => {
+app.get('/leads/:id', guard('GET /leads/:id'), async (c) => {
   const lead = await db.lead.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -140,7 +169,7 @@ app.get('/leads/:id', async (c) => {
   return ok(c, lead);
 });
 
-app.put('/leads/:id', async (c) => {
+app.put('/leads/:id', guard('PUT /leads/:id'), async (c) => {
   const body = await c.req.json();
   // Status transitions go through their own endpoints, which enforce the
   // official rules (a lead with an opportunity cannot be disqualified). Letting
@@ -158,7 +187,7 @@ app.put('/leads/:id', async (c) => {
   return ok(c, null);
 });
 
-app.post('/leads/:id/qualify', validate(QualifyLeadSchema), async (c) => {
+app.post('/leads/:id/qualify', guard('POST /leads/:id/qualify'), validate(QualifyLeadSchema), async (c) => {
   const result = await qualifyLead(
     c.get('tenantId'),
     c.req.param('id'),
@@ -168,26 +197,26 @@ app.post('/leads/:id/qualify', validate(QualifyLeadSchema), async (c) => {
   return ok(c, result);
 });
 
-app.post('/leads/:id/disqualify', async (c) => {
+app.post('/leads/:id/disqualify', guard('POST /leads/:id/disqualify'), async (c) => {
   const { reason } = await c.req.json().catch(() => ({ reason: undefined }));
   const lead = await disqualifyLead(c.get('tenantId'), c.req.param('id'), reason);
   return ok(c, lead);
 });
 
-app.post('/leads/:id/reopen', async (c) => {
+app.post('/leads/:id/reopen', guard('POST /leads/:id/reopen'), async (c) => {
   const lead = await reopenLead(c.get('tenantId'), c.req.param('id'));
   return ok(c, lead);
 });
 
 /** The explicit "Convert to customer" step, without qualifying. */
-app.post('/leads/:id/convert-to-customer', async (c) => {
+app.post('/leads/:id/convert-to-customer', guard('POST /leads/:id/convert-to-customer'), async (c) => {
   const customer = await convertLeadToCustomer(c.get('tenantId'), c.req.param('id'));
   return ok(c, customer);
 });
 
 /* ────────────────────────────── opportunities ───────────────────────────── */
 
-app.get('/opportunities', async (c) => {
+app.get('/opportunities', guard('GET /opportunities'), async (c) => {
   const { status, stage_id, customer_id, page = '1', limit = '20' } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = status;
@@ -213,16 +242,16 @@ app.get('/opportunities', async (c) => {
 });
 
 /** The weighted pipeline. Registered before /:id so "pipeline" is not an id. */
-app.get('/opportunities/pipeline', async (c) => {
+app.get('/opportunities/pipeline', guard('GET /opportunities/pipeline'), async (c) => {
   return ok(c, await pipelineSummary(c.get('tenantId')));
 });
 
-app.post('/opportunities', validate(CreateOpportunitySchema), async (c) => {
+app.post('/opportunities', guard('POST /opportunities'), validate(CreateOpportunitySchema), async (c) => {
   const opp = await createOpportunity(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, opp);
 });
 
-app.get('/opportunities/:id', async (c) => {
+app.get('/opportunities/:id', guard('GET /opportunities/:id'), async (c) => {
   const opp = await db.opportunity.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -239,7 +268,7 @@ app.get('/opportunities/:id', async (c) => {
   return ok(c, opp);
 });
 
-app.put('/opportunities/:id', async (c) => {
+app.put('/opportunities/:id', guard('PUT /opportunities/:id'), async (c) => {
   const body = await c.req.json();
   delete body.status;
   delete body.tenant_id;
@@ -259,7 +288,7 @@ app.put('/opportunities/:id', async (c) => {
   return ok(c, null);
 });
 
-app.post('/opportunities/:id/stage', async (c) => {
+app.post('/opportunities/:id/stage', guard('POST /opportunities/:id/stage'), async (c) => {
   const { stage_id, probability } = await c.req.json();
   if (!stage_id) throw new AppError('stage_id is required', 400);
   const opp = await moveOpportunityStage(
@@ -271,7 +300,7 @@ app.post('/opportunities/:id/stage', async (c) => {
   return ok(c, opp);
 });
 
-app.post('/opportunities/:id/close', async (c) => {
+app.post('/opportunities/:id/close', guard('POST /opportunities/:id/close'), async (c) => {
   const { outcome, reason } = await c.req.json();
   if (!['WON', 'LOST', 'CANCELLED'].includes(outcome)) {
     throw new AppError('outcome must be WON, LOST or CANCELLED', 400);

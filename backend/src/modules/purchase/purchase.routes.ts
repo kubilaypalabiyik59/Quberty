@@ -1,25 +1,67 @@
 import { Hono }    from 'hono';
 import { db }       from '../../infrastructure/database/client';
 import { AppError } from '../../shared/errors/AppError';
-import { requireRole } from '../../shared/middleware/authMiddleware';
+import { requirePermission, type Permission } from '../../shared/middleware/permissions';
 
 import { logger }   from '../../shared/logger';
 import { ok, created, message, paginated } from '../../shared/response';
 import { validate } from '../../shared/middleware/validate';
-import { CreatePurchaseOrderSchema } from '../../shared/schemas';
-import { nextPurchaseOrderNumber } from '../../shared/utils/orderCounter';
+import { CreatePurchaseOrderSchema, UpdateSupplierSchema } from '../../shared/schemas';
+import type { z } from 'zod';
+import { allocateNumber } from '../../shared/services/numberSequence.service';
 import { computeDocumentTax, computePurchaseMoney } from '../../shared/services/documentTax.service';
-import { postJournal } from '../../shared/services/journal.service';
-import { contextForPurchaseOrder } from '../../shared/services/dimension.service';
 import { purchasePriceFor } from '../../shared/services/tradeAgreement.service';
+import { resolveDocumentCurrency } from '../../shared/services/currency/documentCurrency';
 
-import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { createAndPostReceipt } from './productReceipt.service';
 import { createInvoice, postInvoice, runMatching, autoMatch } from './vendorInvoice.service';
+import { cancelPurchaseOrderRemainder, updatePurchaseOrderDelivery } from './purchaseOrderChange.service';
+import vendorPaymentRoutes from './vendorPayment.routes';
+import purchaseReturnRoutes from './purchaseReturn.routes';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
+
+export const PURCHASE_ROUTE_PERMISSIONS = {
+  'GET /suppliers': ['purchase.supplier.read'],
+  'POST /suppliers': ['purchase.supplier.maintain'],
+  'PUT /suppliers/:id': ['purchase.supplier.maintain'],
+  'GET /orders': ['purchase.order.read'],
+  'GET /orders/received-not-invoiced': ['purchase.order.read'],
+  'GET /orders/:id': ['purchase.order.read'],
+  'GET /orders/:id/changes': ['purchase.order.read'],
+  'PUT /orders/:id': ['purchase.order.update'],
+  'PATCH /orders/:id/delivery': ['purchase.order.update'],
+  'POST /orders/:id/lines/:lineId/cancel-remainder': ['purchase.order.cancel'],
+  'POST /orders': ['purchase.order.create'],
+  'POST /orders/:id/confirm': ['purchase.order.confirm'],
+  'POST /orders/:id/receive': ['purchase.receipt.post'],
+  'GET /orders/:id/receipts': ['purchase.receipt.read'],
+  'GET /receipts': ['purchase.receipt.read'],
+  'POST /orders/:id/cancel': ['purchase.order.cancel'],
+  'GET /invoices': ['purchase.vendor_invoice.read'],
+  'GET /invoices/:id': ['purchase.vendor_invoice.read'],
+  'POST /invoices': ['purchase.vendor_invoice.create'],
+  'POST /invoices/:id/match': ['purchase.vendor_invoice.match'],
+  'POST /invoices/:id/approve-discrepancies': ['purchase.vendor_invoice.approve_discrepancy'],
+  'POST /invoices/:id/post': ['purchase.vendor_invoice.post'],
+  'POST /invoices/:id/cancel': ['purchase.vendor_invoice.cancel'],
+  'POST /orders/:id/receive-and-invoice': [
+    'purchase.receipt.post',
+    'purchase.vendor_invoice.create',
+    'purchase.vendor_invoice.match',
+    'purchase.vendor_invoice.post',
+  ],
+  'GET /setup/trade-agreements': ['purchase.setup.read'],
+  'POST /setup/trade-agreements': ['purchase.setup.maintain'],
+  'POST /setup/trade-agreements/:id/close': ['purchase.setup.maintain'],
+} as const satisfies Record<string, readonly Permission[]>;
+
+function guard(route: keyof typeof PURCHASE_ROUTE_PERMISSIONS) {
+  const permissions = [...PURCHASE_ROUTE_PERMISSIONS[route]] as [Permission, ...Permission[]];
+  return requirePermission(...permissions);
+}
 
 /**
  * A product's item group, for the ITEM_GROUP scope of a trade agreement.
@@ -39,7 +81,7 @@ async function itemGroupOf(tenantId: string, productId: string): Promise<string 
 
 // ── Suppliers ─────────────────────────────────────────────────────────────────
 
-app.get('/suppliers', async (c) => {
+app.get('/suppliers', guard('GET /suppliers'), async (c) => {
   const suppliers = await db.supplier.findMany({
     where: { tenant_id: c.get('tenantId'), is_active: true },
     orderBy: { name: 'asc' },
@@ -47,9 +89,10 @@ app.get('/suppliers', async (c) => {
   return ok(c, suppliers);
 });
 
-app.post('/suppliers', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/suppliers', guard('POST /suppliers'), async (c) => {
   const { code, name, contact_name, email, phone, address, city, country, payment_terms, currency } = await c.req.json();
   if (!code || !name) throw new AppError('code and name are required');
+  const supplierCurrency = await resolveDocumentCurrency(c.get('tenantId'), currency);
   const supplier = await db.supplier.create({
     data: {
       code, name,
@@ -58,27 +101,53 @@ app.post('/suppliers', requireRole('admin', 'store_manager'), async (c) => {
       phone:        phone || null,
       address:      address || null,
       city:         city || null,
-      country:      country || 'BO',
+      country:      country || null,
       payment_terms: payment_terms ? Number(payment_terms) : 30,
-      currency:     currency || 'BOB',
+      currency:     supplierCurrency,
       tenant_id:    c.get('tenantId'),
     },
   });
   return created(c, supplier);
 });
 
-app.put('/suppliers/:id', requireRole('admin'), async (c) => {
-  const body = await c.req.json();
-  await db.supplier.updateMany({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
-    data: { ...body, updated_at: new Date() },
+/**
+ * Update a supplier.
+ *
+ * The body used to be spread straight into `updateMany`, so a caller could set
+ * `tenant_id` and move the supplier to another tenant, and a currency reached the
+ * column without passing `resolveDocumentCurrency`. Both are closed by an
+ * allow-list: only these fields are writable, and the currency goes through the
+ * same resolution as every other document (WORK-025).
+ */
+app.put('/suppliers/:id', guard('PUT /suppliers/:id'), validate(UpdateSupplierSchema), async (c) => {
+  const tenantId = c.get('tenantId');
+  const body = c.get('body') as z.infer<typeof UpdateSupplierSchema>;
+  const result = await db.supplier.updateMany({
+    where: { id: c.req.param('id'), tenant_id: tenantId },
+    data: {
+      ...(body.code !== undefined ? { code: body.code } : {}),
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.contact_name !== undefined ? { contact_name: body.contact_name } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      ...(body.phone !== undefined ? { phone: body.phone } : {}),
+      ...(body.address !== undefined ? { address: body.address } : {}),
+      ...(body.city !== undefined ? { city: body.city } : {}),
+      ...(body.country !== undefined ? { country: body.country } : {}),
+      ...(body.tax_id !== undefined ? { tax_id: body.tax_id } : {}),
+      ...(body.payment_terms !== undefined ? { payment_terms: body.payment_terms } : {}),
+      ...(body.tax_group_id !== undefined ? { tax_group_id: body.tax_group_id } : {}),
+      ...(body.is_active !== undefined ? { is_active: body.is_active } : {}),
+      ...(body.currency !== undefined ? { currency: await resolveDocumentCurrency(tenantId, body.currency) } : {}),
+      updated_at: new Date(),
+    },
   });
+  if (result.count === 0) throw new AppError('Supplier not found.', 404, 'SUPPLIER_NOT_FOUND');
   return ok(c, null);
 });
 
 // ── Purchase Orders ───────────────────────────────────────────────────────────
 
-app.get('/orders', async (c) => {
+app.get('/orders', guard('GET /orders'), async (c) => {
   const { status, supplier_id, page = '1', limit = '20' } = c.req.query();
   const where: any = { tenant_id: c.get('tenantId') };
   if (status) where.status = status;
@@ -111,7 +180,7 @@ app.get('/orders', async (c) => {
  * per row. Same idea, one list.
  * learn.microsoft.com/dynamics365/finance/accounts-payable/tasks/key-invoice-data-ap-system-vendor-invoice
  */
-app.get('/orders/received-not-invoiced', async (c) => {
+app.get('/orders/received-not-invoiced', guard('GET /orders/received-not-invoiced'), async (c) => {
   const orders = await db.purchaseOrder.findMany({
     where: {
       tenant_id: c.get('tenantId'),
@@ -152,7 +221,7 @@ app.get('/orders/received-not-invoiced', async (c) => {
   return ok(c, rows);
 });
 
-app.get('/orders/:id', async (c) => {
+app.get('/orders/:id', guard('GET /orders/:id'), async (c) => {
   const po = await db.purchaseOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -165,11 +234,30 @@ app.get('/orders/:id', async (c) => {
   return ok(c, po);
 });
 
-app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
-  const po = await db.purchaseOrder.findFirst({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: { in: ['DRAFT', 'CONFIRMED'] } },
+app.get('/orders/:id/changes', guard('GET /orders/:id/changes'), async (c) => {
+  const exists = await db.purchaseOrder.count({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
   });
-  if (!po) throw new AppError('PO not found or not editable (must be DRAFT or CONFIRMED)', 404);
+  if (exists === 0) throw new AppError('Purchase order not found', 404);
+  const changes = await db.purchaseOrderChange.findMany({
+    where: { tenant_id: c.get('tenantId'), purchase_order_id: c.req.param('id') },
+    orderBy: { created_at: 'desc' },
+    take: 100,
+  });
+  return ok(c, changes);
+});
+
+app.put('/orders/:id', guard('PUT /orders/:id'), async (c) => {
+  const po = await db.purchaseOrder.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'DRAFT' },
+  });
+  if (!po) {
+    throw new AppError(
+      'PO not found or not editable. Confirmed orders use delivery updates and remainder cancellation.',
+      409,
+      'CONFIRMED_ORDER_DIRECT_EDIT_FORBIDDEN',
+    );
+  }
 
   const { supplier_id, warehouse_id, receive_location_id, expected_date, notes, lines } = await c.req.json();
 
@@ -199,6 +287,7 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
         unit_cost:  priced.unitCost,
         line_total: lineTotal,
         sort_order: i,
+        requested_delivery_date: expected_date ? new Date(expected_date) : po.expected_date,
       });
     }
 
@@ -243,9 +332,12 @@ app.put('/orders/:id', requireRole('admin', 'store_manager'), async (c) => {
   return ok(c, null);
 });
 
-app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurchaseOrderSchema), async (c) => {
+app.post('/orders', guard('POST /orders'), validate(CreatePurchaseOrderSchema), async (c) => {
   const body = c.get('body') as any;
-  const poNumber = await nextPurchaseOrderNumber(c.get('tenantId'));
+  // Requested currency (must be active for the tenant) or the ledger's accounting
+  // currency — never a country literal. Resolved before a number is drawn.
+  const currency = await resolveDocumentCurrency(c.get('tenantId'), body.currency);
+  const poNumber = await allocateNumber({ tenantId: c.get('tenantId'), reference: 'PURCHASE_ORDER', legalEntityId: null });
 
   // Each line's cost comes from the trade agreement when one covers it, and from
   // the typed figure otherwise. `purchasePriceFor` owns that precedence —
@@ -275,6 +367,7 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
       unit_cost:  priced.unitCost,
       line_total: lineTotal,
       sort_order: i,
+      requested_delivery_date: body.expected_date ? new Date(body.expected_date) : null,
     });
   }
 
@@ -295,7 +388,7 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
       warehouse_id:        body.warehouse_id,
       receive_location_id: body.receive_location_id || null,
       expected_date:       body.expected_date ? new Date(body.expected_date) : null,
-      currency:            body.currency ?? 'BOB',
+      currency,
       notes:               body.notes,
       subtotal,
       tax_amount:   money.recoverable_tax,
@@ -308,7 +401,7 @@ app.post('/orders', requireRole('admin', 'store_manager'), validate(CreatePurcha
   return created(c, po);
 });
 
-app.post('/orders/:id/confirm', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/orders/:id/confirm', guard('POST /orders/:id/confirm'), async (c) => {
   const po = await db.purchaseOrder.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'DRAFT' },
     data: { status: 'CONFIRMED', confirmed_at: new Date() },
@@ -316,6 +409,36 @@ app.post('/orders/:id/confirm', requireRole('admin', 'store_manager'), async (c)
   if (po.count === 0) throw new AppError('PO not found or cannot be confirmed');
   return ok(c, null);
 });
+
+app.patch('/orders/:id/delivery', guard('PATCH /orders/:id/delivery'), async (c) => {
+  const body = await c.req.json();
+  const result = await updatePurchaseOrderDelivery({
+    tenantId: c.get('tenantId'),
+    orderId: c.req.param('id'),
+    requestedDeliveryDate: body.requested_delivery_date,
+    confirmedDeliveryDate: body.confirmed_delivery_date,
+    reason: body.reason,
+    userId: c.get('user').id,
+  });
+  return ok(c, result);
+});
+
+app.post(
+  '/orders/:id/lines/:lineId/cancel-remainder',
+  guard('POST /orders/:id/lines/:lineId/cancel-remainder'),
+  async (c) => {
+    const body = await c.req.json();
+    const result = await cancelPurchaseOrderRemainder({
+      tenantId: c.get('tenantId'),
+      orderId: c.req.param('id'),
+      lineId: c.req.param('lineId'),
+      quantity: body.quantity,
+      reason: body.reason,
+      userId: c.get('user').id,
+    });
+    return ok(c, result);
+  },
+);
 
 // ── Product receipt ───────────────────────────────────────────────────────────
 //
@@ -326,7 +449,7 @@ app.post('/orders/:id/confirm', requireRole('admin', 'store_manager'), async (c)
 //
 // The legacy shape (`POST /orders/:id/receive` with a body full of nothing) still
 // works and still receives every outstanding line, so no caller breaks.
-app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/orders/:id/receive', guard('POST /orders/:id/receive'), async (c) => {
   const body = await c.req.json().catch(() => ({} as any));
 
   const result = await createAndPostReceipt(c.get('tenantId'), c.get('user').id, {
@@ -352,7 +475,7 @@ app.post('/orders/:id/receive', requireRole('admin', 'store_manager'), async (c)
   return ok(c, result);
 });
 
-app.get('/orders/:id/receipts', async (c) => {
+app.get('/orders/:id/receipts', guard('GET /orders/:id/receipts'), async (c) => {
   const receipts = await db.productReceipt.findMany({
     where: { tenant_id: c.get('tenantId'), purchase_order_id: c.req.param('id') },
     include: {
@@ -363,7 +486,7 @@ app.get('/orders/:id/receipts', async (c) => {
   return ok(c, receipts);
 });
 
-app.get('/receipts', async (c) => {
+app.get('/receipts', guard('GET /receipts'), async (c) => {
   const { status, supplier_id } = c.req.query();
   const receipts = await db.productReceipt.findMany({
     where: {
@@ -383,66 +506,24 @@ app.get('/receipts', async (c) => {
 });
 
 
-app.post('/orders/:id/cancel', requireRole('admin'), async (c) => {
-  await db.purchaseOrder.updateMany({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: { in: ['DRAFT', 'CONFIRMED'] } },
-    data: { status: 'CANCELLED' },
+app.post('/orders/:id/cancel', guard('POST /orders/:id/cancel'), async (c) => {
+  const order = await db.purchaseOrder.findFirst({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    select: { id: true, status: true },
   });
-  return ok(c, null);
-});
-
-// PAY SUPPLIER — clears AP (CxP 2101)
-app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => {
-  const po = await db.purchaseOrder.findFirst({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'RECEIVED' },
-  });
-  if (!po) throw new AppError('PO not found or not in RECEIVED status', 404);
-  if (po.paid_at) throw new AppError('This PO has already been paid', 409);
-
-  const { payment_date, account_code = '1102', notes } = await c.req.json();
-  const paymentDate = payment_date ? new Date(payment_date) : new Date();
-
-  await db.purchaseOrder.updateMany({
-    where: { id: po.id },
-    data: { paid_at: paymentDate, paid_by: c.get('user').id },
-  });
-
-  {
-    // AP resolves through the posting profile. The CREDIT side stays a code
-    // lookup on purpose: `account_code` is chosen by the user at payment time
-    // (which bank or cash account the money left), so it is transaction data, not
-    // configuration. It is still validated below rather than silently skipped.
-    const acc = await resolvePostingAccounts_orExplain(
-      c.get('tenantId'),
-      ['AP'] as const,
-      { document: `AP payment for ${po.po_number}`, partyId: po.supplier_id ?? null },
-    );
-    const bankAccount = await db.account.findFirst({
-      where: { tenant_id: c.get('tenantId'), code: account_code },
-    });
-    if (acc && !bankAccount) {
-      throw new AppError(`Payment account '${account_code}' does not exist in the chart of accounts.`, 400);
-    }
-
-    if (acc && bankAccount) {
-      const totalAmount = Number(po.total_amount);
-
-      await postJournal({
-        tenantId:    c.get('tenantId'),
-        date:        paymentDate,
-        description: `AP Payment: ${po.po_number}${notes ? ' — ' + notes : ''}`,
-        source:      { module: 'PURCHASE_PAYMENT', id: po.id },
-        userId:      c.get('user').id,
-        dimensions:  await contextForPurchaseOrder(c.get('tenantId'), po.id),
-        lines: [
-          { accountId: acc.AP,         debit:  totalAmount, description: `Clear CxP — ${po.po_number}` },
-          { accountId: bankAccount.id, credit: totalAmount, description: `Payment to supplier (${account_code})` },
-        ],
-      });
-    }
+  if (!order) throw new AppError('Purchase order not found', 404);
+  if (order.status === 'DRAFT') {
+    await db.purchaseOrder.update({ where: { id: order.id }, data: { status: 'CANCELLED' } });
+    return ok(c, null);
   }
-
-  return message(c, `PO ${po.po_number} marked as paid. Journal entry created.`);
+  const body = await c.req.json().catch(() => ({} as any));
+  const result = await cancelPurchaseOrderRemainder({
+    tenantId: c.get('tenantId'),
+    orderId: order.id,
+    reason: body.reason,
+    userId: c.get('user').id,
+  });
+  return ok(c, result);
 });
 
 // ── Vendor invoices ───────────────────────────────────────────────────────────
@@ -452,7 +533,7 @@ app.post('/orders/:id/pay', requireRole('admin', 'store_manager'), async (c) => 
 // all (a utility bill). The invoice register, the invoice pool and the approval
 // journal are deliberately not built — see docs/process/VENDOR_INVOICE.md §7.
 
-app.get('/invoices', async (c) => {
+app.get('/invoices', guard('GET /invoices'), async (c) => {
   const { status, supplier_id, match } = c.req.query();
   const invoices = await db.vendorInvoice.findMany({
     where: {
@@ -472,12 +553,12 @@ app.get('/invoices', async (c) => {
   return ok(c, invoices);
 });
 
-app.get('/invoices/:id', async (c) => {
+app.get('/invoices/:id', guard('GET /invoices/:id'), async (c) => {
   const invoice = await db.vendorInvoice.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
       supplier:       true,
-      purchase_order: { select: { id: true, po_number: true, status: true } },
+      purchase_order: { select: { id: true, po_number: true, status: true, warehouse_id: true } },
       lines: {
         include: {
           product: { select: { sku: true, name: true } },
@@ -501,14 +582,14 @@ app.get('/invoices/:id', async (c) => {
   return ok(c, invoice);
 });
 
-app.post('/invoices', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/invoices', guard('POST /invoices'), async (c) => {
   const body = await c.req.json();
   const result = await createInvoice(c.get('tenantId'), c.get('user').id, body);
   return created(c, result);
 });
 
 /** Re-run matching without posting — the "Update match status" action. */
-app.post('/invoices/:id/match', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/invoices/:id/match', guard('POST /invoices/:id/match'), async (c) => {
   const outcome = await db.$transaction(async (tx) => {
     await autoMatch(tx, c.get('tenantId'), c.req.param('id'), c.get('user').id);
     return runMatching(tx, c.get('tenantId'), c.req.param('id'));
@@ -521,7 +602,7 @@ app.post('/invoices/:id/match', requireRole('admin', 'store_manager'), async (c)
  * Invoice matching details page before the invoice can be posted with price
  * matching errors and quantity matching errors."
  */
-app.post('/invoices/:id/approve-discrepancies', requireRole('admin'), async (c) => {
+app.post('/invoices/:id/approve-discrepancies', guard('POST /invoices/:id/approve-discrepancies'), async (c) => {
   const updated = await db.vendorInvoice.updateMany({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId'), status: 'DRAFT' },
     data: {
@@ -534,12 +615,12 @@ app.post('/invoices/:id/approve-discrepancies', requireRole('admin'), async (c) 
   return ok(c, null);
 });
 
-app.post('/invoices/:id/post', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/invoices/:id/post', guard('POST /invoices/:id/post'), async (c) => {
   const result = await postInvoice(c.get('tenantId'), c.get('user').id, c.req.param('id'));
   return ok(c, result);
 });
 
-app.post('/invoices/:id/cancel', requireRole('admin'), async (c) => {
+app.post('/invoices/:id/cancel', guard('POST /invoices/:id/cancel'), async (c) => {
   const invoice = await db.vendorInvoice.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     select: { id: true, status: true, lines: { select: { id: true, matches: { select: { id: true, quantity: true, receipt_line_id: true } } } } },
@@ -585,7 +666,7 @@ app.post('/invoices/:id/cancel', requireRole('admin'), async (c) => {
  * `PurchaseParameters.receipt_invoice_flow` records which way a tenant works;
  * both routes stay available regardless, because suppliers differ.
  */
-app.post('/orders/:id/receive-and-invoice', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/orders/:id/receive-and-invoice', guard('POST /orders/:id/receive-and-invoice'), async (c) => {
   const body = await c.req.json();
   if (!body.invoice_number || !body.invoice_date) {
     throw new AppError('invoice_number and invoice_date are required — this action posts the factura too.', 400);
@@ -622,7 +703,7 @@ app.post('/orders/:id/receive-and-invoice', requireRole('admin', 'store_manager'
 // Procurement owns vendor pricing. The sales side reads the same table with
 // `side = 'SALES'` and gets its own routes under Sales.
 
-app.get('/setup/trade-agreements', requireRole('admin', 'store_manager'), async (c) => {
+app.get('/setup/trade-agreements', guard('GET /setup/trade-agreements'), async (c) => {
   const rows = await db.tradeAgreement.findMany({
     where: { tenant_id: c.get('tenantId'), side: 'PURCHASE' },
     include: {
@@ -636,7 +717,7 @@ app.get('/setup/trade-agreements', requireRole('admin', 'store_manager'), async 
   return ok(c, rows);
 });
 
-app.post('/setup/trade-agreements', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/setup/trade-agreements', guard('POST /setup/trade-agreements'), async (c) => {
   const b = await c.req.json();
 
   // The database enforces the shape (see migration 021's CHECKs, including the
@@ -694,7 +775,7 @@ app.post('/setup/trade-agreements', requireRole('admin', 'store_manager'), async
 // Superseding a price CLOSES the old row rather than editing it. That is what keeps
 // the history of what a vendor charged us and when — the reason D365 posts trade
 // agreement journals rather than editing the price table in place.
-app.post('/setup/trade-agreements/:id/close', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/setup/trade-agreements/:id/close', guard('POST /setup/trade-agreements/:id/close'), async (c) => {
   const row = await db.tradeAgreement.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
   });
@@ -709,5 +790,8 @@ app.post('/setup/trade-agreements/:id/close', requireRole('admin', 'store_manage
   });
   return ok(c, updated);
 });
+
+app.route('/', vendorPaymentRoutes);
+app.route('/', purchaseReturnRoutes);
 
 export default app;

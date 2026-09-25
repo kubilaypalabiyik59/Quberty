@@ -3,7 +3,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Plus, ShoppingCart, Check, X, AlertCircle, Truck, Package, Paperclip, Pencil, CheckCircle, Banknote } from 'lucide-react';
+import { Plus, ShoppingCart, Check, X, AlertCircle, Truck, Package, Paperclip, Pencil, CheckCircle, Banknote, CalendarClock } from 'lucide-react';
+import { Dialog, apiErrorMessage, dialogField } from '@/components/erp/Dialog';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const STATUS_BADGE: Record<string, string> = {
   DRAFT:              'bg-gray-100 text-gray-600',
@@ -11,6 +13,7 @@ const STATUS_BADGE: Record<string, string> = {
   RECEIVED:           'bg-green-100 text-green-700',
   PARTIALLY_RECEIVED: 'bg-yellow-100 text-yellow-700',
   CANCELLED:          'bg-red-100 text-red-600',
+  INVOICED:           'bg-purple-100 text-purple-700',
 };
 
 // ── Pay Supplier Modal ─────────────────────────────────────────────────────────
@@ -19,6 +22,7 @@ function PayModal({ po, onClose, onSuccess }: { po: any; onClose: () => void; on
   const [accountCode, setAccountCode] = useState('1102');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+  const { money } = useMoney();
 
   const pay = useMutation({
     mutationFn: () => api.post(`/purchase/orders/${po.id}/pay`, {
@@ -40,7 +44,7 @@ function PayModal({ po, onClose, onSuccess }: { po: any; onClose: () => void; on
             </div>
             <div>
               <h2 className="text-base font-bold text-gray-900">Pay Supplier</h2>
-              <p className="text-xs text-gray-500 font-mono">{po.po_number} · Bs. {Number(po.total_amount).toLocaleString()}</p>
+              <p className="text-xs text-gray-500 font-mono">{po.po_number} · {money(po.total_amount)}</p>
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
@@ -351,6 +355,7 @@ function POForm({
     expected_date: initial?.expected_date ? initial.expected_date.split('T')[0] : '',
     notes: initial?.notes ?? '',
   });
+  const { money, code } = useMoney();
   const [lines, setLines] = useState<POLine[]>(
     initial?.lines?.length
       ? initial.lines.map((l: any) => ({
@@ -447,7 +452,7 @@ function POForm({
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Product</th>
                 <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 w-44">Variant</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-20">Qty</th>
-                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Cost (Bs.)</th>
+                <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-28">Unit Cost ({code})</th>
                 <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-24">Total</th>
                 <th className="w-10" />
               </tr>
@@ -503,7 +508,7 @@ function POForm({
                         value={line.unit_cost} onChange={e => updateLine(i, 'unit_cost', e.target.value)} />
                     </td>
                     <td className="px-3 py-2 text-right text-xs font-medium text-gray-700">
-                      Bs. {((Number(line.quantity) || 0) * (Number(line.unit_cost) || 0)).toLocaleString()}
+                      {money((Number(line.quantity) || 0) * (Number(line.unit_cost) || 0))}
                     </td>
                     <td className="px-3 py-2">
                       {lines.length > 1 && (
@@ -519,7 +524,7 @@ function POForm({
             <tfoot className="bg-gray-50 border-t border-gray-200">
               <tr>
                 <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-gray-700">Subtotal:</td>
-                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">Bs. {subtotal.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-sm font-bold text-gray-900">{money(subtotal)}</td>
                 <td />
               </tr>
             </tfoot>
@@ -547,13 +552,143 @@ function POForm({
   );
 }
 
+function ManageOpenPurchaseDialog({ po, onClose }: { po: any; onClose: () => void }) {
+  const qc = useQueryClient();
+  const initialRequested = po.expected_date ? String(po.expected_date).slice(0, 10) : '';
+  const commonConfirmed = po.lines?.find((line: any) => line.confirmed_delivery_date)?.confirmed_delivery_date;
+  const [requestedDate, setRequestedDate] = useState(initialRequested);
+  const [confirmedDate, setConfirmedDate] = useState(commonConfirmed ? String(commonConfirmed).slice(0, 10) : '');
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+  const [cancelLine, setCancelLine] = useState<any | null>(null);
+  const [cancelQty, setCancelQty] = useState('');
+  const [cancelReason, setCancelReason] = useState('');
+
+  const { data: changes } = useQuery({
+    queryKey: ['purchase-order-changes', po.id],
+    queryFn: () => api.get(`/purchase/orders/${po.id}/changes`).then(r => r.data.data),
+  });
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['purchase-orders'] });
+    qc.invalidateQueries({ queryKey: ['purchase-order-changes', po.id] });
+  };
+  const delivery = useMutation({
+    mutationFn: () => api.patch(`/purchase/orders/${po.id}/delivery`, {
+      requested_delivery_date: requestedDate || null,
+      confirmed_delivery_date: confirmedDate || null,
+      reason,
+    }),
+    onSuccess: () => { refresh(); onClose(); },
+    onError: e => setError(apiErrorMessage(e, 'Could not update delivery dates.')),
+  });
+  const cancel = useMutation({
+    mutationFn: () => api.post(`/purchase/orders/${po.id}/lines/${cancelLine.id}/cancel-remainder`, {
+      quantity: Number(cancelQty), reason: cancelReason,
+    }),
+    onSuccess: () => { refresh(); onClose(); },
+    onError: e => setError(apiErrorMessage(e, 'Could not cancel the remaining quantity.')),
+  });
+
+  if (cancelLine) {
+    const available = Math.max(
+      0,
+      Number(cancelLine.quantity) - Number(cancelLine.cancelled_qty ?? 0) -
+        Math.max(Number(cancelLine.received_qty), Number(cancelLine.invoiced_qty)),
+    );
+    const quantity = Number(cancelQty);
+    const blocked = !cancelReason.trim()
+      ? 'Enter the business reason for cancelling this commitment.'
+      : !(quantity > 0)
+        ? 'Enter a quantity greater than zero.'
+        : quantity > available
+          ? `Only ${available} remains unreceived and uninvoiced.`
+          : null;
+    return (
+      <Dialog
+        title={`Cancel remainder — ${cancelLine.product?.name ?? 'purchase line'}`}
+        description={`Original ${cancelLine.quantity}; received ${cancelLine.received_qty}; invoiced ${cancelLine.invoiced_qty}; already cancelled ${cancelLine.cancelled_qty ?? 0}.`}
+        onClose={() => { setCancelLine(null); setError(''); }}
+        error={error}
+        blockedReason={blocked}
+        submitLabel="Cancel quantity"
+        submitting={cancel.isPending}
+        onSubmit={() => cancel.mutate()}
+      >
+        <div className="space-y-3">
+          <label className="block text-caption font-medium text-fg">Quantity (maximum {available})
+            <input className={`${dialogField} mt-1`} type="number" min="0.01" max={available} step="0.01" value={cancelQty} onChange={e => setCancelQty(e.target.value)} />
+          </label>
+          <label className="block text-caption font-medium text-fg">Reason
+            <textarea className="mt-1 min-h-20 w-full rounded-control border border-border bg-surface px-2.5 py-2 text-body text-fg" value={cancelReason} onChange={e => setCancelReason(e.target.value)} />
+          </label>
+        </div>
+      </Dialog>
+    );
+  }
+
+  const datesChanged = requestedDate !== initialRequested || confirmedDate !== (commonConfirmed ? String(commonConfirmed).slice(0, 10) : '');
+  const blocked = !datesChanged
+    ? 'Change at least one delivery date.'
+    : !reason.trim()
+      ? 'Enter the business reason for the delivery change.'
+      : null;
+  return (
+    <Dialog
+      width="max-w-3xl"
+      title={`Manage open purchase — ${po.po_number}`}
+      description="Confirmed product, price, and original quantity stay fixed. Update delivery dates or cancel only the unused remainder."
+      onClose={onClose}
+      error={error}
+      blockedReason={blocked}
+      submitLabel="Update delivery"
+      submitting={delivery.isPending}
+      onSubmit={() => delivery.mutate()}
+    >
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <label className="text-caption font-medium text-fg">Requested delivery
+          <input className={`${dialogField} mt-1`} type="date" value={requestedDate} onChange={e => setRequestedDate(e.target.value)} />
+        </label>
+        <label className="text-caption font-medium text-fg">Supplier confirmed delivery
+          <input className={`${dialogField} mt-1`} type="date" value={confirmedDate} onChange={e => setConfirmedDate(e.target.value)} />
+        </label>
+      </div>
+      <label className="mt-3 block text-caption font-medium text-fg">Delivery change reason
+        <textarea className="mt-1 min-h-16 w-full rounded-control border border-border bg-surface px-2.5 py-2 text-body text-fg" value={reason} onChange={e => setReason(e.target.value)} />
+      </label>
+
+      <div className="mt-5">
+        <h3 className="text-caption font-semibold uppercase tracking-wide text-fg-muted">Open line commitments</h3>
+        <div className="mt-2 divide-y divide-border rounded-control border border-border">
+          {(po.lines ?? []).map((line: any) => {
+            const available = Math.max(0, Number(line.quantity) - Number(line.cancelled_qty ?? 0) - Math.max(Number(line.received_qty), Number(line.invoiced_qty)));
+            return <div key={line.id} className="flex items-center justify-between gap-3 px-3 py-2 text-caption">
+              <div><span className="font-medium text-fg">{line.product?.name ?? line.product_id}</span><span className="ml-2 text-fg-muted">ordered {line.quantity} · received {line.received_qty} · invoiced {line.invoiced_qty} · cancelled {line.cancelled_qty ?? 0}</span></div>
+              <button disabled={available <= 0} onClick={() => { setCancelLine(line); setCancelQty(String(available)); setCancelReason(''); setError(''); }} className="shrink-0 rounded-control border border-border px-2 py-1 font-medium text-danger disabled:opacity-40">Cancel remainder ({available})</button>
+            </div>;
+          })}
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <h3 className="text-caption font-semibold uppercase tracking-wide text-fg-muted">Change history</h3>
+        <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+          {(changes ?? []).length === 0 && <p className="text-caption text-fg-muted">No confirmed-order changes recorded.</p>}
+          {(changes ?? []).map((change: any) => <div key={change.id} className="rounded-control bg-surface-sunken px-3 py-2 text-caption"><div className="font-medium text-fg">{change.action.replaceAll('_', ' ')}</div><div className="text-fg-muted">{change.reason} · {new Date(change.created_at).toLocaleString()}</div></div>)}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function PurchaseOrdersPage() {
+  const { money } = useMoney();
   const qc = useQueryClient();
   const [mode, setMode] = useState<'list' | 'create' | 'edit'>('list');
   const [editingPO, setEditingPO] = useState<any | null>(null);
   const [receivePO, setReceivePO] = useState<any | null>(null);
-  const [payPO, setPayPO] = useState<any | null>(null);
+  const [managePO, setManagePO] = useState<any | null>(null);
   const [formError, setFormError] = useState('');
   const [page] = useState(1);
 
@@ -626,13 +761,7 @@ export default function PurchaseOrdersPage() {
           onSuccess={() => qc.invalidateQueries({ queryKey: ['purchase-orders'] })}
         />
       )}
-      {payPO && (
-        <PayModal
-          po={payPO}
-          onClose={() => setPayPO(null)}
-          onSuccess={() => qc.invalidateQueries({ queryKey: ['purchase-orders'] })}
-        />
-      )}
+      {managePO && <ManageOpenPurchaseDialog po={managePO} onClose={() => setManagePO(null)} />}
 
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -686,7 +815,7 @@ export default function PurchaseOrdersPage() {
                 </td>
                 <td className="px-4 py-3 text-gray-500 text-xs">{new Date(o.order_date ?? o.created_at).toLocaleDateString()}</td>
                 <td className="px-4 py-3 text-right font-medium text-gray-900">
-                  Bs. {Number(o.total_amount).toLocaleString()}
+                  {money(o.total_amount)}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-2">
@@ -702,14 +831,19 @@ export default function PurchaseOrdersPage() {
                         </button>
                       </>
                     )}
-                    {o.status === 'CONFIRMED' && (
-                      <button onClick={() => setReceivePO(o)}
-                        className="inline-flex items-center gap-1.5 text-xs text-green-600 hover:text-green-800 font-medium bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg transition-colors">
-                        <Truck className="h-3.5 w-3.5" /> Receive
-                      </button>
+                    {['CONFIRMED', 'PARTIALLY_RECEIVED'].includes(o.status) && (
+                      <>
+                        <button onClick={() => setManagePO(o)} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100">
+                          <CalendarClock className="h-3.5 w-3.5" /> Manage
+                        </button>
+                        <button onClick={() => setReceivePO(o)}
+                          className="inline-flex items-center gap-1.5 text-xs text-green-600 hover:text-green-800 font-medium bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg transition-colors">
+                          <Truck className="h-3.5 w-3.5" /> Receive
+                        </button>
+                      </>
                     )}
                     {o.status === 'RECEIVED' && !o.paid_at && (
-                      <button onClick={() => setPayPO(o)}
+                      <button onClick={() => window.location.assign(`/purchase/payments?supplier_id=${o.supplier_id ?? ''}`)}
                         className="inline-flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-800 font-medium bg-purple-50 hover:bg-purple-100 px-3 py-1.5 rounded-lg transition-colors">
                         <Banknote className="h-3.5 w-3.5" /> Pay Supplier
                       </button>

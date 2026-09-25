@@ -49,7 +49,7 @@ const ANDROID_POS_MANUAL_UNSUPPORTED = true;
 /** Only these are safe to describe; anything else is shown verbatim. */
 const REFERENCE_NOTES: Record<string, string> = {
   FACTURA:
-    'The legal invoice series. Bolivian law may require this to be gapless — that question is still open, so it ships continuous, which is the safe direction.',
+    'The legal invoice series. It is gapless: numbers are held until the document commits, and the counter cannot skip ahead without a recorded reason.',
   CREDIT_NOTE: 'Notas de crédito. Not yet wired: returns currently draw from the factura series.',
   JOURNAL_VOUCHER: 'General ledger vouchers. One series for every posting in the system.',
 };
@@ -112,6 +112,8 @@ function SequenceCard({
 
   const formatDirty = format !== seq.format;
   const nextDirty = nextNumber !== String(seq.next_number);
+  const gapless = seq.legal_series === 'GAPLESS';
+  const [gapReason, setGapReason] = useState('');
 
   // The server decides whether the issued numbers can be ordered at all — it is
   // the only side that can see every one of them. This screen must never derive
@@ -129,6 +131,18 @@ function SequenceCard({
   const belowMinimum =
     minimumNext !== null && nextNumber !== '' && Number(nextNumber) < minimumNext;
   const behind = belowMinimum && !seq.manual;
+
+  // A gapless automatic series continues at one above what was issued (or at its
+  // counter). Moving past that leaves numbers that are never issued, which the
+  // server accepts only with a stated reason. Mirrors `gaplessSeriesRefusal`.
+  const consecutive = seq.manual
+    ? (minimumNext ?? 1)
+    : Math.max(minimumNext ?? seq.next_number, seq.next_number);
+  // Also when switching a manual series back to automatic: the counter written
+  // while it was manual takes effect then, so a gap is judged at the switch.
+  const resumeSkips = gapless && seq.manual && Number(nextNumber) > (minimumNext ?? 1);
+  const skipsNumbers =
+    gapless && !seq.manual && nextDirty && nextNumber !== '' && Number(nextNumber) > consecutive;
 
   // Returning to automatic after hand-typed numbers: possible, but only when a
   // person states the series and takes responsibility for it.
@@ -179,6 +193,11 @@ function SequenceCard({
       });
       return;
     }
+    if (resumeSkips) {
+      if (gapReason.trim().length < 15) return;
+      onSave({ manual: false, acknowledge_gap_reason: gapReason.trim() });
+      return;
+    }
     onSave({ manual: false });
   };
 
@@ -210,7 +229,8 @@ function SequenceCard({
             disabled={
               saving ||
               (seq.manual && automaticImpossible) ||
-              (seq.manual && needsAck && !acknowledged)
+              (seq.manual && needsAck && !acknowledged) ||
+              (resumeSkips && gapReason.trim().length < 15)
             }
             onChange={(e) => (e.target.checked ? onSave({ manual: true }) : switchToAutomatic())}
           />
@@ -291,12 +311,19 @@ function SequenceCard({
           </div>
         )}
 
+        {gapless && (
+          <p className="flex items-center gap-1.5 text-caption text-fg">
+            <Lock className="h-3.5 w-3.5" />
+            Legal gapless series — always continuous; skipping numbers needs a recorded reason.
+          </p>
+        )}
+
         <label className="flex items-start gap-2.5">
           <input
             type="checkbox"
             className="mt-1"
             checked={seq.continuous}
-            disabled={saving || seq.manual}
+            disabled={saving || seq.manual || gapless}
             onChange={(e) => onSave({ continuous: e.target.checked })}
           />
           <span className="text-caption">
@@ -342,8 +369,34 @@ function SequenceCard({
               // does not consume or advance it — nothing is allocated here.
               disabled={saving}
               onChange={(e) => setNextNumber(e.target.value)}
-              onBlur={() => nextDirty && !belowMinimum && onSave({ next_number: Number(nextNumber) })}
+              onBlur={() => nextDirty && !belowMinimum && !skipsNumbers && onSave({ next_number: Number(nextNumber) })}
             />
+            {(skipsNumbers || resumeSkips) && (
+              <span className="mt-2 block space-y-1">
+                <span className="block text-micro text-warning">
+                  {Number(nextNumber) - consecutive} number(s) after {consecutive} would never be issued. State why
+                  (at least 15 characters) — the reason is kept in the audit log.
+                  {resumeSkips && ' Then switch the series back to automatic.'}
+                </span>
+                <input
+                  className={dialogField}
+                  placeholder="e.g. Pad of pre-printed invoices 36–40 was lost"
+                  value={gapReason}
+                  disabled={saving}
+                  onChange={(e) => setGapReason(e.target.value)}
+                />
+                {skipsNumbers && <button
+                  type="button"
+                  className="rounded border border-border px-2 py-1 text-caption text-fg disabled:opacity-50"
+                  disabled={saving || gapReason.trim().length < 15}
+                  onClick={() =>
+                    onSave({ next_number: Number(nextNumber), acknowledge_gap_reason: gapReason.trim() })
+                  }
+                >
+                  Save with this reason
+                </button>}
+              </span>
+            )}
             {minimumNext !== null && (
               <span className="mt-1 block text-micro text-fg-muted">
                 Lowest safe next number: <span className="font-mono">{minimumNext}</span>

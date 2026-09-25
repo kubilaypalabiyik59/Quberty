@@ -48,6 +48,16 @@ export type PostingType =
   /// gross and credited NET, so the deductions were credited to nothing at all
   /// and the voucher did not balance. Only required when deductions are non-zero.
   | 'PAYROLL_DEDUCTION_PAYABLE'
+  /// Counting or adjustment finds less than the books hold. **[OFFICIAL]** the
+  /// counting journal posts to the item group's *Inventory loss* account.
+  | 'INVENTORY_LOSS'
+  /// Counting or adjustment finds more than the books hold — *Inventory profit*.
+  | 'INVENTORY_PROFIT'
+  /// The equity side of an opening inventory balance entered at onboarding.
+  | 'INVENTORY_OPENING_BALANCE'
+  /// A closing shift counted more or less than it should have. **[OFFICIAL]**
+  /// Commerce posts statement differences to a store's difference account.
+  | 'CASH_DIFFERENCE'
   | 'ROUNDING';
 
 /** Specificity axis, least specific last. Order here IS the resolution order. */

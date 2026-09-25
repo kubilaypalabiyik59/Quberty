@@ -16,6 +16,8 @@ import {
   resumeBehindReason,
   fiscalYearResumeUnsupported,
   FISCAL_YEAR_SCOPE,
+  GAPLESS,
+  gaplessSeriesRefusal,
 } from '../../shared/services/numberSequenceRules';
 import { UpdateNumberSequenceSchema } from '../../shared/schemas';
 import type { AppEnv } from '../../shared/context';
@@ -556,11 +558,54 @@ app.put('/number-sequences/:id', requireRole('admin'), validate(UpdateNumberSequ
     }
   }
 
+  // ── Any gapless legal series (WORK-042) ──────────────────────────────────────
+  //
+  // Driven by the row's own `legal_series`, not by its reference, so a future
+  // legal series is protected the moment provisioning marks it. For FACTURA the
+  // issued history decides what "consecutive" means; for any other gapless
+  // series the counter as it stands does.
+  if (row.legal_series === GAPLESS) {
+    const history = row.reference === 'FACTURA' && row.scope !== FISCAL_YEAR_SCOPE
+      ? await facturaHighestIssued(tenantId)
+      : null;
+    const gap = gaplessSeriesRefusal(row, b, history);
+    if (gap) throw new AppError(gap.message, 400, gap.code);
+  }
+
   // One place decides what is written, and it excludes the request-only
   // acknowledgement by construction rather than by remembering to omit it.
-  const updated = await db.numberSequence.update({
-    where: { id: row.id },
-    data: persistedSequenceFields(b),
+  //
+  // A deliberate gap in a legal series is written together with its reason in one
+  // transaction. The request audit middleware writes after the response and only
+  // logs a failure, so it cannot be the sole record of why numbers were skipped.
+  const gapReason = row.legal_series === GAPLESS ? b.acknowledge_gap_reason?.trim() : undefined;
+  const updated = await db.$transaction(async (tx) => {
+    const saved = await tx.numberSequence.update({
+      where: { id: row.id },
+      data: persistedSequenceFields(b),
+    });
+    if (gapReason) {
+      const user = c.get('user');
+      await tx.auditLog.create({
+        data: {
+          tenant_id:   tenantId,
+          user_id:     user?.id ?? null,
+          user_email:  user?.email ?? null,
+          user_role:   user?.role ?? null,
+          method:      'PUT',
+          path:        `number_sequences/${row.id}`,
+          status_code: 200,
+          body: {
+            action: 'NUMBER_SEQUENCE_GAP_ACKNOWLEDGED',
+            reference: row.reference,
+            before: { next_number: row.next_number, manual: row.manual },
+            after:  { next_number: saved.next_number, manual: saved.manual },
+            reason: gapReason,
+          },
+        },
+      });
+    }
+    return saved;
   });
 
   return ok(c, { ...updated, preview: describeSequence(updated) });

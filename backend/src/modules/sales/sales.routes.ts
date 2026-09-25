@@ -1,12 +1,13 @@
 import { Hono }    from 'hono';
-import { SalesService } from './sales.service';
+import { SalesService, postIssueCogs } from './sales.service';
+import { restoreIssues } from '../../shared/services/stockLedger.service';
 import { AppError } from '../../shared/errors/AppError';
 import { db }       from '../../infrastructure/database/client';
 
-import { requireRole } from '../../shared/middleware/authMiddleware';
 import { validate }    from '../../shared/middleware/validate';
 import { ok, created, message } from '../../shared/response';
-import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema, ReturnSalesOrderSchema } from '../../shared/schemas';
+import { CreateSalesOrderSchema, InvoiceOrderSchema, PayOrderSchema, ReturnSalesOrderSchema, StorefrontOrderSchema } from '../../shared/schemas';
+import type { z } from 'zod';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { nextFacturaNumber } from '../../shared/services/numberSequence.service';
 import { computeDocumentTax } from '../../shared/services/documentTax.service';
@@ -16,11 +17,37 @@ import { writeFacturaLines, linesFromSalesOrder, markInvoiced } from '../../shar
 import { resolvePostingAccounts_orExplain } from '../../shared/services/posting.service';
 import { resolveItemPolicies, groupByItemGroup } from '../../shared/services/itemPolicy.service';
 import { resolveInventoryDimensions } from '../../shared/services/inventoryDimension.service';
+import { assertTenantReferences } from '../../shared/services/tenantReference.service';
 import { logger } from '../../shared/logger';
 import { physicalStatusFor } from '../../shared/services/inventoryTransactionStatus';
+import { assertDocumentCurrencySupported } from '../../shared/services/currency/documentCurrency';
+import { routeGuard, type RouteGuards } from '../../shared/middleware/permissions';
 import type { AppEnv } from '../../shared/context';
 
 const app = new Hono<AppEnv>();
+
+/**
+ * The permission each route requires (WORK-030a). Exported so a test can pin the
+ * map and prove every route in this file has exactly one entry; the guard is the
+ * first middleware, so a denial happens before validation and before the database.
+ */
+export const SALES_ORDER_ROUTE_PERMISSIONS = Object.freeze({
+  'GET /': ['sales.order.read'],
+  'POST /': ['sales.order.create'],
+  'POST /storefront': ['storefront.order.place'],
+  'GET /:id': ['sales.order.read'],
+  'POST /:id/invoice': ['sales.invoice.post'],
+  'POST /:id/pay': ['sales.customer_payment.post'],
+  'PUT /:id': ['sales.order.update'],
+  'POST /:id/confirm': ['sales.order.confirm'],
+  'POST /:id/ship': ['sales.order.ship'],
+  'POST /:id/complete': ['sales.order.complete'],
+  'POST /:id/cancel': ['sales.order.cancel'],
+  'POST /:id/return': ['sales.return.post'],
+} satisfies RouteGuards);
+
+const guard = routeGuard(SALES_ORDER_ROUTE_PERMISSIONS);
+
 const salesService = new SalesService();
 
 // The local `factura_counters` allocator that used to live here is gone. It was
@@ -29,108 +56,121 @@ const salesService = new SalesService();
 // number. `nextFacturaNumber` from the number sequence service replaces all
 // three; see migration 023.
 
-app.get('/', async (c) => {
+app.get('/', guard('GET /'), async (c) => {
   const data = await salesService.getOrders(c.get('tenantId'), c.req.query() as any);
   return ok(c, data);
 });
 
-app.post('/', validate(CreateSalesOrderSchema), async (c) => {
+app.post('/', guard('POST /'), validate(CreateSalesOrderSchema), async (c) => {
   const order = await salesService.createOrder(c.get('tenantId'), c.get('body') as any, c.get('user').id);
   return created(c, order);
 });
 
-app.post('/storefront', async (c) => {
-  const body   = await c.req.json();
+/**
+ * A shopper's checkout (WORK-043, with the price half of D-15).
+ *
+ * The body names products and quantities only. Price, discount, warehouse and
+ * currency are refused by the strict schema: the catalogue sets the price, the
+ * sales parameters set the warehouse, the ledger sets the currency. The order is
+ * created and then confirmed — its stock is RESERVED in the storefront warehouse,
+ * not deducted — so shipping it issues exactly what checkout held, once, and
+ * cancelling it frees exactly that.
+ */
+app.post('/storefront', guard('POST /storefront'), validate(StorefrontOrderSchema), async (c) => {
+  const body = c.get('body') as z.infer<typeof StorefrontOrderSchema>;
+  const tenantId = c.get('tenantId');
   const userId = c.get('user').id;
 
-  const lines: Array<{ product_id: string; variant_id?: string; quantity: number; unit_price: number }> = body.lines ?? [];
-  if (lines.length === 0) throw new AppError('Cart is empty', 400);
-
-  // Look up customer record linked to this user
   const customer = await db.customer.findFirst({
-    where: { user_id: userId, tenant_id: c.get('tenantId') },
+    where: { user_id: userId, tenant_id: tenantId },
     select: { id: true },
   });
 
-  // Stock check per line
-  for (const line of lines) {
-    const stockWhere: any = { tenant_id: c.get('tenantId'), product_id: line.product_id };
-    if (line.variant_id) stockWhere.variant_id = line.variant_id;
-    const agg = await db.inventoryStock.aggregate({
-      where: stockWhere,
-      _sum: { quantity: true, reserved_qty: true },
-    });
-    const available = (agg._sum.quantity ?? 0) - (agg._sum.reserved_qty ?? 0);
-    if (available < line.quantity) {
-      const product = await db.product.findFirst({ where: { id: line.product_id }, select: { name: true } });
-      throw new AppError(
-        `"${product?.name ?? 'Product'}" is out of stock. Available: ${available}, requested: ${line.quantity}`,
-        400
-      );
+  // The storefront warehouse is a sales parameter; without one, the tenant's
+  // default or only warehouse. Never the shopper's choice.
+  const params = await db.salesParameters.findFirst({
+    where: { tenant_id: tenantId, legal_entity_id: null },
+    select: { storefront_warehouse_id: true },
+  });
+  const dims = await resolveInventoryDimensions(tenantId, {
+    warehouseId: params?.storefront_warehouse_id ?? null,
+    documentKind: 'storefront order',
+  });
+  if (!dims.warehouse_id) {
+    throw new AppError('No warehouse is configured for storefront orders', 422, 'STOREFRONT_WAREHOUSE_REQUIRED');
+  }
+
+  const productIds = [...new Set(body.lines.map((l) => l.product_id))];
+  const variantIds = [...new Set(body.lines.map((l) => l.variant_id).filter((v): v is string => !!v))];
+  const [products, variants] = await Promise.all([
+    db.product.findMany({
+      where: { tenant_id: tenantId, id: { in: productIds }, is_active: true, is_published: true },
+      select: { id: true, selling_price: true, sale_price: true },
+    }),
+    variantIds.length
+      ? db.productVariant.findMany({
+          where: { tenant_id: tenantId, id: { in: variantIds }, is_active: true },
+          select: { id: true, product_id: true, additional_cost: true },
+        })
+      : Promise.resolve([] as Array<{ id: string; product_id: string; additional_cost: any }>),
+  ]);
+  const productById = new Map(products.map((p) => [p.id, p]));
+  const variantById = new Map(variants.map((v) => [v.id, v]));
+
+  const unsellable: string[] = [];
+  const lines = body.lines.map((l, i) => {
+    const product = productById.get(l.product_id);
+    const variant = l.variant_id ? variantById.get(l.variant_id) : null;
+    if (!product || (l.variant_id && (!variant || variant.product_id !== l.product_id))) {
+      unsellable.push(`lines[${i}]`);
+      return null;
     }
+    // The shop shows the sale price when there is one, and a variant surcharge on
+    // top — the same price the product page displays.
+    const base = Number(product.sale_price ?? product.selling_price);
+    return {
+      product_id: l.product_id,
+      variant_id: l.variant_id ?? undefined,
+      quantity: l.quantity,
+      unit_price: base + Number(variant?.additional_cost ?? 0),
+    };
+  });
+  if (unsellable.length) {
+    throw new AppError(
+      `Not available in the shop: ${unsellable.join(', ')}. A product must be active and published.`,
+      422,
+      'PRODUCT_NOT_SELLABLE',
+    );
   }
 
   const order = await salesService.createOrder(
-    c.get('tenantId'),
-    { ...body, source: 'storefront', customer_id: customer?.id ?? undefined, currency: 'BOB' },
-    userId
+    tenantId,
+    {
+      source: 'storefront',
+      customer_id: customer?.id ?? undefined,
+      warehouse_id: dims.warehouse_id,
+      shipping_address: body.shipping_address,
+      notes: body.notes,
+      lines: lines as any,
+    },
+    userId,
   );
 
-  // Deduct stock immediately and record transactions
-  for (const line of lines) {
-    const stockWhere: any = { tenant_id: c.get('tenantId'), product_id: line.product_id };
-    if (line.variant_id) stockWhere.variant_id = line.variant_id;
-    const stockRecords = await db.inventoryStock.findMany({ where: stockWhere, orderBy: { updated_at: 'asc' } });
-    let remaining = line.quantity;
-    for (const stock of stockRecords) {
-      if (remaining <= 0) break;
-      const toDeduct = Math.min(remaining, stock.quantity - stock.reserved_qty);
-      if (toDeduct <= 0) continue;
-      await db.inventoryStock.update({
-        where: { id: stock.id },
-        data: { quantity: { decrement: toDeduct } },
-      });
-      await db.inventoryTransaction.create({
-        data: {
-          tenant_id:        c.get('tenantId'),
-          transaction_type: 'OUTBOUND',
-            ...physicalStatusFor('OUTBOUND'),
-          reference_type:   'SALES_ORDER',
-          reference_id:     order.id,
-          reference_number: order.order_number,
-          product_id:       line.product_id,
-          variant_id:       line.variant_id ?? null,
-          from_location_id: stock.location_id,
-          quantity:         toDeduct,
-          unit_cost:        line.unit_price,
-          notes:            `Storefront · SO ${order.order_number}`,
-          performed_by:     userId,
-        },
-      });
-      // Consume FIFO batch
-      const fifo = await db.inventoryCostLayer.findFirst({
-        where: {
-          tenant_id: c.get('tenantId'), product_id: line.product_id,
-          ...(line.variant_id ? { variant_id: line.variant_id } : {}),
-          location_id: stock.location_id, quantity: { gt: 0 },
-        },
-        orderBy: { received_at: 'asc' },
-      });
-      if (fifo) {
-        await db.inventoryCostLayer.update({ where: { id: fifo.id }, data: { quantity: { decrement: Math.min(toDeduct, fifo.quantity) } } });
-      }
-      remaining -= toDeduct;
-    }
+  try {
+    await salesService.confirmOrder(tenantId, order.id, userId);
+  } catch (err) {
+    // Nothing was held; close the draft so it does not linger as a phantom order.
+    await db.salesOrder.updateMany({
+      where: { id: order.id, tenant_id: tenantId, status: 'DRAFT' },
+      data: { status: 'CANCELLED', notes: 'Checkout could not reserve stock' },
+    });
+    throw err;
   }
 
-  await db.salesOrder.update({
-    where: { id: order.id },
-    data: { status: 'CONFIRMED', confirmed_at: new Date() },
-  });
   return created(c, { id: order.id, order_number: order.order_number });
 });
 
-app.get('/:id', async (c) => {
+app.get('/:id', guard('GET /:id'), async (c) => {
   const order = await db.salesOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: {
@@ -146,14 +186,14 @@ app.get('/:id', async (c) => {
   // Attach factura if invoiced
   let factura = null;
   if (order.invoice_id) {
-    factura = await db.factura.findUnique({ where: { id: order.invoice_id } });
+    factura = await db.factura.findFirst({ where: { id: order.invoice_id, tenant_id: c.get('tenantId') } });
   }
 
   return ok(c, { ...order, factura });
 });
 
 // Create invoice (Factura) from a sales order
-app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(InvoiceOrderSchema), async (c) => {
+app.post('/:id/invoice', guard('POST /:id/invoice'), validate(InvoiceOrderSchema), async (c) => {
   const order = await db.salesOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: { customer: true },
@@ -163,6 +203,14 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
   if (['DRAFT', 'CANCELLED'].includes(order.status)) {
     throw new AppError(`Cannot invoice an order in ${order.status} status. Confirm it first.`, 400);
   }
+
+  // The factura and its voucher are stated in the order's currency, which is only
+  // an accounting-currency amount when the two are the same. Refused before the
+  // FACTURA number is drawn, so a refusal never spends a legal number (WORK-025).
+  await assertDocumentCurrencySupported(c.get('tenantId'), order.currency, {
+    errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+    capability: 'Sales invoices',
+  });
 
   // [OFFICIAL] "Deduction requirements" prevents posting a sales invoice before
   // the packing slip is posted. Here the shipment IS the packing slip.
@@ -359,7 +407,7 @@ app.post('/:id/invoice', requireRole('admin', 'store_manager'), validate(Invoice
 });
 
 // Collect AR payment — clears CxC (1103) balance
-app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSchema), async (c) => {
+app.post('/:id/pay', guard('POST /:id/pay'), validate(PayOrderSchema), async (c) => {
   const order = await db.salesOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
     include: { customer: true },
@@ -367,6 +415,13 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
   if (!order) throw new AppError('Order not found', 404);
   if (!order.invoice_id) throw new AppError('Order has no invoice. Issue a Factura first.', 400);
   if (order.paid_at) throw new AppError('This order has already been paid', 409);
+
+  // The receipt voucher below is written at face value, so it is only correct in
+  // the ledger's accounting currency (WORK-025).
+  await assertDocumentCurrencySupported(c.get('tenantId'), order.currency, {
+    errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+    capability: 'Customer payments',
+  });
 
   const { payment_date, account_code = '1102', notes } = c.get('body');
   const paymentDate = payment_date ? new Date(payment_date) : new Date();
@@ -413,7 +468,7 @@ app.post('/:id/pay', requireRole('admin', 'store_manager'), validate(PayOrderSch
 });
 
 // Edit SO lines before invoice is posted
-app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
+app.put('/:id', guard('PUT /:id'), async (c) => {
   const body = await c.req.json();
   const order = await db.salesOrder.findFirst({
     where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
@@ -423,6 +478,29 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
   if (!['DRAFT', 'CONFIRMED'].includes(order.status)) throw new AppError('Can only edit DRAFT or CONFIRMED orders', 400);
 
   const { customer_id, notes, lines, warehouse_id } = body;
+
+  // A CONFIRMED order holds stock for exactly its lines in its warehouse. Changing
+  // either in place would leave holds that no longer match what ships. Until the
+  // edit releases and re-reserves in one transaction (WORK-048), it is refused.
+  // Only a change to what is held refuses: product, variant and quantity per line,
+  // or the warehouse. Prices, discounts and notes may still be edited.
+  const holdKey = (ls: Array<{ product_id: string; variant_id?: string | null; quantity: number }>) =>
+    ls.map((l) => `${l.product_id}|${l.variant_id || ''}|${Number(l.quantity)}`).sort().join(',');
+  const heldLines = order.status === 'CONFIRMED' && Array.isArray(lines)
+    ? await db.salesOrderLine.findMany({ where: { order_id: order.id }, select: { product_id: true, variant_id: true, quantity: true } })
+    : [];
+  const linesChangeHolds = order.status === 'CONFIRMED' && Array.isArray(lines) && holdKey(lines) !== holdKey(heldLines);
+  if (order.status === 'CONFIRMED' && (linesChangeHolds || (warehouse_id !== undefined && warehouse_id !== order.warehouse_id))) {
+    throw new AppError(
+      'This order is confirmed and holds stock for its lines. Cancel it and create a new order to change lines or warehouse.',
+      409,
+      'CONFIRMED_ORDER_STOCK_EDIT_REFUSED',
+    );
+  }
+  await assertTenantReferences(c.get('tenantId'), {
+    customerId: customer_id ?? null,
+    lines: Array.isArray(lines) ? lines : undefined,
+  });
 
   // `warehouse_id` used to be dropped here without a word. The edit form sends it
   // (frontend sales/orders/page.tsx), this route destructured only three fields,
@@ -466,268 +544,274 @@ app.put('/:id', requireRole('admin', 'store_manager'), async (c) => {
   return ok(c, null);
 });
 
-app.post('/:id/confirm', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/confirm', guard('POST /:id/confirm'), async (c) => {
   const order = await salesService.confirmOrder(c.get('tenantId'), c.req.param('id'), c.get('user').id);
   return ok(c, order);
 });
 
-app.post('/:id/ship', requireRole('admin', 'store_manager'), async (c) => {
+app.post('/:id/ship', guard('POST /:id/ship'), async (c) => {
   const body = await c.req.json();
   const order = await salesService.shipOrder(c.get('tenantId'), c.req.param('id'), c.get('user').id, body);
   return ok(c, order);
 });
 
-app.post('/:id/complete', requireRole('admin', 'store_manager'), async (c) => {
-  const order = await db.salesOrder.update({
-    where: { id: c.req.param('id') },
+// Only a shipped order can be completed, and only the caller's own order. This
+// used to update by id alone — any tenant's order, in any status.
+app.post('/:id/complete', guard('POST /:id/complete'), async (c) => {
+  const tenantId = c.get('tenantId');
+  const id = c.req.param('id');
+  const order = await db.salesOrder.findFirst({ where: { id, tenant_id: tenantId }, select: { id: true, status: true } });
+  if (!order) throw new AppError('Order not found', 404);
+  if (order.status !== 'SHIPPED') {
+    throw new AppError(`Only a SHIPPED order can be completed (order is ${order.status})`, 409, 'ORDER_NOT_COMPLETABLE');
+  }
+  const res = await db.salesOrder.updateMany({
+    where: { id, tenant_id: tenantId, status: 'SHIPPED' },
     data: { status: 'COMPLETED', completed_at: new Date() },
   });
-  return ok(c, order);
+  if (res.count === 0) throw new AppError('Order changed status concurrently; reload and retry', 409, 'ORDER_NOT_COMPLETABLE');
+  const completed = await db.salesOrder.findFirst({ where: { id, tenant_id: tenantId } });
+  return ok(c, completed);
 });
 
-app.post('/:id/cancel', requireRole('admin'), async (c) => {
+app.post('/:id/cancel', guard('POST /:id/cancel'), async (c) => {
   const order = await salesService.cancelOrder(c.get('tenantId'), c.req.param('id'), c.get('user').id);
   return ok(c, order);
 });
 
 // ── Sales Return ───────────────────────────────────────────────────────────────
-app.post('/:id/return', requireRole('admin', 'store_manager'), validate(ReturnSalesOrderSchema), async (c) => {
-  const order = await db.salesOrder.findFirst({
-    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
-    include: { customer: true, lines: true },
-  });
-  if (!order) throw new AppError('Order not found', 404);
-  if (!['SHIPPED', 'COMPLETED'].includes(order.status)) {
-    throw new AppError(`Cannot return an order in ${order.status} status. Must be SHIPPED or COMPLETED.`, 400);
-  }
-  if ((order as any).returned_at) throw new AppError('This order has already been returned', 409);
-
-  // Validated, not raw JSON. `factura_number` is what the operator typed off
-  // the pre-printed credit-note stock; it is REQUIRED when the FACTURA sequence
-  // is manual and REJECTED when it is not, both decided by `allocateNumber`.
+app.post('/:id/return', guard('POST /:id/return'), validate(ReturnSalesOrderSchema), async (c) => {
+  const tenantId = c.get('tenantId');
+  const orderId = c.req.param('id');
   const { notes, factura_number: manualCreditNoteNumber } = c.get('body');
 
-  const total = Number(order.total_amount);
-  const taxReturn = await computeDocumentTax(c.get('tenantId'), Number(order.total_amount), {
-    partyId: order.customer_id ?? null, legacyConfig: c.get('taxConfig'),
-  });
-  const { subtotal, vat: ivaAmount, turnover: itAmount } = taxReturn;
-
-  const shippingAddr = order.shipping_address as any;
-  const customerName = order.customer
-    ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
-    : shippingAddr?.name ?? 'Cliente Mostrador';
-
-  // GL accounts are pre-fetched outside the transaction because they are
-  // read-only. The factura number is NOT — allocating a continuous series
-  // outside the transaction that writes the document is what put gaps in it.
-
-  // A return reverses the invoice, the COGS and possibly the payment, so it needs
-  // every posting type the forward path used. Resolving them as one set means a
-  // partially-configured tenant cannot post half a reversal.
-  const retAcc = await resolvePostingAccounts_orExplain(
-    c.get('tenantId'),
-    ['REVENUE', 'VAT_OUTPUT', 'TAX_TURNOVER_PAYABLE', 'TAX_TURNOVER_EXPENSE', 'AR', 'INVENTORY', 'COGS', 'BANK'] as const,
-    { document: `Return for ${order.order_number}`, partyId: order.customer_id ?? null },
-  );
-
-  // ── Where do the goods go back to? ─────────────────────────────────────────
-  //
-  // **[OFFICIAL]** "the demand order is expected to indicate where the order
-  // must be shipped from (that is, what site and warehouse)."
-  // learn.microsoft.com/dynamics365/supply-chain/warehousing/flexible-warehouse-level-dimension-reservation
-  //
-  // This code used to skip the warehouse filter whenever the order had none, so
-  // `findFirst` — with no ordering — put the returned goods in whichever stock
-  // row the query happened to reach first. Invisible on a single-warehouse
-  // tenant; on this one, with three warehouses and 41 orders carrying no
-  // warehouse, it could silently move stock into the wrong building.
-  //
-  // Orders created since migration 011 always carry a warehouse. Older ones may
-  // not, so the behaviour on a miss is deliberate rather than accidental: refuse
-  // when the tenant has declared the dimension mandatory, and otherwise fall
-  // back to the tenant default — never to "whatever came first". This mirrors
-  // posting.service.ts, which throws under `require_balanced_posting` and logs
-  // loudly otherwise.
-  const returnDims = await resolveInventoryDimensions(
-    c.get('tenantId'),
-    { warehouseId: order.warehouse_id, documentKind: `return for ${order.order_number}` },
-  );
-
-  if (!returnDims.warehouse_id) {
-    logger.error(
-      { tenantId: c.get('tenantId'), order: order.order_number },
-      'Return has no warehouse to restore stock to; falling back to a deterministic pick. ' +
-        'Set Sales parameters → default warehouse to make this unambiguous.',
-    );
-  } else if (returnDims.origin !== 'explicit') {
-    logger.warn(
-      { tenantId: c.get('tenantId'), order: order.order_number, origin: returnDims.origin },
-      'Order carries no warehouse; returning stock to the resolved fallback warehouse',
-    );
-  }
-
-  // Pre-fetch stock records for each line outside transaction (findFirst per line)
-  const stockByLine: Array<{ stock: any; line: any }> = [];
-  for (const line of order.lines) {
-    const stockWhere: any = { tenant_id: c.get('tenantId'), product_id: line.product_id };
-    if (line.variant_id) stockWhere.variant_id = line.variant_id;
-    if (returnDims.warehouse_id) {
-      stockWhere.location = { zone: { warehouse_id: returnDims.warehouse_id } };
-    }
-    const stock = await db.inventoryStock.findFirst({
-      where: stockWhere,
-      // Ordered so that an unresolvable case is at least repeatable and
-      // auditable. An arbitrary row is not the same as a defensible one, but a
-      // stable wrong answer can be found and corrected; a random one cannot.
-      // By `id` rather than a timestamp: InventoryStock has no `created_at`,
-      // and ordering by `updated_at` would make the pick move every time stock
-      // changed — the opposite of repeatable.
-      orderBy: { id: 'asc' },
-    });
-    stockByLine.push({ stock, line });
-  }
+  let responseMessage = '';
 
   await db.$transaction(async (tx) => {
-    // The credit note draws from the FACTURA series, which is what this code has
-    // always done.
-    //
-    // **[OPEN — NOT VERIFIED]** whether Bolivia requires notas de crédito to run
-    // on their own series, and how they must reference the factura they correct,
-    // is listed as an open question in HANDOVER §7 and is NOT settled here. The
-    // `CREDIT_NOTE` reference already exists in `SequenceReference`, so the day
-    // the answer is "separate series" this is a one-word change plus a sequence
-    // row — deliberately not made on a guess.
-    const facturaNumber = await nextFacturaNumber(c.get('tenantId'), tx, {
-      // Drawn from FACTURA, so it obeys the FACTURA numbering mode: on an
-      // automatic series this is undefined and the counter is used; on a manual
-      // one it carries what the operator typed, and omitting it would make the
-      // Return action impossible to complete rather than merely awkward.
-      manualNumber: manualCreditNoteNumber,
-    });
+    // Row lock — serializes concurrent returns on this order row.
+    // Invoice and pay handlers do not acquire this lock; their
+    // concurrency defects remain open (WORK-048A).
+    await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${orderId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
 
-    // ── 1. Restore stock + record RETURN transactions ───────────────────────────
-    for (const { stock, line } of stockByLine) {
-      if (stock) {
-        await tx.inventoryStock.update({
-          where: { id: stock.id },
-          data: { quantity: { increment: line.quantity } },
-        });
+    const order = await tx.salesOrder.findFirst({
+      where: { id: orderId, tenant_id: tenantId },
+      include: { customer: true, lines: true },
+    });
+    if (!order) throw new AppError('Order not found', 404);
+    // returned_at checked before status: gives a specific 409 for the most
+    // common re-submit rather than the generic status-mismatch 409.
+    if ((order as any).returned_at) {
+      throw new AppError('This order has already been returned', 409, 'ORDER_ALREADY_RETURNED');
+    }
+    if (!['SHIPPED', 'COMPLETED'].includes(order.status)) {
+      throw new AppError(`Cannot return an order in ${order.status} status`, 409, 'ORDER_NOT_RETURNABLE');
+    }
+
+    const isInvoiced = !!order.invoice_id;
+
+    // Uninvoiced-path guards — before any allocation or stock mutation.
+    if (!isInvoiced) {
+      if (manualCreditNoteNumber) {
+        throw new AppError(
+          'This order has no invoice. A fiscal credit-note number cannot be assigned to an uninvoiced shipment reversal.',
+          400,
+          'RETURN_UNINVOICED_NUMBER_REJECTED',
+        );
       }
-      await tx.inventoryTransaction.create({
+      if (order.paid_at) {
+        throw new AppError(
+          'This order is marked paid but has no invoice. Correct the data inconsistency before processing a return.',
+          409,
+          'RETURN_PAID_WITHOUT_INVOICE',
+        );
+      }
+    }
+
+    const total = Number(order.total_amount);
+
+    // Invoiced prerequisites — currency, tax, posting accounts and FACTURA number
+    // are all resolved BEFORE restoreIssues, matching POS ordering (sequence
+    // before issueAvailable). A configuration or sequence failure aborts here
+    // without touching inventory.
+    // Uninvoiced: currency guard only; no fiscal tax, accounts, or number.
+    type InvoicedData = {
+      subtotal: number; ivaAmount: number; itAmount: number;
+      customerName: string; retAcc: any; facturaNumber: string;
+    };
+    let invoicedData: InvoicedData | null = null;
+
+    if (isInvoiced) {
+      await assertDocumentCurrencySupported(tenantId, order.currency, {
+        errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+        capability: 'Customer returns and credit notes',
+        client: tx,
+      });
+
+      const taxReturn = await computeDocumentTax(tenantId, total, {
+        partyId: order.customer_id ?? null,
+        legacyConfig: c.get('taxConfig'),
+        client: tx,
+      });
+      const { subtotal, vat: ivaAmount, turnover: itAmount } = taxReturn;
+
+      const shippingAddr = order.shipping_address as any;
+      const customerName = order.customer
+        ? `${order.customer.first_name} ${order.customer.last_name}`.trim()
+        : shippingAddr?.name ?? 'Cliente Mostrador';
+
+      const retAcc = await resolvePostingAccounts_orExplain(
+        tenantId,
+        ['REVENUE', 'VAT_OUTPUT', 'TAX_TURNOVER_PAYABLE', 'TAX_TURNOVER_EXPENSE', 'AR', 'INVENTORY', 'COGS', 'BANK'] as const,
+        { document: `Return for ${order.order_number}`, partyId: order.customer_id ?? null, client: tx },
+      );
+
+      // FACTURA number secured before stock restoration — a sequence failure
+      // aborts without mutating inventory.
+      const facturaNumber = await nextFacturaNumber(tenantId, tx, {
+        manualNumber: manualCreditNoteNumber,
+      });
+
+      invoicedData = { subtotal, ivaAmount, itAmount, customerName, retAcc, facturaNumber };
+    } else {
+      // Uninvoiced: currency guard before stock, no fiscal number.
+      await assertDocumentCurrencySupported(tenantId, order.currency, {
+        errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+        capability: 'Customer returns and credit notes',
+        client: tx,
+      });
+    }
+
+    // Shared stock restoration — runs after all pre-flight checks and, for the
+    // invoiced path, after the FACTURA number is secured.
+    const shipped = await tx.inventoryTransaction.findMany({
+      where: {
+        tenant_id: tenantId,
+        reference_type: { in: ['SALES_ORDER', 'POS_SALE'] },
+        reference_id: order.id,
+        transaction_type: 'OUTBOUND',
+      },
+      select: { id: true },
+    });
+    const restored = await restoreIssues(tx, {
+      tenantId,
+      issueTransactionIds: shipped.map((t) => t.id),
+      mode: 'NEW_LAYER',
+      transactionType: 'RETURN',
+      referenceType: 'SALES_ORDER',
+      referenceId: order.id,
+      referenceNumber: order.order_number,
+      notes: notes ? `Return: ${notes}` : `Return of SO ${order.order_number}`,
+      userId: c.get('user').id,
+    });
+    const policies = await resolveItemPolicies(tenantId, order.lines.map((l: any) => l.product_id), tx);
+    const hasStocked = order.lines.some((l: any) => policies.get(l.product_id)?.stocked !== false);
+    if (hasStocked && restored.transactionIds.length === 0) {
+      throw new AppError(
+        `No shipped stock of ${order.order_number} is left to take back - it has already been returned, ` +
+          `or it was shipped before cost settlements were recorded.`,
+        409,
+        'RETURN_NOTHING_TO_RESTORE',
+      );
+    }
+
+    if (isInvoiced && invoicedData) {
+      const { subtotal, ivaAmount, itAmount, customerName, retAcc, facturaNumber } = invoicedData;
+
+      // [OPEN] Whether Bolivia requires notas de crédito on a separate series
+      // from FACTURA is unresolved (HANDOVER §7). CREDIT_NOTE already exists in
+      // SequenceReference; when the answer is known this is a one-word change.
+      await tx.factura.create({
         data: {
-          tenant_id:        c.get('tenantId'),
-          transaction_type: 'RETURN',
-            ...physicalStatusFor('RETURN'),
-          reference_type:   'SALES_ORDER',
-          reference_id:     order.id,
-          reference_number: order.order_number,
-          product_id:       line.product_id,
-          variant_id:       line.variant_id ?? null,
-          to_location_id:   stock?.location_id ?? null,
-          quantity:         line.quantity,
-          unit_cost:        line.unit_price,
-          notes:            notes ? `Return: ${notes}` : `Return of SO ${order.order_number}`,
-          performed_by:     c.get('user').id,
+          tenant_id:      tenantId,
+          factura_number: facturaNumber,
+          source_type:    'RETURN',
+          source_id:      order.id,
+          customer_name:  customerName,
+          invoice_date:   new Date(),
+          subtotal:       -subtotal,
+          iva_amount:     -ivaAmount,
+          it_amount:      -itAmount,
+          total_amount:   -total,
+          notes:          notes ? `Nota de crédito - ${notes}` : `Nota de crédito por devolución SO ${order.order_number}`,
+          created_by:     c.get('user').id,
         },
       });
-    }
 
-    // ── 2. Credit note Factura (negative amounts) ───────────────────────────────
-    await tx.factura.create({
-      data: {
-        tenant_id:      c.get('tenantId'),
-        factura_number: facturaNumber,
-        source_type:    'RETURN',
-        source_id:      order.id,
-        customer_name:  customerName,
-        invoice_date:   new Date(),
-        subtotal:       -subtotal,
-        iva_amount:     -ivaAmount,
-        it_amount:      -itAmount,
-        total_amount:   -total,
-        notes:          notes ? `Nota de crédito — ${notes}` : `Nota de crédito por devolución SO ${order.order_number}`,
-        created_by:     c.get('user').id,
-      },
-    });
-
-    // D-5: the voucher number was `count() + 1` incremented locally across up to
-    // three entries — a race against every other posting in the system. Each entry
-    // now draws its own number atomically from inside postJournal.
-
-    // ── 3. JE 1 — Reverse sales invoice (only if invoiced) ─────────────────────
-    // Original invoice: Dr CxC, Dr IT Exp; Cr Revenue, Cr IVA Débito, Cr IT por Pagar
-    // Reversal:         Cr CxC, Cr IT Exp; Dr Revenue, Dr IVA Débito, Dr IT por Pagar
-    if (order.invoice_id && retAcc) {
-      await postJournal({
-        tenantId:    c.get('tenantId'),
-        tx,
-        description: `Return — Reverse Invoice: ${order.order_number}`,
-        source:      { module: 'SALES_RETURN', id: order.id },
-        userId:      c.get('user').id,
-        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
-        lines: [
-          { accountId: retAcc.REVENUE,              debit:  subtotal,  description: `Return revenue reversal` },
-          { accountId: retAcc.VAT_OUTPUT,           debit:  ivaAmount, description: `Return IVA Débito reversal` },
-          { accountId: retAcc.TAX_TURNOVER_PAYABLE, debit:  itAmount,  description: `Return IT por Pagar reversal` },
-          { accountId: retAcc.AR,                   credit: total,     description: `Return CxC credit` },
-          { accountId: retAcc.TAX_TURNOVER_EXPENSE, credit: itAmount,  description: `Return IT Expense reversal` },
-        ],
-      });
-    }
-
-    // ── 4. JE 2 — Reverse COGS ─────────────────────────────────────────────────
-    if (retAcc) {
-      const productIds = order.lines.map((l: any) => l.product_id);
-      const products = await tx.product.findMany({
-        where: { id: { in: productIds } },
-        select: { id: true, cost_price: true },
-      });
-      const costMap = new Map(products.map((p: any) => [p.id, Number(p.cost_price ?? 0)]));
-      const cogsAmount = order.lines.reduce((sum: number, line: any) =>
-        sum + line.quantity * (costMap.get(line.product_id) ?? 0), 0);
-
-      if (cogsAmount > 0) {
+      if (retAcc) {
         await postJournal({
-          tenantId:    c.get('tenantId'),
+          tenantId,
           tx,
-          description: `Return — Reverse COGS: ${order.order_number}`,
+          description: `Return - Reverse Invoice: ${order.order_number}`,
           source:      { module: 'SALES_RETURN', id: order.id },
           userId:      c.get('user').id,
-          dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
+          dimensions:  await contextForSalesOrder(tenantId, order.id, tx),
           lines: [
-            { accountId: retAcc.INVENTORY, debit:  cogsAmount, description: `Return inventory in` },
-            { accountId: retAcc.COGS,      credit: cogsAmount, description: `Return COGS reversal` },
+            { accountId: retAcc.REVENUE,              debit:  subtotal,  description: `Return revenue reversal` },
+            { accountId: retAcc.VAT_OUTPUT,           debit:  ivaAmount, description: `Return IVA Débito reversal` },
+            { accountId: retAcc.TAX_TURNOVER_PAYABLE, debit:  itAmount,  description: `Return IT por Pagar reversal` },
+            { accountId: retAcc.AR,                   credit: total,     description: `Return CxC credit` },
+            { accountId: retAcc.TAX_TURNOVER_EXPENSE, credit: itAmount,  description: `Return IT Expense reversal` },
           ],
         });
       }
-    }
 
-    // ── 5. JE 3 — Reverse AR payment (only if already paid) ───────────────────
-    if (order.paid_at && retAcc) {
-      await postJournal({
-        tenantId:    c.get('tenantId'),
-        tx,
-        description: `Return — Refund: ${order.order_number}`,
-        source:      { module: 'SALES_RETURN', id: order.id },
-        userId:      c.get('user').id,
-        dimensions:  await contextForSalesOrder(c.get('tenantId'), order.id, tx),
-        lines: [
-          { accountId: retAcc.AR,   debit:  total, description: `Return CxC refund` },
-          { accountId: retAcc.BANK, credit: total, description: `Return refund from Bancos` },
-        ],
+      await postIssueCogs(tx, tenantId, {
+        costByProduct: restored.costByProduct,
+        document: order.order_number,
+        sourceModule: 'SALES_RETURN',
+        sourceId: order.id,
+        userId: c.get('user').id,
+        dimensionsFor: () => contextForSalesOrder(tenantId, order.id, tx),
+        reverse: true,
+        description: `Return - Reverse COGS: ${order.order_number}`,
       });
+
+      if (order.paid_at && retAcc) {
+        await postJournal({
+          tenantId,
+          tx,
+          description: `Return - Refund: ${order.order_number}`,
+          source:      { module: 'SALES_RETURN', id: order.id },
+          userId:      c.get('user').id,
+          dimensions:  await contextForSalesOrder(tenantId, order.id, tx),
+          lines: [
+            { accountId: retAcc.AR,   debit:  total, description: `Return CxC refund` },
+            { accountId: retAcc.BANK, credit: total, description: `Return refund from Bancos` },
+          ],
+        });
+      }
+
+      responseMessage = `Order ${order.order_number} returned. Stock restored, credit note issued, return recorded in accounting.`;
+    } else {
+      // Uninvoiced path: COGS reversal only. postIssueCogs resolves accounts by
+      // item group internally. No factura, no tax, no invoice/payment GL reversal.
+      await postIssueCogs(tx, tenantId, {
+        costByProduct: restored.costByProduct,
+        document: order.order_number,
+        sourceModule: 'SALES_RETURN',
+        sourceId: order.id,
+        userId: c.get('user').id,
+        dimensionsFor: () => contextForSalesOrder(tenantId, order.id, tx),
+        reverse: true,
+        description: `Return - Reverse COGS: ${order.order_number}`,
+      });
+
+      responseMessage = `Order ${order.order_number} returned. Shipment and stock reversed. No credit note issued as this order was not invoiced.`;
     }
 
-    // ── 6. Mark order RETURNED + reverse customer lifetime value ───────────────
-    await tx.salesOrder.update({
-      where: { id: order.id },
-      data: { status: 'RETURNED', returned_at: new Date() } as any,
+    // Guarded final write: tenant + id + current status + returned_at null.
+    // count 0 means a concurrent session mutated the row; surface 409.
+    const updated = await tx.salesOrder.updateMany({
+      where: { id: order.id, tenant_id: tenantId, status: order.status, returned_at: null },
+      data: { status: 'RETURNED', returned_at: new Date() },
     });
+    if (updated.count !== 1) {
+      throw new AppError('Order status changed concurrently; reload and retry', 409, 'ORDER_RETURN_CONCURRENT_CONFLICT');
+    }
 
     if (order.customer_id) {
-      await tx.customer.update({
-        where: { id: order.customer_id },
+      await tx.customer.updateMany({
+        where: { id: order.customer_id, tenant_id: tenantId },
         data: {
           lifetime_value: { decrement: total },
           total_orders:   { decrement: 1 },
@@ -736,7 +820,7 @@ app.post('/:id/return', requireRole('admin', 'store_manager'), validate(ReturnSa
     }
   });
 
-  return message(c, `Order ${order.order_number} returned. Stock restored, credit note created.`);
+  return message(c, responseMessage);
 });
 
 export default app;

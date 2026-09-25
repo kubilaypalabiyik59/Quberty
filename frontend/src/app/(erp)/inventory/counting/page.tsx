@@ -5,10 +5,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, ClipboardList, CheckCircle, Clock } from 'lucide-react';
 import Link from 'next/link';
+import { apiErrorMessage } from '@/components/erp/Dialog';
 
 export default function InventoryCountingPage() {
   const qc = useQueryClient();
   const [notes, setNotes] = useState('');
+  const [warehouseId, setWarehouseId] = useState('');
+  const { data: warehouses } = useQuery({
+    queryKey: ['warehouses'],
+    queryFn: () => api.get('/warehouse/warehouses').then(r => r.data.data),
+  });
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
 
@@ -18,14 +24,14 @@ export default function InventoryCountingPage() {
   });
 
   const create = useMutation({
-    mutationFn: () => api.post('/inventory-counts', { notes }),
+    mutationFn: () => api.post('/inventory-counts', { warehouse_id: warehouseId, notes: notes || null }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['inventory-counts'] });
       setShowForm(false);
       setNotes('');
       setError('');
     },
-    onError: (err: any) => setError(err.response?.data?.message ?? 'Failed to create count'),
+    onError: (err: any) => setError(apiErrorMessage(err, 'Failed to create count')),
   });
 
   const statusBadge = (status: string) => {
@@ -52,7 +58,14 @@ export default function InventoryCountingPage() {
       {showForm && (
         <div className="bg-white rounded-xl border border-blue-200 p-5 mb-6 shadow-sm">
           <h2 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">New Counting Session</h2>
-          <p className="text-xs text-gray-500 mb-3">This will create a count session pre-populated with all current stock levels. You then enter the physical counted quantities and finalize.</p>
+          <p className="text-xs text-gray-500 mb-3">The count is pre-populated with the warehouse's current stock. Enter the counted quantities; finalizing posts the differences as an inventory journal (stock and value). If stock moves while you count, finalizing is refused so nothing is overwritten.</p>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Warehouse</label>
+            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" value={warehouseId} onChange={e => setWarehouseId(e.target.value)}>
+              <option value="">Choose a warehouse…</option>
+              {(warehouses ?? []).map((w: any) => <option key={w.id} value={w.id}>{w.code} — {w.name}</option>)}
+            </select>
+          </div>
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-1">Notes (optional)</label>
             <input
@@ -67,7 +80,7 @@ export default function InventoryCountingPage() {
           <div className="flex gap-3">
             <button
               onClick={() => create.mutate()}
-              disabled={create.isPending}
+              disabled={create.isPending || !warehouseId}
               className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
             >
               {create.isPending ? 'Creating...' : 'Create Count Session'}

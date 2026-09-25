@@ -7,10 +7,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { PageHeader, TableShell, Th, Td } from '@/components/erp/PageHeader';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
-const qty = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { maximumFractionDigits: 2 });
-const day = (d: any) => (d ? new Date(d).toLocaleDateString('es-BO') : '—');
+import { useMoney } from '@/components/CurrencyProvider';
 
 function Field({ label, value, mono }: { label: string; value: any; mono?: boolean }) {
   return (
@@ -34,6 +31,7 @@ function Field({ label, value, mono }: { label: string; value: any; mono?: boole
  * failed verdict carries its reason in words, next to the number that caused it.
  */
 export default function VendorInvoiceDetailPage() {
+  const { amount: money, quantity: qty, date: day } = useMoney();
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
   const [banner, setBanner] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
@@ -110,6 +108,14 @@ export default function VendorInvoiceDetailPage() {
         actions={
           <div className="flex items-center gap-2">
             <StatusPill status={invoice.status} />
+            {invoice.status === 'POSTED' && (
+              <Link
+                href={`/purchase/returns?invoice_id=${invoice.id}`}
+                className="h-8 rounded-control border border-border bg-surface px-3 py-1.5 text-caption text-fg hover:bg-surface-sunken"
+              >
+                Create return
+              </Link>
+            )}
             {draft && (
               <>
                 <button

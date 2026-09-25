@@ -57,7 +57,7 @@ import { db } from '../src/infrastructure/database/client';
     console.log(`    location directives: ${w.location_directives.length}`);
     for (const d of w.location_directives) {
       console.log(
-        `      ${d.name} work=${d.work_type} order=${d.sequence_number} lines=${d.lines.length}`,
+        `      ${d.name} work=${d.work_type} order=${d.sequence} lines=${d.lines.length}`,
       );
     }
   }

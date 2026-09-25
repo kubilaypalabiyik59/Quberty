@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ArrowLeft, Plus, Trash2, Globe, EyeOff, Save, AlertCircle, ImagePlus, X, Loader2, Zap } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
   const qc = useQueryClient();
   const isEdit = !!product;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { code } = useMoney();
 
   const { data: variantTypes } = useQuery({
     queryKey: ['variant-types'],
@@ -81,6 +83,25 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
     queryKey: ['categories'],
     queryFn: () => api.get('/products/categories').then(r => r.data.data),
   });
+
+  // Item group (which GL accounts the product posts to) and item model group
+  // (how it is stocked and costed). Read with product.setup.read; a user
+  // without it simply does not see the section, and the product can still be
+  // grouped later from Products → Setup.
+  // Item model groups carry no is_active flag; absent means active.
+  type Group = { id: string; code: string; name: string; is_active?: boolean };
+  const isActive = (g: Group) => g.is_active !== false;
+  const { data: itemGroups, isError: itemGroupsDenied } = useQuery<Group[]>({
+    queryKey: ['item-groups'],
+    queryFn: () => api.get('/products/setup/item-groups').then(r => r.data.data),
+    retry: false,
+  });
+  const { data: itemModelGroups, isError: modelGroupsDenied } = useQuery<Group[]>({
+    queryKey: ['item-model-groups'],
+    queryFn: () => api.get('/products/setup/item-model-groups').then(r => r.data.data),
+    retry: false,
+  });
+  const groupsAvailable = !itemGroupsDenied && !modelGroupsDenied;
 
   const [uoms, setUoms] = useState<Array<{ id: string; code: string; name: string; symbol: string }>>([]);
 
@@ -102,7 +123,25 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
     weight_kg: product?.weight_kg ?? '',
     reorder_point: product?.reorder_point ?? '',
     is_published: product?.is_published ?? false,
+    item_group_id: product?.item_group_id ?? '',
+    item_model_group_id: product?.item_model_group_id ?? '',
   });
+
+  // A new product takes the tenant's only active group of each kind, when there
+  // is exactly one — the common single-shop setup — and otherwise waits for a
+  // choice. Nothing is preselected by code or name.
+  useEffect(() => {
+    if (isEdit) return;
+    const only = (gs?: Group[]) => {
+      const active = (gs ?? []).filter(isActive);
+      return active.length === 1 ? active[0].id : '';
+    };
+    setForm(f => ({
+      ...f,
+      item_group_id: f.item_group_id || only(itemGroups),
+      item_model_group_id: f.item_model_group_id || only(itemModelGroups),
+    }));
+  }, [isEdit, itemGroups, itemModelGroups]);
 
   const [images, setImages] = useState<string[]>(product?.images ?? []);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -132,6 +171,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
   const [vidGenerating,  setVidGenerating]  = useState(false);
   const [vidStatus,      setVidStatus]      = useState('');
   const [vidError,       setVidError]       = useState('');
+  const [vidDuration,    setVidDuration]    = useState<'5' | '10'>('5');
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
@@ -161,7 +201,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
     setVidError(''); setVidGenerating(true); setVidStatus('Submitting...');
     try {
       const r = await api.post(`/products/${product?.id}/generate-video`, {
-        image_url: imgSrc, prompt: vidPrompt.trim() || undefined,
+        image_url: imgSrc, prompt: vidPrompt.trim() || undefined, duration: vidDuration,
       });
       const reqId = r.data.data.request_id;
       setVidStatus('IN_QUEUE');
@@ -173,6 +213,34 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
       } else {
         setVidError(err?.response?.data?.error?.message ?? 'Failed to start video generation');
       }
+    }
+  };
+
+  // ── AI View generation (OneProvider) ────────────────────────────────────────
+  const [viewsGenerating, setViewsGenerating] = useState(false);
+  const [viewsError,      setViewsError]      = useState('');
+  const [viewsQuality,    setViewsQuality]    = useState<'low' | 'medium' | 'high' | 'auto'>('medium');
+
+  const generateViews = async () => {
+    const imgSrc = images[0];
+    if (!imgSrc) { setViewsError('Add a product image first.'); return; }
+    setViewsError(''); setViewsGenerating(true);
+    try {
+      const r = await api.post(`/products/${product?.id}/generate-views`, { image_url: imgSrc, quality: viewsQuality });
+      const d = r.data.data;
+      setImages(d.product.images ?? []);
+      qc.invalidateQueries({ queryKey: ['product-erp', product?.id] });
+      if (d.failed?.length) {
+        setViewsError(`Could not generate: ${d.failed.map((f: { view: string }) => f.view).join(', ')}`);
+      }
+    } catch (err: any) {
+      if (err?.response?.status === 501) {
+        setViewsError('ONEPROVIDER_API_KEY is not set on the backend');
+      } else {
+        setViewsError(err?.response?.data?.error?.message ?? 'Failed to generate views');
+      }
+    } finally {
+      setViewsGenerating(false);
     }
   };
 
@@ -316,12 +384,29 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
         reorder_point: form.reorder_point ? Number(form.reorder_point) : 0,
         is_published: form.is_published,
         images,
+        // Sent on create, and on edit only when changed: the backend guards a
+        // regrouping of a product that already has transactions.
+        ...(groupsAvailable && (!isEdit || form.item_group_id !== (product?.item_group_id ?? ''))
+          ? { item_group_id: form.item_group_id || null } : {}),
+        ...(groupsAvailable && (!isEdit || form.item_model_group_id !== (product?.item_model_group_id ?? ''))
+          ? { item_model_group_id: form.item_model_group_id || null } : {}),
       };
 
       let productId = product?.id;
 
       if (isEdit) {
-        await api.put(`/products/${productId}`, body);
+        try {
+          await api.put(`/products/${productId}`, body);
+        } catch (e: any) {
+          if (e?.response?.data?.error?.code !== 'ITEM_GROUP_CHANGE_AFTER_TRANSACTIONS') throw e;
+          const ok = window.confirm(
+            `${e.response.data.error.message}
+
+Change the group anyway? Past postings stay on the old accounts.`,
+          );
+          if (!ok) { setSaving(false); return; }
+          await api.put(`/products/${productId}?force=true`, body);
+        }
       } else {
         const { data } = await api.post('/products', body);
         productId = data.data.id;
@@ -455,6 +540,39 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                     </select>
                   </div>
                 </div>
+                {groupsAvailable && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Item group <span className="text-gray-400 font-normal">(ledger accounts)</span>
+                      </label>
+                      <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        value={form.item_group_id} onChange={e => setForm(f => ({ ...f, item_group_id: e.target.value }))}>
+                        <option value="">— Not assigned —</option>
+                        {(itemGroups ?? []).filter(g => isActive(g) || g.id === form.item_group_id).map(g => (
+                          <option key={g.id} value={g.id}>{g.code} — {g.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Item model group <span className="text-gray-400 font-normal">(stocking &amp; costing)</span>
+                      </label>
+                      <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        value={form.item_model_group_id} onChange={e => setForm(f => ({ ...f, item_model_group_id: e.target.value }))}>
+                        <option value="">— Not assigned —</option>
+                        {(itemModelGroups ?? []).filter(g => isActive(g) || g.id === form.item_model_group_id).map(g => (
+                          <option key={g.id} value={g.id}>{g.code} — {g.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {(!form.item_group_id || !form.item_model_group_id) && (
+                      <p className="col-span-2 -mt-2 text-xs text-amber-700">
+                        Without both groups the product posts to the company-wide default accounts and costing method.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Unit of Measure</label>
                   <select
@@ -479,9 +597,9 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
               <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Pricing</h2>
               <div className="grid grid-cols-3 gap-4">
                 {[
-                  { key: 'cost_price', label: 'Cost Price (Bs.)', placeholder: '0.00' },
-                  { key: 'selling_price', label: 'Selling Price (Bs.)', placeholder: '0.00', required: true },
-                  { key: 'sale_price', label: 'Sale / Promo Price (Bs.)', placeholder: 'Optional' },
+                  { key: 'cost_price', label: `Cost Price (${code})`, placeholder: '0.00' },
+                  { key: 'selling_price', label: `Selling Price (${code})`, placeholder: '0.00', required: true },
+                  { key: 'sale_price', label: `Sale / Promo Price (${code})`, placeholder: 'Optional' },
                 ].map(({ key, label, placeholder, required }) => (
                   <div key={key}>
                     <label className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500 ml-1">*</span>}</label>
@@ -492,7 +610,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-gray-400 mt-3">Prices in Bolivianos (Bs.). IVA 13% is included in the selling price.</p>
+              <p className="text-xs text-gray-400 mt-3">Prices in {code}. IVA 13% is included in the selling price.</p>
             </div>
 
             {/* Product Images */}
@@ -631,7 +749,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                             onChange={e => updateVariant(varIdx, 'sku_variant', e.target.value.toUpperCase())} />
                         </div>
                         <div>
-                          <label className="block text-xs font-medium text-gray-600 mb-1">Extra Cost (Bs.)</label>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Extra Cost ({code})</label>
                           <input type="number" step="0.01" min="0" placeholder="0.00"
                             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                             value={variant.additional_cost}
@@ -779,6 +897,30 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                     </div>
                   ))}
                 </div>
+                {isEdit && (
+                  <div className="mt-3 space-y-2">
+                    {viewsGenerating && (
+                      <p className="text-xs text-purple-600">Generating front, back, left and right views… this can take a minute or two.</p>
+                    )}
+                    {viewsError && <p className="text-xs text-red-600">{viewsError}</p>}
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="views-quality" className="text-xs text-gray-500">Quality</label>
+                      <select id="views-quality" value={viewsQuality} disabled={viewsGenerating}
+                        onChange={e => setViewsQuality(e.target.value as typeof viewsQuality)}
+                        className="flex-1 border rounded-lg px-2 py-1.5 text-xs disabled:opacity-50">
+                        <option value="low">Low — fastest, cheapest</option>
+                        <option value="medium">Medium — recommended</option>
+                        <option value="high">High — best detail, costs most</option>
+                        <option value="auto">Auto — model decides</option>
+                      </select>
+                    </div>
+                    <button type="button" onClick={generateViews} disabled={viewsGenerating}
+                      className="w-full py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition">
+                      {viewsGenerating ? 'Generating views...' : '✦ Generate 4 views (AI)'}
+                    </button>
+                    <p className="text-[10px] text-gray-400 text-center">From the main image · front / back / left / right · OneProvider</p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -819,6 +961,17 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                   disabled={vidGenerating}
                   className="w-full border rounded-lg px-3 py-1.5 text-xs disabled:opacity-50" />
 
+                {/* Duration */}
+                <div className="flex items-center gap-2">
+                  <label htmlFor="vid-duration" className="text-xs text-gray-500">Length</label>
+                  <select id="vid-duration" value={vidDuration} disabled={vidGenerating}
+                    onChange={e => setVidDuration(e.target.value as '5' | '10')}
+                    className="flex-1 border rounded-lg px-2 py-1.5 text-xs disabled:opacity-50">
+                    <option value="5">5 seconds</option>
+                    <option value="10">10 seconds (costs more)</option>
+                  </select>
+                </div>
+
                 {/* Status */}
                 {vidGenerating && (
                   <div className="flex items-center gap-2 text-xs text-purple-700">
@@ -833,7 +986,7 @@ export function ProductForm({ product, onSaved, onCancel }: ProductFormProps) {
                   className="w-full py-2 bg-purple-600 text-white text-xs font-semibold rounded-lg hover:bg-purple-700 disabled:opacity-40 transition">
                   {vidGenerating ? 'Generating...' : '✦ Generate AI Video'}
                 </button>
-                <p className="text-[10px] text-gray-400 text-center">~$0.05 per video · 5s · 16:9 · Kling v2.1</p>
+                <p className="text-[10px] text-gray-400 text-center">{vidDuration}s · Kling v2.1 · FAL.ai bills by clip length</p>
               </div>
             )}
 

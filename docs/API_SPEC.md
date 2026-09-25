@@ -11,68 +11,132 @@
 | POST | `/api/v1/auth/login` | Login, returns JWT | Public |
 | POST | `/api/v1/auth/logout` | Revoke refresh token | Any |
 | POST | `/api/v1/auth/refresh` | Refresh access token | Any |
-| POST | `/api/v1/auth/register` | Register customer (storefront) | Public |
+| POST | `/api/v1/auth/register` | Register a storefront customer. Requires exactly one of `tenant_id` or `tenant_slug` (400 otherwise); always creates role `customer`, never an admin (WORK-030a) | Public |
+| GET | `/api/v1/storefront/:slug/products` | Public catalogue of the store named by tenant slug: published, active products; `in_stock` yes/no, no quantities or costs; `page`, `limit` (max 48), `search`, `category`, `inStock` | Public |
+| GET | `/api/v1/storefront/:slug/products/:id` | One published product, variants with `available` yes/no | Public |
+| GET | `/api/v1/storefront/:slug/categories` | The store's categories (`id`, `name`) | Public |
 | GET | `/api/v1/auth/me` | Current user profile | Any |
+
+`POST /api/v1/auth/make-admin` was removed in WORK-030a (404). Administrators are created by the
+operator CLI and roles are assigned by an admin under HR.
+
+**Storefront accounts (WORK-030a).** A `customer` token, or a token whose role the registry does not
+know, reaches only these v1 routes; every other v1 route answers 403 before its own guard:
+`GET /products`, `GET /products/categories`, `GET /products/:uuid`, `POST /sales/orders/storefront`,
+`GET /tenant/currency`. On the three product reads a caller without `product.read` sees published
+products only and no `cost_price`.
 
 ---
 
 ## PRODUCTS
 
-| Method | Path | Description | Role |
-|--------|------|-------------|------|
-| GET | `/api/v1/products` | List products (filterable, paginated) | Any |
-| POST | `/api/v1/products` | Create product | Admin, Manager |
-| GET | `/api/v1/products/:id` | Get product detail | Any |
-| PUT | `/api/v1/products/:id` | Update product | Admin, Manager |
-| DELETE | `/api/v1/products/:id` | Soft delete | Admin |
-| GET | `/api/v1/products/:id/variants` | List variants | Any |
-| POST | `/api/v1/products/:id/variants` | Create variant | Admin, Manager |
-| GET | `/api/v1/products/:id/stock` | Get stock by location | Admin, Manager, Employee |
-| GET | `/api/v1/products/categories` | List categories | Any |
-| POST | `/api/v1/products/categories` | Create category | Admin |
+Guards are the exported manifests in the route files and are pinned by `stockRoutePermissions.test.ts` (WORK-030b). A `store_manager` holds every code here except `product.delete`, `product.setup.maintain`, `warehouse.site.maintain` and `import.job.execute`.
 
-**Query params for GET /products:**
-- `?search=nike&category=sneakers&page=1&limit=20&sortBy=name&inStock=true`
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/products` | `product.read or storefront.catalog.read` |
+| GET | `/api/v1/products/categories` | `product.read or storefront.catalog.read` |
+| GET | `/api/v1/products/:id` | `product.read or storefront.catalog.read` |
+| GET | `/api/v1/products/barcode/:code` | `product.read` |
+| POST | `/api/v1/products/categories` | `product.maintain` |
+| POST | `/api/v1/products` | `product.maintain` |
+| PUT | `/api/v1/products/:id` | `product.maintain` |
+| GET | `/api/v1/products/setup/item-groups` | `product.setup.read` |
+| GET | `/api/v1/products/setup/item-model-groups` | `product.setup.read` |
+| POST | `/api/v1/products/setup/item-groups` | `product.setup.maintain` |
+| POST | `/api/v1/products/setup/item-model-groups` | `product.setup.maintain` |
+| PUT | `/api/v1/products/setup/item-model-groups/:id` | `product.setup.maintain` |
+| PUT | `/api/v1/products/setup/item-groups/:id` | `product.setup.maintain` |
+| GET | `/api/v1/products/setup/coverage` | `product.setup.read` |
+| POST | `/api/v1/products/setup/assign-groups` | `product.setup.maintain` |
+| DELETE | `/api/v1/products/:id` | `product.delete` |
+| POST | `/api/v1/products/bulk` | `product.maintain` |
+| POST | `/api/v1/products/:id/variants` | `product.maintain` |
+| PUT | `/api/v1/products/:id/variants/:variantId` | `product.maintain` |
+| DELETE | `/api/v1/products/:id/variants/:variantId` | `product.maintain` |
+| POST | `/api/v1/products/:id/image` | `product.maintain` |
+| DELETE | `/api/v1/products/:id/image` | `product.maintain` |
+| POST | `/api/v1/products/:id/generate-video` | `product.media.generate` |
+| GET | `/api/v1/products/:id/video-jobs/:requestId` | `product.media.generate` |
+| DELETE | `/api/v1/products/:id/video` | `product.maintain` |
+| GET | `/api/v1/products/:id/stock` | `inventory.stock.read` |
+
+A caller without `product.read` (a shopper) gets the storefront projection: published products only, no `cost_price`.
+
+**Query params for GET /products:** `?search=nike&category=<id>&page=1&limit=20&sortBy=name&inStock=true`
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/uom` | `product.read` |
+| POST | `/api/v1/uom` | `product.maintain` |
+| PUT | `/api/v1/uom/:id` | `product.maintain` |
+| POST | `/api/v1/uom/seed-defaults` | `product.maintain` |
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/variant-types` | `product.read` |
+| POST | `/api/v1/variant-types` | `product.maintain` |
+| PUT | `/api/v1/variant-types/:id` | `product.maintain` |
+| DELETE | `/api/v1/variant-types/:id` | `product.maintain` |
 
 ---
 
 ## INVENTORY
 
-| Method | Path | Description | Role |
-|--------|------|-------------|------|
-| GET | `/api/v1/inventory/stock` | Stock overview (all locations) | Admin, Manager |
-| GET | `/api/v1/inventory/stock/:productId` | Stock per product per location | Admin, Manager |
-| POST | `/api/v1/inventory/adjustments` | Manual stock adjustment | Admin |
-| GET | `/api/v1/inventory/transactions` | Transaction ledger (filterable) | Admin, Manager |
-| POST | `/api/v1/inventory/transfers` | Create internal transfer | Admin, Manager |
-| GET | `/api/v1/inventory/transfers/:id` | Transfer detail | Admin, Manager |
+Guards are the exported manifests in the route files and are pinned by `stockRoutePermissions.test.ts` (WORK-030b). A `store_manager` holds every code here except `product.delete`, `product.setup.maintain`, `warehouse.site.maintain` and `import.job.execute`.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/inventory/stock` | `inventory.stock.read` |
+| GET | `/api/v1/inventory/transactions` | `inventory.transaction.read` |
+| GET | `/api/v1/inventory/low-stock` | `inventory.stock.read` |
+| POST | `/api/v1/inventory/transfers` | `inventory.transfer.post` |
+| POST | `/api/v1/inventory/adjust` | `inventory.adjustment.post` |
+
+`POST /inventory/adjust` and `POST /inventory/transfers` refuse a product, variant or location that is not the caller tenant's with 422 `FOREIGN_REFERENCE` before any write.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/inventory-counts` | `inventory.count.read` |
+| GET | `/api/v1/inventory-counts/:id` | `inventory.count.read` |
+| POST | `/api/v1/inventory-counts` | `inventory.count.create` |
+| PUT | `/api/v1/inventory-counts/:id/lines/:lineId` | `inventory.count.record` |
+| POST | `/api/v1/inventory-counts/:id/finalize` | `inventory.count.post` |
 
 ---
 
 ## WAREHOUSE
 
-| Method | Path | Description | Role |
-|--------|------|-------------|------|
-| GET | `/api/v1/warehouse/sites` | List sites | Admin, Manager |
-| POST | `/api/v1/warehouse/sites` | Create site | Admin |
-| GET | `/api/v1/warehouse/warehouses` | List warehouses | Admin, Manager |
-| POST | `/api/v1/warehouse/warehouses` | Create warehouse | Admin |
-| GET | `/api/v1/warehouse/locations` | List locations (filterable by zone) | Any |
-| POST | `/api/v1/warehouse/locations` | Create location | Admin |
-| GET | `/api/v1/warehouse/work` | List work tasks | Admin, Manager, Worker |
-| GET | `/api/v1/warehouse/work/:id` | Work detail + lines | Admin, Manager, Worker |
-| POST | `/api/v1/warehouse/work/:id/start` | Start work task | Worker |
-| POST | `/api/v1/warehouse/work/:id/lines/:lineId/complete` | Complete a work line | Worker |
-| POST | `/api/v1/warehouse/work/:id/complete` | Complete entire work task | Worker |
-| GET | `/api/v1/warehouse/waves` | List waves | Admin, Manager |
-| POST | `/api/v1/warehouse/waves` | Create wave | Admin, Manager |
-| POST | `/api/v1/warehouse/waves/:id/release` | Release wave → generates work | Admin, Manager |
-| GET | `/api/v1/warehouse/arrival-journals` | List arrival journals | Admin, Manager, Worker |
-| POST | `/api/v1/warehouse/arrival-journals` | Create arrival journal | Admin, Manager |
-| POST | `/api/v1/warehouse/arrival-journals/:id/post` | Post journal → updates stock | Admin, Manager |
-| GET | `/api/v1/warehouse/location-directives` | List location directives | Admin |
-| POST | `/api/v1/warehouse/location-directives` | Create directive | Admin |
-| GET | `/api/v1/warehouse/work-templates` | List work templates | Admin |
+Guards are the exported manifests in the route files and are pinned by `stockRoutePermissions.test.ts` (WORK-030b). A `store_manager` holds every code here except `product.delete`, `product.setup.maintain`, `warehouse.site.maintain` and `import.job.execute`.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| GET | `/api/v1/warehouse/sites` | `warehouse.structure.read` |
+| POST | `/api/v1/warehouse/sites` | `warehouse.site.maintain` |
+| GET | `/api/v1/warehouse/warehouses` | `warehouse.structure.read` |
+| GET | `/api/v1/warehouse/overview` | `warehouse.structure.read` |
+| POST | `/api/v1/warehouse/warehouses` | `warehouse.structure.maintain` |
+| GET | `/api/v1/warehouse/zones` | `warehouse.structure.read` |
+| POST | `/api/v1/warehouse/zones` | `warehouse.structure.maintain` |
+| GET | `/api/v1/warehouse/locations` | `warehouse.structure.read` |
+| POST | `/api/v1/warehouse/locations` | `warehouse.structure.maintain` |
+| POST | `/api/v1/warehouse/locations/bulk` | `warehouse.structure.maintain` |
+| GET | `/api/v1/warehouse/work` | `warehouse.work.read` |
+| POST | `/api/v1/warehouse/work/:id/start` | `warehouse.work.execute` |
+| POST | `/api/v1/warehouse/work/:id/lines/:lineId/complete` | `warehouse.work.execute` |
+| POST | `/api/v1/warehouse/work/:id/complete` | `warehouse.work.execute` |
+| GET | `/api/v1/warehouse/waves` | `warehouse.wave.read` |
+| POST | `/api/v1/warehouse/waves/:id/release` | `warehouse.wave.release` |
+| GET | `/api/v1/warehouse/arrival-journals` | `warehouse.arrival.read` |
+| POST | `/api/v1/warehouse/arrival-journals` | `warehouse.arrival.create` |
+| POST | `/api/v1/warehouse/arrival-journals/:id/post` | `warehouse.arrival.post` |
+| POST | `/api/v1/warehouse/setup` | `warehouse.setup.maintain` |
+| GET | `/api/v1/warehouse/location-directives` | `warehouse.setup.read` |
+| POST | `/api/v1/warehouse/location-directives` | `warehouse.setup.maintain` |
+| GET | `/api/v1/warehouse/parameters` | `warehouse.setup.read` |
+| PUT | `/api/v1/warehouse/parameters/:warehouseId` | `warehouse.setup.maintain` |
+| POST | `/api/v1/warehouse/location-directives/:id/lines` | `warehouse.setup.maintain` |
+| DELETE | `/api/v1/warehouse/location-directives/:id` | `warehouse.setup.maintain` |
 
 ---
 
@@ -80,16 +144,31 @@
 
 | Method | Path | Description | Role |
 |--------|------|-------------|------|
-| GET | `/api/v1/sales/orders` | List sales orders (filterable) | Admin, Manager |
-| POST | `/api/v1/sales/orders` | Create manual sales order | Admin, Manager, Employee |
-| POST | `/api/v1/sales/orders/storefront` | Create order from storefront | Customer |
-| GET | `/api/v1/sales/orders/:id` | Order detail + lines | Admin, Manager |
-| PUT | `/api/v1/sales/orders/:id` | Update order (draft only) | Admin, Manager |
-| POST | `/api/v1/sales/orders/:id/confirm` | Confirm order → reserves stock | Admin, Manager |
-| POST | `/api/v1/sales/orders/:id/cancel` | Cancel order → releases stock | Admin |
-| POST | `/api/v1/sales/orders/:id/ship` | Mark as shipped | Admin, Manager |
-| POST | `/api/v1/sales/orders/:id/complete` | Mark as completed | Admin, Manager |
-| GET | `/api/v1/sales/orders/:id/shipment` | Get shipment details | Any |
+| GET | `/api/v1/sales/orders` | List sales orders (filterable) | `sales.order.read` |
+| POST | `/api/v1/sales/orders` | Create manual sales order | `sales.order.create` |
+| POST | `/api/v1/sales/orders/storefront` | Create order from storefront | `storefront.order.place` |
+| GET | `/api/v1/sales/orders/:id` | Order detail + lines | `sales.order.read` |
+| PUT | `/api/v1/sales/orders/:id` | Update order (draft only) | `sales.order.update` |
+| POST | `/api/v1/sales/orders/:id/confirm` | Confirm order → reserves stock | `sales.order.confirm` |
+| POST | `/api/v1/sales/orders/:id/cancel` | Cancel order → releases stock | `sales.order.cancel` (admin) |
+| POST | `/api/v1/sales/orders/:id/ship` | Mark as shipped | `sales.order.ship` |
+| POST | `/api/v1/sales/orders/:id/complete` | Mark as completed | `sales.order.complete` |
+| POST | `/api/v1/sales/orders/:id/invoice` | Issue the factura (draws a FACTURA number) | `sales.invoice.post` |
+| POST | `/api/v1/sales/orders/:id/pay` | Record the customer payment | `sales.customer_payment.post` |
+| POST | `/api/v1/sales/orders/:id/return` | Whole-order return and credit note | `sales.return.post` |
+
+Quotations (`/api/v1/sales/quotations`): list/detail `sales.quotation.read`; create
+`sales.quotation.create`; lines and revise `sales.quotation.update`; send `sales.quotation.send`;
+confirm `sales.quotation.confirm` + `sales.order.create` + `customer.create` (it can convert the
+lead); lose/cancel `sales.quotation.close`.
+
+CRM (`/api/v1/crm`): leads `crm.lead.read` / `crm.lead.maintain`; qualify additionally
+`crm.opportunity.maintain` + `customer.create`; convert-to-customer additionally `customer.create`;
+opportunities and stages read `crm.opportunity.read`; opportunity writes `crm.opportunity.maintain`;
+close `crm.opportunity.close`; stage setup `crm.setup.maintain` (admin).
+
+POS (`/api/v1/pos`): sessions `pos.session.operate`; sale `pos.sale.post`; void `pos.sale.void`
+(store manager, admin — not cashier).
 
 ---
 
@@ -114,12 +193,13 @@
 
 | Method | Path | Description | Role |
 |--------|------|-------------|------|
-| GET | `/api/v1/customers` | List customers (filterable, paginated) | Admin, Manager |
-| POST | `/api/v1/customers` | Create customer | Admin, Manager, Employee |
-| GET | `/api/v1/customers/:id` | Customer detail | Admin, Manager |
-| PUT | `/api/v1/customers/:id` | Update customer | Admin, Manager |
-| GET | `/api/v1/customers/:id/orders` | Customer order history | Admin, Manager |
-| GET | `/api/v1/customers/segments` | List segments + counts | Admin, Manager |
+| GET | `/api/v1/customers` | List customers (filterable, paginated) | `customer.read` |
+| POST | `/api/v1/customers` | Create customer | `customer.create` |
+| GET | `/api/v1/customers/:id` | Customer detail | `customer.read` |
+| PUT | `/api/v1/customers/:id` | Update customer | `customer.update` |
+| GET | `/api/v1/customers/:id/orders` | Customer order history | `customer.read` + `sales.order.read` |
+| GET | `/api/v1/customers/:id/statement` | Orders with factura number and payment state, and totals ordered / invoiced / paid / open | `customer.read` + `sales.order.read` |
+| GET | `/api/v1/customers/segments` | List segments + counts | `report.sales.read` |
 
 ---
 
@@ -132,8 +212,10 @@
 | GET | `/api/v1/hr/employees/:id` | Employee detail | Admin |
 | PUT | `/api/v1/hr/employees/:id` | Update employee | Admin |
 | GET | `/api/v1/hr/users` | List users | Admin |
+| POST | `/api/v1/hr/users` | Create a sign-in account (email, names, role, initial password) | Admin |
 | PUT | `/api/v1/hr/users/:id/role` | Change user role | Admin |
 | PUT | `/api/v1/hr/users/:id/deactivate` | Deactivate user | Admin |
+| PUT | `/api/v1/hr/users/:id/reactivate` | Reactivate user | Admin |
 
 ---
 
@@ -157,25 +239,57 @@
 
 ## DATA IMPORT
 
-| Method | Path | Description | Role |
-|--------|------|-------------|------|
-| POST | `/api/v1/import/upload` | Upload Excel/CSV file | Admin, Manager |
-| POST | `/api/v1/import/jobs/:id/mapping` | Save column mapping | Admin, Manager |
-| POST | `/api/v1/import/jobs/:id/validate` | Validate data | Admin, Manager |
-| GET | `/api/v1/import/jobs/:id/preview` | Preview validated data | Admin, Manager |
-| POST | `/api/v1/import/jobs/:id/execute` | Execute import | Admin |
-| GET | `/api/v1/import/jobs` | Import history | Admin, Manager |
-| GET | `/api/v1/import/jobs/:id` | Job status + errors | Admin, Manager |
+Guards are the exported manifests in the route files and are pinned by `stockRoutePermissions.test.ts` (WORK-030b). A `store_manager` holds every code here except `product.delete`, `product.setup.maintain`, `warehouse.site.maintain` and `import.job.execute`.
+
+| Method | Path | Permission |
+|--------|------|------------|
+| POST | `/api/v1/import/upload` | `import.job.prepare` |
+| POST | `/api/v1/import/jobs/:id/mapping` | `import.job.prepare` |
+| POST | `/api/v1/import/jobs/:id/validate` | `import.job.prepare` |
+| POST | `/api/v1/import/jobs/:id/execute` | `import.job.execute` |
+| GET | `/api/v1/import/jobs` | `import.job.read` |
+| GET | `/api/v1/import/jobs/:id` | `import.job.read` |
+
+Every write step answers 501 `IMPORT_NOT_IMPLEMENTED` until the executors write rows (WORK-042; real import in WORK-054).
 
 ---
 
-## TENANTS (Platform-level, no tenant header needed)
+## TENANT (own tenant only; tenant header and Bearer token required)
 
-| Method | Path | Description | Role |
+Tenants are created by the platform operator with `backend/scripts/createTenant.ts`, not over
+HTTP. Module entitlement is operator-controlled and cannot be edited through the API.
+
+| Method | Path | Description | Permission |
 |--------|------|-------------|------|
-| POST | `/api/v1/tenants` | Create new tenant | Platform Admin |
-| GET | `/api/v1/tenants/:id/config` | Get tenant config | Tenant Admin |
-| PUT | `/api/v1/tenants/:id/config` | Update modules/branding | Tenant Admin |
+| GET | `/api/v1/tenant/currency` | The ledger's currency for rendering money: `code`, `symbol`, `rounding_precision`, `rounding_method`, `locale`. `null` before the ledger exists — a client then renders no amounts rather than inventing a symbol | **none beyond authentication.** Every screen that shows an amount needs it — the POS for a cashier, the shop for a customer — and none of those roles may read the tenant config or the finance currency setup (WORK-025b) |
+| GET | `/api/v1/tenant/config` | Get own tenant config, including the same `currency` projection | `setup.tenant.read` (admin, store manager, auditor) |
+| PUT | `/api/v1/tenant/config` | Update branding, language, timezone | `setup.tenant.maintain` (admin, store manager) |
+| PUT | `/api/v1/tenant/setup` | Update the legacy tax config only; a `currency_code` is refused (400) — the accounting currency belongs to the ledger (WORK-024) | `finance.setup.maintain` (admin) |
+| GET | `/api/v1/finance/ledger-currencies` | Ledger accounting/reporting currency, rate types, `locked` once anything has posted | `finance.currency.read` |
+| PUT | `/api/v1/finance/ledger-currencies` | Set the ledger currencies; 409 `CURRENCY_LOCKED` after the first posting; reporting must equal accounting until WORK-024b | `finance.setup.maintain` (admin) |
+| GET | `/api/v1/finance/currencies` · `/currencies/iso` | Activated currencies with rounding · ISO 4217 reference list | `finance.currency.read` |
+| POST · PUT | `/api/v1/finance/currencies` · `/currencies/:code` | Activate a currency (≤ 2 decimals) · update rounding/active; a ledger currency cannot be deactivated | `finance.setup.maintain` (admin) |
+| GET · POST · PUT | `/api/v1/finance/exchange-rate-types[/:id]` | List · create · rename/(de)activate rate types | read: `finance.currency.read`; write: `finance.setup.maintain` (admin) |
+| GET | `/api/v1/finance/exchange-rates` · `/exchange-rates/resolve` | Dated rates · preview the rate valid on a date (latest on or before; reciprocal by division) | `finance.currency.read` |
+| POST | `/api/v1/finance/exchange-rates` | Add a dated rate (add only); reciprocal pair refused | `finance.exchange_rate.maintain` (admin, store manager, finance approver) |
+| PUT | `/api/v1/finance/exchange-rates/:id` | Correct an existing rate; posted documents keep their rate | `finance.setup.maintain` (admin) |
+
+---
+
+## ATTACHMENTS (migration 041)
+
+Files kept on a business document. `entity_type` is one of `LEAD`, `OPPORTUNITY`, `SALES_QUOTATION`,
+`SALES_ORDER`, `PURCHASE_ORDER`, `VENDOR_INVOICE`, `CUSTOMER`, `SUPPLIER`. Permission follows the
+parent document: read = its read permission, write = its maintain permission (see `ENTITY_RULES` in
+`backend/src/modules/attachments/attachment.routes.ts`). Files live in the private Supabase bucket
+`attachments` under `<tenant>/<entity_type>/<entity_id>/<uuid>`.
+
+| Method | Path | Description | Permission |
+|--------|------|-------------|------|
+| GET | `/api/v1/attachments?entity_type=&entity_id=` | Live attachments of the document | parent read |
+| POST | `/api/v1/attachments` | Multipart `entity_type`, `entity_id`, `file`; pdf, doc(x), xls(x), txt, csv, png, jp(e)g; 415 other types, 413 over 10 MB, 422 document not in the tenant | parent write |
+| GET | `/api/v1/attachments/:id/download` | `{ url, expires_in: 60, file_name }` — a signed URL valid for 60 seconds | parent read |
+| DELETE | `/api/v1/attachments/:id` | Soft delete (`deleted_at`, `deleted_by`); 409 `ATTACHMENT_LOCKED` on a posted vendor invoice | parent write |
 
 ---
 

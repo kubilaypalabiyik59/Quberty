@@ -53,7 +53,10 @@ export const useCartStore = create<CartState>()(
                 variant_id: variantId,
                 name: product.name,
                 sku: product.sku,
-                price: product.sale_price ?? product.selling_price,
+                // The server charges the sale price (or list price) plus the chosen
+                // variant's surcharge; the cart shows exactly that (WORK-043 review).
+                price: Number(product.sale_price ?? product.selling_price)
+                  + Number(product.variants?.find((v: any) => v.id === variantId)?.additional_cost ?? 0),
                 quantity: qty,
                 image: product.images?.[0],
               },
@@ -93,11 +96,12 @@ export const useCartStore = create<CartState>()(
           const { items } = get();
           const { data } = await api.post('/sales/orders/storefront', {
             shipping_address: shippingAddress,
+            // Products and quantities only: the server prices the order from the
+            // catalogue and refuses a body that carries a price (WORK-043).
             lines: items.map((item) => ({
               product_id: item.product_id,
-              variant_id: item.variant_id,
+              variant_id: item.variant_id ?? null,
               quantity: item.quantity,
-              unit_price: item.price,
             })),
           });
 

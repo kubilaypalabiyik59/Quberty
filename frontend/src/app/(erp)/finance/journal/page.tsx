@@ -4,12 +4,15 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, X, Check, AlertCircle, BookOpen, ChevronDown } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 interface JELine { account_id: string; debit_amount: string; credit_amount: string; description: string; }
 
 const emptyLine = (): JELine => ({ account_id: '', debit_amount: '', credit_amount: '', description: '' });
 
 export default function JournalPage() {
+  // A voucher is entered and read in the ledger's own currency (WORK-025).
+  const { money, code } = useMoney();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
@@ -97,8 +100,8 @@ export default function JournalPage() {
                 <tr>
                   <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500">Account</th>
                   <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 w-28">Description</th>
-                  <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-32">Debit (Bs.)</th>
-                  <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-32">Credit (Bs.)</th>
+                  <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-32">Debit ({code})</th>
+                  <th className="text-right px-3 py-2 text-xs font-semibold text-gray-500 w-32">Credit ({code})</th>
                   <th className="w-8" />
                 </tr>
               </thead>
@@ -165,7 +168,7 @@ export default function JournalPage() {
 
           {!isBalanced && totalDebit > 0 && (
             <p className="text-xs text-red-600 mb-3 flex items-center gap-1">
-              <AlertCircle className="h-3.5 w-3.5" /> Entry is not balanced. Difference: Bs. {Math.abs(totalDebit - totalCredit).toFixed(2)}
+              <AlertCircle className="h-3.5 w-3.5" /> Entry is not balanced. Difference: {money(Math.abs(totalDebit - totalCredit))}
             </p>
           )}
 
@@ -227,8 +230,8 @@ export default function JournalPage() {
                     <tr>
                       <th className="text-left px-4 py-2 font-semibold text-gray-500">Account</th>
                       <th className="text-left px-4 py-2 font-semibold text-gray-500">Description</th>
-                      <th className="text-right px-4 py-2 font-semibold text-gray-500">Debit (Bs.)</th>
-                      <th className="text-right px-4 py-2 font-semibold text-gray-500">Credit (Bs.)</th>
+                      <th className="text-right px-4 py-2 font-semibold text-gray-500">Debit ({code})</th>
+                      <th className="text-right px-4 py-2 font-semibold text-gray-500">Credit ({code})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -239,8 +242,8 @@ export default function JournalPage() {
                           <span className="ml-2 text-gray-700">{line.account?.name}</span>
                         </td>
                         <td className="px-4 py-2 text-gray-500">{line.description ?? '—'}</td>
-                        <td className="px-4 py-2 text-right font-medium">{Number(line.debit_amount) > 0 ? `Bs. ${Number(line.debit_amount).toFixed(2)}` : '—'}</td>
-                        <td className="px-4 py-2 text-right font-medium">{Number(line.credit_amount) > 0 ? `Bs. ${Number(line.credit_amount).toFixed(2)}` : '—'}</td>
+                        <td className="px-4 py-2 text-right font-medium">{Number(line.debit_amount) > 0 ? money(line.debit_amount) : '—'}</td>
+                        <td className="px-4 py-2 text-right font-medium">{Number(line.credit_amount) > 0 ? money(line.credit_amount) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>

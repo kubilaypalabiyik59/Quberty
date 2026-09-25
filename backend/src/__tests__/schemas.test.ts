@@ -42,11 +42,31 @@ describe('LoginSchema', () => {
 describe('RegisterSchema', () => {
   const valid = {
     email: 'user@test.com', password: 'Password1!',
-    first_name: 'John', last_name: 'Doe',
+    first_name: 'John', last_name: 'Doe', tenant_slug: 'scarpe',
   };
 
   it('accepts valid payload', () => {
     expect(RegisterSchema.safeParse(valid).success).toBe(true);
+  });
+
+  // WORK-030a: a shopper registers into the store they name, never "the first
+  // active tenant", and cannot smuggle a role or any other field in.
+  it('rejects a registration that names no tenant', () => {
+    const { tenant_slug: _slug, ...noTenant } = valid;
+    expect(RegisterSchema.safeParse(noTenant).success).toBe(false);
+  });
+
+  it('rejects a registration that names two tenants', () => {
+    expect(RegisterSchema.safeParse({ ...valid, tenant_id: VALID_UUID }).success).toBe(false);
+  });
+
+  it('accepts a tenant id instead of a slug', () => {
+    const { tenant_slug: _slug, ...rest } = valid;
+    expect(RegisterSchema.safeParse({ ...rest, tenant_id: VALID_UUID }).success).toBe(true);
+  });
+
+  it('rejects an unknown key such as a role', () => {
+    expect(RegisterSchema.safeParse({ ...valid, role: 'admin' }).success).toBe(false);
   });
 
   it('rejects password shorter than 8 characters', () => {
@@ -240,10 +260,14 @@ describe('CreatePurchaseOrderSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('defaults currency to BOB', () => {
+  it('has no country default for currency (the route uses the ledger currency)', () => {
     const result = CreatePurchaseOrderSchema.safeParse(validPO);
     expect(result.success).toBe(true);
-    if (result.success) expect(result.data.currency).toBe('BOB');
+    if (result.success) expect(result.data.currency).toBeUndefined();
+  });
+
+  it('rejects a malformed currency code', () => {
+    expect(CreatePurchaseOrderSchema.safeParse({ ...validPO, currency: 'usd' }).success).toBe(false);
   });
 });
 
@@ -285,6 +309,18 @@ describe('CreateEmployeeSchema', () => {
     const result = CreateEmployeeSchema.safeParse({ first_name: 'X', last_name: 'Y' });
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.role).toBe('employee');
+  });
+
+  it.each([
+    'purchasing_requester', 'buyer', 'receiver', 'ap_clerk', 'finance_approver', 'auditor',
+  ])('accepts the specialized %s role', (role) => {
+    const result = CreateEmployeeSchema.safeParse({ first_name: 'X', last_name: 'Y', role });
+    expect(result.success).toBe(true);
+  });
+
+  it('does not allow a customer identity to be created as an employee', () => {
+    const result = CreateEmployeeSchema.safeParse({ first_name: 'X', last_name: 'Y', role: 'customer' });
+    expect(result.success).toBe(false);
   });
 });
 

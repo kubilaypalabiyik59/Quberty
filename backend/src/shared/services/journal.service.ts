@@ -4,6 +4,9 @@ import { logger } from '../logger';
 import { AppError } from '../errors/AppError';
 import { nextJournalVoucher } from './numberSequence.service';
 import { resolvePostingAccount } from './postingProfile.service';
+import { getLedgerCurrencies, type LedgerCurrencies } from './currency/ledgerCurrency.service';
+import { resolveRate, translate, type ResolvedRate } from './currency/exchangeRate.service';
+import { roundAmount, assertPostablePrecision, type CurrencyRoundingRule } from './currency/currencyRounding';
 import {
   resolveDimensions,
   assertRequiredDimensions,
@@ -45,9 +48,33 @@ import {
  *   rounding_tolerance              the imbalance below which the difference is
  *                                   posted to the ROUNDING account rather than
  *                                   rejected. Above it, the voucher is refused.
+ *   reporting_rounding_tolerance    the same limit for the reporting currency.
+ *   accounting/reporting currency   what the voucher is measured in, and the rate
+ *   and rate types                  types its rates are taken from (WORK-024).
  *   require_balanced_posting        inherited from posting.service.ts, which
  *                                   decides whether an unresolvable account
  *                                   throws or degrades. Not re-read here.
+ *
+ * ── Currency (WORK-024b) ───────────────────────────────────────────────────
+ * Every line carries three amounts: as transacted, as accounted, and as reported.
+ * **[OFFICIAL]** both the accounting and the reporting amount are translated FROM
+ * the transaction amount — never accounting → reporting — and each line is
+ * translated and rounded before the lines are summed:
+ *   learn.microsoft.com/dynamics365/finance/general-ledger/dual-currency
+ * A voucher must balance in all three, with its own penny tolerance for the
+ * accounting and the reporting currency:
+ *   learn.microsoft.com/troubleshoot/dynamics-365/finance/general-ledger/posting-fail-imbalance
+ *
+ * `debit_amount`/`credit_amount` remain the ACCOUNTING amounts, so every existing
+ * report keeps its meaning. Omitting `currency` means the voucher is in the
+ * ledger's accounting currency: every translation is then an identity that costs
+ * no rate lookup, which is what all current callers do.
+ *
+ * **One deliberate deviation.** D365 balances the transaction currency strictly
+ * and never writes a penny line there. We keep this codebase's existing behaviour
+ * — an imbalance within `rounding_tolerance` is absorbed into ROUNDING — because
+ * it is live, relied-on behaviour, and because while the transaction currency IS
+ * the accounting currency the two rules coincide exactly.
  *
  * ── Official behaviour this follows ────────────────────────────────────────
  * **[OFFICIAL]** "Vouchers always represent individual transactions, never a
@@ -64,6 +91,25 @@ import {
  * which is what every current caller already does (POS posts revenue and COGS as
  * two vouchers, deliberately).
  */
+
+/**
+ * A line's three amount pairs and its rates, already decided.
+ *
+ * Exists for ONE caller: `reverseJournal`, for the same reason `rawSlots` does. A
+ * reversal re-translated at today's rate would leave an FX residue that never nets
+ * to zero against the original. Do not use it to hand-post amounts.
+ */
+export interface RawAmounts {
+  transactionCurrencyCode: string;
+  transactionDebit: number;
+  transactionCredit: number;
+  accountingDebit: number;
+  accountingCredit: number;
+  reportingDebit: number;
+  reportingCredit: number;
+  accountingRate: Prisma.Decimal | string | number;
+  reportingRate: Prisma.Decimal | string | number;
+}
 
 export interface JournalLineInput {
   accountId: string;
@@ -87,6 +133,8 @@ export interface JournalLineInput {
    * Takes precedence over `dimensions`. Do not use it to hand-code a posting.
    */
   rawSlots?: Partial<ResolvedSlots>;
+  /** See `RawAmounts`. When one line carries it, every line must. */
+  rawAmounts?: RawAmounts;
 }
 
 export interface PostJournalOptions {
@@ -97,6 +145,13 @@ export interface PostJournalOptions {
   /** What produced this voucher. Mandatory — see the One voucher note above. */
   source: { module: string; id?: string | null };
   lines: JournalLineInput[];
+  /**
+   * The voucher's transaction currency. Omitted means the ledger's accounting
+   * currency, which is what every caller today intends: the line amounts are then
+   * transaction, accounting and reporting amounts at once, at rate 1, with no rate
+   * lookup at all.
+   */
+  currency?: { code: string };
   /**
    * What the caller knows about the transaction, for financial dimension coding.
    * Resolution happens here and nowhere else — see dimension.service.ts.
@@ -121,6 +176,17 @@ export interface PostJournalOptions {
    * derives the lines from the original.
    */
   corrects?: { entryId: string; reason: string };
+  /**
+   * The original voucher's currency header, copied by `reverseJournal` together
+   * with `rawAmounts`. Only meaningful in that mode.
+   */
+  rawHeader?: {
+    accountingCurrencyCode: string;
+    reportingCurrencyCode: string;
+    exchangeRateDate: Date;
+    accountingRateTypeId: string | null;
+    reportingRateTypeId: string | null;
+  };
 }
 
 export type CorrectionMethod = 'REVERSE' | 'STORNO';
@@ -130,6 +196,7 @@ type Client = Prisma.TransactionClient | typeof db;
 interface EffectiveParameters {
   allowClosedPeriod: boolean;
   roundingTolerance: number;
+  reportingRoundingTolerance: number;
   correctionMethod: CorrectionMethod;
 }
 
@@ -150,6 +217,7 @@ async function effectiveParameters(
     select: {
       allow_posting_to_closed_period: true,
       rounding_tolerance: true,
+      reporting_rounding_tolerance: true,
       correction_method: true,
     },
   });
@@ -157,6 +225,7 @@ async function effectiveParameters(
   return {
     allowClosedPeriod: row?.allow_posting_to_closed_period ?? false,
     roundingTolerance: row ? Number(row.rounding_tolerance) : 0.02,
+    reportingRoundingTolerance: row ? Number(row.reporting_rounding_tolerance) : 0.02,
     correctionMethod: (row?.correction_method as CorrectionMethod) ?? 'REVERSE',
   };
 }
@@ -204,6 +273,56 @@ async function assertPeriodPostable(
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const ONE = new Prisma.Decimal(1);
+
+/**
+ * The currency's own rounding rule. A currency the tenant has not activated fails
+ * closed, and so does one that does not round to 0.01: every document path in the
+ * product computes to two decimals, so a coarser ledger would post amounts its own
+ * documents disagree with.
+ */
+async function roundingRuleFor(
+  client: Client,
+  tenantId: string,
+  code: string,
+): Promise<CurrencyRoundingRule> {
+  const row = await client.tenantCurrency.findFirst({
+    where: { tenant_id: tenantId, currency_code: code, is_active: true },
+    select: { rounding_precision: true, rounding_method: true },
+  });
+  if (!row) {
+    throw new AppError(`Currency ${code} is not active for this tenant.`, 422, 'CURRENCY_INACTIVE');
+  }
+  assertPostablePrecision(code, row.rounding_precision);
+  return row;
+}
+
+/** Amount translated into a target currency and rounded by that currency's rule. */
+function converted(amount: number, rate: ResolvedRate, rule: CurrencyRoundingRule): number {
+  if (amount === 0) return 0;
+  return roundAmount(translate(amount, rate), rule).toNumber();
+}
+
+/** The effective per-unit quote, for audit and inquiry. The amounts stay authoritative. */
+function effectiveRate(rate: ResolvedRate): Prisma.Decimal {
+  return translate(1, rate).toDecimalPlaces(8);
+}
+
+interface NormalisedLine {
+  accountId: string;
+  /** Accounting amounts — what `debit_amount`/`credit_amount` hold. */
+  debit: number;
+  credit: number;
+  transactionDebit: number;
+  transactionCredit: number;
+  reportingDebit: number;
+  reportingCredit: number;
+  accountingRate: Prisma.Decimal;
+  reportingRate: Prisma.Decimal;
+  description: string | null;
+  dimensions?: DimensionContext;
+  rawSlots?: Partial<ResolvedSlots>;
+}
 
 /**
  * Post one balanced voucher.
@@ -230,50 +349,126 @@ export async function postJournal(opts: PostJournalOptions) {
     throw new AppError(`${document} cannot be posted: no journal lines`, 500, 'JOURNAL_EMPTY');
   }
 
-  // ── Normalise the lines ──────────────────────────────────────────────────
-  interface NormalisedLine {
-    accountId: string;
-    debit: number;
-    credit: number;
-    description: string | null;
-    dimensions?: DimensionContext;
-    rawSlots?: Partial<ResolvedSlots>;
+  const rawCount = opts.lines.filter(l => l.rawAmounts).length;
+  if (rawCount > 0 && rawCount !== opts.lines.length) {
+    throw new AppError(
+      `${document} cannot be posted: some lines carry decided amounts and some do not.`,
+      500,
+      'JOURNAL_RAW_AMOUNTS_PARTIAL',
+    );
   }
+  const derived = rawCount > 0;
+
+  const params = await effectiveParameters(tenantId, legalEntityId, client);
+
   const lines: NormalisedLine[] = [];
+  // Read only for an ordinary posting: a derived voucher carries its currencies
+  // from the original. A tenant without a ledger cannot post at all, which is the
+  // point — there is no fallback currency anywhere in this service.
+  let ledger: LedgerCurrencies | undefined;
+  let transactionCurrency: string;
+  let accountingRateTypeId: string | null;
+  let reportingRateTypeId: string | null;
+  let exchangeRateDate: Date;
+  let accountingCurrency: string;
+  let reportingCurrency: string;
 
-  for (const l of opts.lines) {
-    const debit = round2(Number(l.debit ?? 0));
-    const credit = round2(Number(l.credit ?? 0));
-
-    if (debit !== 0 && credit !== 0) {
-      // A journal line is one side of an entry. A line carrying both is a caller
-      // bug that would net out invisibly in every report.
+  if (derived) {
+    // ── Derived from another voucher: copy, never re-translate ───────────────
+    const header = opts.rawHeader;
+    if (!header) {
       throw new AppError(
-        `${document} cannot be posted: a journal line carries both a debit (${debit}) ` +
-          `and a credit (${credit}). Split it into two lines.`,
+        `${document} cannot be posted: decided amounts need the original voucher's currency header.`,
         500,
-        'JOURNAL_LINE_TWO_SIDED',
+        'JOURNAL_RAW_HEADER_MISSING',
       );
     }
+    accountingCurrency = header.accountingCurrencyCode;
+    reportingCurrency = header.reportingCurrencyCode;
+    accountingRateTypeId = header.accountingRateTypeId;
+    reportingRateTypeId = header.reportingRateTypeId;
+    exchangeRateDate = header.exchangeRateDate;
 
-    if (debit === 0 && credit === 0) {
-      // Dropped rather than rejected, because several existing callers emit a
-      // zero line for an empty bucket. Loud, so it can be traced back and fixed.
-      logger.warn(
-        { tenantId, document, accountId: l.accountId },
-        'Journal line with zero debit and zero credit was dropped',
+    const currencies = new Set(opts.lines.map(l => l.rawAmounts!.transactionCurrencyCode));
+    if (currencies.size > 1) {
+      throw new AppError(
+        `${document} cannot be posted: a voucher carries one transaction currency (found ${[...currencies].join(', ')}).`,
+        500,
+        'JOURNAL_MULTI_CURRENCY_UNSUPPORTED',
       );
-      continue;
     }
+    transactionCurrency = [...currencies][0];
 
-    lines.push({
-      accountId: l.accountId,
-      debit,
-      credit,
-      description: l.description ?? null,
-      dimensions: l.dimensions,
-      rawSlots: l.rawSlots,
-    });
+    for (const l of opts.lines) {
+      const r = l.rawAmounts!;
+      const empty = [r.transactionDebit, r.transactionCredit, r.accountingDebit, r.accountingCredit, r.reportingDebit, r.reportingCredit]
+        .every(v => Number(v) === 0);
+      if (empty) continue;
+      lines.push({
+        accountId: l.accountId,
+        debit: Number(r.accountingDebit),
+        credit: Number(r.accountingCredit),
+        transactionDebit: Number(r.transactionDebit),
+        transactionCredit: Number(r.transactionCredit),
+        reportingDebit: Number(r.reportingDebit),
+        reportingCredit: Number(r.reportingCredit),
+        accountingRate: new Prisma.Decimal(r.accountingRate),
+        reportingRate: new Prisma.Decimal(r.reportingRate),
+        description: l.description ?? null,
+        dimensions: l.dimensions,
+        rawSlots: l.rawSlots,
+      });
+    }
+  } else {
+    // ── Ordinary posting ─────────────────────────────────────────────────────
+    ledger = await getLedgerCurrencies(tenantId, legalEntityId, client);
+    accountingCurrency = ledger.accountingCurrency;
+    reportingCurrency = ledger.reportingCurrency;
+    transactionCurrency = opts.currency?.code?.trim().toUpperCase() || accountingCurrency;
+    exchangeRateDate = date;
+
+    const transactionRule = await roundingRuleFor(client, tenantId, transactionCurrency);
+
+    for (const l of opts.lines) {
+      const debit = roundAmount(Number(l.debit ?? 0), transactionRule).toNumber();
+      const credit = roundAmount(Number(l.credit ?? 0), transactionRule).toNumber();
+
+      if (debit !== 0 && credit !== 0) {
+        // A journal line is one side of an entry. A line carrying both is a caller
+        // bug that would net out invisibly in every report.
+        throw new AppError(
+          `${document} cannot be posted: a journal line carries both a debit (${debit}) ` +
+            `and a credit (${credit}). Split it into two lines.`,
+          500,
+          'JOURNAL_LINE_TWO_SIDED',
+        );
+      }
+
+      if (debit === 0 && credit === 0) {
+        // Dropped rather than rejected, because several existing callers emit a
+        // zero line for an empty bucket. Loud, so it can be traced back and fixed.
+        logger.warn(
+          { tenantId, document, accountId: l.accountId },
+          'Journal line with zero debit and zero credit was dropped',
+        );
+        continue;
+      }
+
+      lines.push({
+        accountId: l.accountId,
+        // Filled in below, once the rates are known.
+        debit, credit,
+        transactionDebit: debit,
+        transactionCredit: credit,
+        reportingDebit: debit,
+        reportingCredit: credit,
+        accountingRate: ONE,
+        reportingRate: ONE,
+        description: l.description ?? null,
+        dimensions: l.dimensions,
+        rawSlots: l.rawSlots,
+      });
+    }
   }
 
   if (lines.length === 0) {
@@ -284,52 +479,139 @@ export async function postJournal(opts: PostJournalOptions) {
     );
   }
 
-  const params = await effectiveParameters(tenantId, legalEntityId, client);
   await assertPeriodPostable(tenantId, date, params, document, client);
 
-  // ── Balance ──────────────────────────────────────────────────────────────
-  const totalDebit = round2(lines.reduce((s, l) => s + l.debit, 0));
-  const totalCredit = round2(lines.reduce((s, l) => s + l.credit, 0));
-  const imbalance = round2(totalDebit - totalCredit);
-
-  if (imbalance !== 0) {
-    if (Math.abs(imbalance) > params.roundingTolerance) {
+  /** Appends a balancing line to ROUNDING, or refuses above tolerance. */
+  const absorb = async (
+    imbalance: number,
+    tolerance: number,
+    currencyLabel: string,
+    code: string,
+    apply: (line: NormalisedLine, debit: number, credit: number) => void,
+  ) => {
+    if (imbalance === 0) return;
+    if (Math.abs(imbalance) > tolerance) {
       throw new AppError(
-        `${document} cannot be posted: debits ${totalDebit.toFixed(2)} ≠ credits ` +
-          `${totalCredit.toFixed(2)} (out by ${imbalance.toFixed(2)}, tolerance ` +
-          `${params.roundingTolerance.toFixed(2)}).`,
+        `${document} cannot be posted: it is out by ${imbalance.toFixed(2)} in the ${currencyLabel} ` +
+          `currency, which is beyond the ${tolerance.toFixed(2)} tolerance.`,
         500,
-        'JOURNAL_UNBALANCED',
+        code,
       );
     }
-
     // Within tolerance: absorb it into ROUNDING rather than reject. This is what
     // `rounding_tolerance` has promised since migration 001 and what nothing
     // implemented. If ROUNDING is unconfigured we still refuse — silently
-    // posting an unbalanced voucher is not an option available to us.
+    // posting an unbalanced voucher is not an option available to us. The account
+    // is resolved ONLY here, so a tenant without a ROUNDING profile can still post
+    // everything that balances.
     let roundingAccountId: string;
     try {
       roundingAccountId = await resolvePostingAccount('ROUNDING', { tenantId, legalEntityId, on: date }, client);
     } catch {
       throw new AppError(
-        `${document} cannot be posted: it is out by ${imbalance.toFixed(2)}, which is within ` +
-          `the rounding tolerance, but no ROUNDING posting profile is configured to absorb it.`,
+        `${document} cannot be posted: it is out by ${imbalance.toFixed(2)} in the ${currencyLabel} ` +
+          `currency, which is within the rounding tolerance, but no ROUNDING posting profile is ` +
+          `configured to absorb it.`,
         500,
         'ROUNDING_PROFILE_UNRESOLVED',
       );
     }
-
-    lines.push({
+    const line: NormalisedLine = {
       accountId: roundingAccountId,
-      debit: imbalance < 0 ? Math.abs(imbalance) : 0,
-      credit: imbalance > 0 ? imbalance : 0,
+      debit: 0, credit: 0,
+      transactionDebit: 0, transactionCredit: 0,
+      reportingDebit: 0, reportingCredit: 0,
+      accountingRate: ONE, reportingRate: ONE,
       description: 'Rounding',
+    };
+    apply(line, imbalance < 0 ? Math.abs(imbalance) : 0, imbalance > 0 ? imbalance : 0);
+    lines.push(line);
+    logger.info({ tenantId, document, imbalance, currency: currencyLabel }, 'Rounding difference absorbed into the ROUNDING account');
+  };
+
+  if (derived) {
+    // A correction is balanced by construction — the original was. Assert it in all
+    // three currencies rather than inventing a second rounding line.
+    for (const [label, sum] of [
+      ['transaction', round2(lines.reduce((s, l) => s + l.transactionDebit - l.transactionCredit, 0))],
+      ['accounting', round2(lines.reduce((s, l) => s + l.debit - l.credit, 0))],
+      ['reporting', round2(lines.reduce((s, l) => s + l.reportingDebit - l.reportingCredit, 0))],
+    ] as const) {
+      if (sum !== 0) {
+        throw new AppError(
+          `${document} cannot be posted: the derived lines are out by ${sum.toFixed(2)} in the ${label} currency.`,
+          500,
+          'JOURNAL_REVERSAL_IMBALANCE',
+        );
+      }
+    }
+  } else {
+    // ── Transaction currency ────────────────────────────────────────────────
+    const transactionImbalance = round2(lines.reduce((s, l) => s + l.transactionDebit - l.transactionCredit, 0));
+    await absorb(transactionImbalance, params.roundingTolerance, 'transaction', 'JOURNAL_UNBALANCED', (line, debit, credit) => {
+      line.transactionDebit = debit; line.transactionCredit = credit;
+      line.debit = debit; line.credit = credit;
+      line.reportingDebit = debit; line.reportingCredit = credit;
     });
 
-    logger.info(
-      { tenantId, document, imbalance },
-      'Rounding difference absorbed into the ROUNDING account',
-    );
+    // ── Translate every line from the transaction amount ────────────────────
+    // **[OFFICIAL]** each line is translated and rounded, then the lines are summed.
+    const accountingIdentity = transactionCurrency === accountingCurrency;
+    const reportingIdentity = transactionCurrency === reportingCurrency;
+    // **[OFFICIAL]** when the reporting currency IS the accounting currency, D365
+    // keeps the two in sync. Translating it a second time would round the same
+    // amount twice and could produce a reporting penny line of its own.
+    const reportingMirrorsAccounting = reportingCurrency === accountingCurrency;
+    const ledgerCurrencies = ledger!; // set on this branch, never on the derived one
+    accountingRateTypeId = accountingIdentity ? null : ledgerCurrencies.accountingRateTypeId;
+    reportingRateTypeId = reportingIdentity ? null : (reportingMirrorsAccounting ? accountingRateTypeId : ledgerCurrencies.reportingRateTypeId);
+
+    if (!accountingIdentity || !reportingIdentity) {
+      const accountingRule = await roundingRuleFor(client, tenantId, accountingCurrency);
+      const reportingRule = reportingMirrorsAccounting
+        ? accountingRule
+        : await roundingRuleFor(client, tenantId, reportingCurrency);
+
+      const accountingRate = accountingIdentity ? null : await resolveRate({
+        tenantId, rateTypeId: ledgerCurrencies.accountingRateTypeId,
+        from: transactionCurrency, to: accountingCurrency, date: exchangeRateDate, client,
+      });
+      const reportingRate = reportingIdentity || reportingMirrorsAccounting ? null : await resolveRate({
+        tenantId, rateTypeId: ledgerCurrencies.reportingRateTypeId,
+        from: transactionCurrency, to: reportingCurrency, date: exchangeRateDate, client,
+      });
+
+      for (const line of lines) {
+        if (accountingRate) {
+          line.debit = converted(line.transactionDebit, accountingRate, accountingRule);
+          line.credit = converted(line.transactionCredit, accountingRate, accountingRule);
+          line.accountingRate = effectiveRate(accountingRate);
+        }
+        if (reportingRate) {
+          line.reportingDebit = converted(line.transactionDebit, reportingRate, reportingRule);
+          line.reportingCredit = converted(line.transactionCredit, reportingRate, reportingRule);
+          line.reportingRate = effectiveRate(reportingRate);
+        } else if (reportingMirrorsAccounting) {
+          // Copy, never re-round: the reporting currency is the accounting one.
+          line.reportingDebit = line.debit;
+          line.reportingCredit = line.credit;
+          line.reportingRate = line.accountingRate;
+        }
+      }
+
+      // ── Penny differences, one per currency, each with its own tolerance ──
+      const accountingImbalance = round2(lines.reduce((s, l) => s + l.debit - l.credit, 0));
+      await absorb(accountingImbalance, params.roundingTolerance, 'accounting', 'JOURNAL_UNBALANCED_ACCOUNTING', (line, debit, credit) => {
+        line.debit = debit; line.credit = credit;
+        if (reportingMirrorsAccounting) { line.reportingDebit = debit; line.reportingCredit = credit; }
+      });
+      if (!reportingMirrorsAccounting) {
+        const reportingImbalance = round2(lines.reduce((s, l) => s + l.reportingDebit - l.reportingCredit, 0));
+        await absorb(reportingImbalance, params.reportingRoundingTolerance, 'reporting', 'JOURNAL_UNBALANCED_REPORTING', (line, debit, credit) => {
+          line.reportingDebit = debit; line.reportingCredit = credit;
+        });
+      }
+    }
   }
 
   // ── Financial dimensions ─────────────────────────────────────────────────
@@ -382,11 +664,23 @@ export async function postJournal(opts: PostJournalOptions) {
       corrects_entry_id: corrects?.entryId ?? null,
       correction_reason: corrects?.reason ?? null,
       is_correction: !!corrects,
+      accounting_currency_code: accountingCurrency,
+      reporting_currency_code: reportingCurrency,
+      exchange_rate_date: exchangeRateDate,
+      accounting_rate_type_id: accountingRateTypeId,
+      reporting_rate_type_id: reportingRateTypeId,
       lines: {
         create: coded.map(l => ({
           account_id: l.accountId,
           debit_amount: l.debit,
           credit_amount: l.credit,
+          transaction_currency_code: transactionCurrency,
+          transaction_debit_amount: l.transactionDebit,
+          transaction_credit_amount: l.transactionCredit,
+          reporting_debit_amount: l.reportingDebit,
+          reporting_credit_amount: l.reportingCredit,
+          accounting_exchange_rate: l.accountingRate,
+          reporting_exchange_rate: l.reportingRate,
           description: l.description,
           // Only STORNO produces lines that need distinguishing — a negative amount
           // in the original column is otherwise indistinguishable from a genuinely
@@ -418,13 +712,18 @@ export async function postJournal(opts: PostJournalOptions) {
  *   · "After you reverse an entry, you must make the correct entry."  → reversal and
  *     re-posting are two steps. This function does the first only, deliberately.
  *
- * ── One deliberate deviation ───────────────────────────────────────────────
+ * ── Two deliberate deviations ──────────────────────────────────────────────
  * BC reuses the original posting date. We do NOT: if the original period is closed,
  * backdating would post into a closed period, which is precisely what the rest of
  * this service exists to prevent, and in most jurisdictions a closed period has
  * already been declared. The correction posts on `date` (default today) and the
  * original date stays reachable through `corrects_entry_id`, which is where the
  * audit trail belongs. See docs/architecture/CORRECTIONS.md §4.2.
+ *
+ * The EXCHANGE-RATE date, however, is the original's, and the amounts and rates are
+ * copied rather than re-translated. A rate move between posting and reversal would
+ * otherwise leave a residue in the accounting and reporting currencies that never
+ * nets to zero — the FX analogue of re-resolving dimensions.
  */
 export async function reverseJournal(opts: {
   tenantId: string;
@@ -477,11 +776,9 @@ export async function reverseJournal(opts: {
   }
 
   const params = await effectiveParameters(tenantId, legalEntityId, client);
+  const storno = params.correctionMethod === 'STORNO';
 
   const lines: JournalLineInput[] = original.lines.map(l => {
-    const debit = Number(l.debit_amount);
-    const credit = Number(l.credit_amount);
-
     // The original's dimension coding is COPIED, never re-resolved. Re-resolving
     // would code the reversal by today's master data rather than by what the
     // original carried, so the pair would not net to zero in a P&L by store — and
@@ -493,12 +790,29 @@ export async function reverseJournal(opts: {
       dimension_4_id: l.dimension_4_id,
     };
 
-    return params.correctionMethod === 'STORNO'
-      ? // Same columns, sign flipped — the original is zeroed out and turnover
-        // stays truthful.
-        { accountId: l.account_id, debit: -debit, credit: -credit, description: l.description, rawSlots }
-      : // Mirrored — balance is right, but both turnovers carry the round trip.
-        { accountId: l.account_id, debit: credit, credit: debit, description: l.description, rawSlots };
+    const debit = Number(l.debit_amount);
+    const credit = Number(l.credit_amount);
+    const txnDebit = Number(l.transaction_debit_amount);
+    const txnCredit = Number(l.transaction_credit_amount);
+    const repDebit = Number(l.reporting_debit_amount);
+    const repCredit = Number(l.reporting_credit_amount);
+
+    // STORNO: same columns, sign flipped — the original is zeroed out and turnover
+    // stays truthful. REVERSE: mirrored — balance is right, but both turnovers
+    // carry the round trip. Rates are never negated, in either method.
+    const rawAmounts: RawAmounts = {
+      transactionCurrencyCode: l.transaction_currency_code,
+      transactionDebit: storno ? -txnDebit : txnCredit,
+      transactionCredit: storno ? -txnCredit : txnDebit,
+      accountingDebit: storno ? -debit : credit,
+      accountingCredit: storno ? -credit : debit,
+      reportingDebit: storno ? -repDebit : repCredit,
+      reportingCredit: storno ? -repCredit : repDebit,
+      accountingRate: l.accounting_exchange_rate,
+      reportingRate: l.reporting_exchange_rate,
+    };
+
+    return { accountId: l.account_id, description: l.description, rawSlots, rawAmounts };
   });
 
   logger.info(
@@ -516,5 +830,15 @@ export async function reverseJournal(opts: {
     userId,
     lines,
     corrects: { entryId, reason },
+    rawHeader: {
+      accountingCurrencyCode: original.accounting_currency_code,
+      reportingCurrencyCode: original.reporting_currency_code,
+      exchangeRateDate: original.exchange_rate_date,
+      accountingRateTypeId: original.accounting_rate_type_id,
+      reportingRateTypeId: original.reporting_rate_type_id,
+    },
   });
 }
+
+/** Re-exported for callers that need the ledger's currencies alongside a posting. */
+export type { LedgerCurrencies };

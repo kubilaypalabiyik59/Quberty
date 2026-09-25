@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/components/erp/PageHeader';
+import { useMoney } from '@/components/CurrencyProvider';
 
 /**
  * Quotations — the last document before the order.
@@ -14,10 +15,10 @@ import { PageHeader, TableShell, Th, Td, EmptyRow, LoadingRows } from '@/compone
  * so a SENT quotation past its validity date is moved to EXPIRED when somebody
  * looks. For an offer, "soon enough" genuinely is soon enough.
  */
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
 const STATUSES = ['', 'DRAFT', 'SENT', 'CONFIRMED', 'REVISED', 'LOST', 'EXPIRED', 'CANCELLED'];
 
 export default function QuotationsPage() {
+  const { amount: money, code } = useMoney();
   const [status, setStatus] = useState('');
 
   const { data, isLoading } = useQuery({
@@ -59,7 +60,7 @@ export default function QuotationsPage() {
             <Th>Quoted to</Th>
             <Th>Opportunity</Th>
             <Th className="text-right">Lines</Th>
-            <Th className="text-right">Total</Th>
+            <Th className="text-right">Total{code ? ` (${code})` : ''}</Th>
             <Th>Valid until</Th>
             <Th>Status</Th>
             <Th>Became</Th>

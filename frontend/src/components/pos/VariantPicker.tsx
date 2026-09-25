@@ -1,6 +1,7 @@
 'use client';
 
 import { usePosCartStore } from '@/stores/posCartStore';
+import { useMoney } from '@/components/CurrencyProvider';
 
 interface Props {
   product: any;
@@ -18,6 +19,7 @@ function variantLabel(v: any): string {
 
 export function VariantPicker({ product, visible, onClose }: Props) {
   const addLine = usePosCartStore((s) => s.addLine);
+  const { money } = useMoney();
 
   if (!product || !visible) return null;
 
@@ -55,7 +57,7 @@ export function VariantPicker({ product, visible, onClose }: Props) {
             <p className="text-slate-400 text-xs mt-0.5">{product.sku}</p>
           </div>
           <p className="text-indigo-600 font-bold text-xl">
-            Bs. {Number(product.selling_price).toFixed(2)}
+            {money(product.selling_price)}
           </p>
         </div>
 
@@ -92,7 +94,7 @@ export function VariantPicker({ product, visible, onClose }: Props) {
                     {variantLabel(v)}
                   </p>
                   <p className={`text-xs mb-1 ${oos ? 'text-slate-400' : 'text-indigo-600'}`}>
-                    Bs. {(Number(product.selling_price) + Number(v.additional_cost ?? 0)).toFixed(2)}
+                    {money(Number(product.selling_price) + Number(v.additional_cost ?? 0))}
                   </p>
                   <p className={`text-xs ${oos ? 'text-red-400' : 'text-slate-400'}`}>
                     {oos ? 'Out of Stock' : `Stock: ${stock}`}

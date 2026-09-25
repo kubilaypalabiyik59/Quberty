@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { CheckCircle, AlertCircle } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 export default function BalanceSheetPage() {
+  const { money } = useMoney();
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
 
   const { data, isLoading } = useQuery({
@@ -30,7 +32,7 @@ export default function BalanceSheetPage() {
                 <td className="px-4 py-2 font-mono text-xs text-gray-400 w-16">{r.code}</td>
                 <td className={`px-4 py-2 ${isNetIncome ? 'text-emerald-800 font-medium italic' : 'text-gray-900'}`}>{r.name}</td>
                 <td className={`px-4 py-2 text-right font-medium ${isNetIncome ? (r.balance >= 0 ? 'text-emerald-700' : 'text-red-600') : 'text-gray-900'}`}>
-                  Bs. {Number(r.balance).toFixed(2)}
+                  {money(r.balance)}
                 </td>
               </tr>
             );
@@ -39,7 +41,7 @@ export default function BalanceSheetPage() {
         <tfoot className="border-t-2 border-gray-300 bg-gray-50">
           <tr>
             <td colSpan={2} className="px-4 py-2.5 font-bold text-gray-700">Total</td>
-            <td className="px-4 py-2.5 text-right font-bold text-gray-900">Bs. {Number(total).toFixed(2)}</td>
+            <td className="px-4 py-2.5 text-right font-bold text-gray-900">{money(total)}</td>
           </tr>
         </tfoot>
       </table>
@@ -85,7 +87,7 @@ export default function BalanceSheetPage() {
 
             <div className="bg-gray-800 rounded-xl p-4 flex items-center justify-between">
               <span className="font-bold text-white text-sm">Total Liabilities + Equity</span>
-              <span className="font-bold text-white">Bs. {(data.total_liabilities_equity ?? 0).toFixed(2)}</span>
+              <span className="font-bold text-white">{money(data.total_liabilities_equity ?? 0)}</span>
             </div>
           </div>
         </div>
@@ -93,11 +95,11 @@ export default function BalanceSheetPage() {
 
       {data && (
         <div className={`mt-4 rounded-xl p-4 flex items-center justify-between text-sm font-medium ${data.is_balanced ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-          <span>Assets: <strong>Bs. {data.total_assets.toFixed(2)}</strong></span>
+          <span>Assets: <strong>{money(data.total_assets)}</strong></span>
           <span>=</span>
-          <span>Liabilities + Equity: <strong>Bs. {data.total_liabilities_equity.toFixed(2)}</strong></span>
+          <span>Liabilities + Equity: <strong>{money(data.total_liabilities_equity)}</strong></span>
           <span className={data.is_balanced ? 'text-green-700 font-bold' : 'text-red-700 font-bold'}>
-            Diff: Bs. {Math.abs(data.total_assets - data.total_liabilities_equity).toFixed(2)}
+            Diff: {money(Math.abs(data.total_assets - data.total_liabilities_equity))}
           </span>
         </div>
       )}

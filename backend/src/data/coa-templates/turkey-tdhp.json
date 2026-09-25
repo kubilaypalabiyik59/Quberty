@@ -303,6 +303,40 @@
       "normal_balance": "DEBIT",
       "parent_code": null,
       "category": "PRICE_VARIANCE"
+    },
+    {
+      "code": "549",
+      "name": "Açılış Stok Farkları",
+      "type": "EQUITY",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "OPENING_BALANCE_EQUITY",
+      "note": "[VAL] Account chosen for the opening-inventory counter-entry pending a Turkish accountant's confirmation."
+    },
+    {
+      "code": "679",
+      "name": "Diğer Olağandışı Gelir ve Kârlar",
+      "type": "REVENUE",
+      "normal_balance": "CREDIT",
+      "parent_code": null,
+      "category": "INVENTORY_PROFIT"
+    },
+    {
+      "code": "689",
+      "name": "Diğer Olağandışı Gider ve Zararlar",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": null,
+      "category": "INVENTORY_LOSS"
+    },
+    {
+      "code": "689.02",
+      "name": "Kasa Sayım Farkları",
+      "type": "EXPENSE",
+      "normal_balance": "DEBIT",
+      "parent_code": "689",
+      "category": "CASH_DIFFERENCE",
+      "note": "[VAL] Register over/short account pending a Turkish accountant's confirmation."
     }
   ]
 }

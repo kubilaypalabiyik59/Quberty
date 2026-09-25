@@ -1,0 +1,29 @@
+/* Editorial serif for storefront headlines only; the UI stays in Plex. */
+.display {
+  font-family: var(--font-store-display), Georgia, serif;
+  font-optical-sizing: auto;
+  letter-spacing: -0.01em;
+}
+
+/* The hero photograph settles in slowly, like a camera finishing its move. */
+.heroImage {
+  animation: settle 18s cubic-bezier(0.2, 0.6, 0.2, 1) forwards;
+  transform-origin: 70% 60%;
+}
+@keyframes settle {
+  from { transform: scale(1.08); }
+  to   { transform: scale(1); }
+}
+
+.rise {
+  opacity: 0;
+  transform: translateY(12px);
+  animation: rise 0.8s cubic-bezier(0.2, 0.6, 0.3, 1) forwards;
+}
+@keyframes rise {
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heroImage, .rise { animation: none; opacity: 1; transform: none; }
+}

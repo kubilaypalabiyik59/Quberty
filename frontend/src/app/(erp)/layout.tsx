@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Sidebar } from '@/components/erp/Sidebar';
 import { TopBar } from '@/components/erp/TopBar';
+import { IdleGuard } from '@/components/erp/IdleGuard';
 
 export default function ERPLayout({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuthStore();
@@ -20,6 +21,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen bg-gray-50">
+      <IdleGuard />
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <TopBar />

@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiErrorMessage } from '@/components/erp/Dialog';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -29,9 +31,17 @@ export default function WarehouseWorkPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['warehouse-work'] }),
   });
 
-  const completeWork = useMutation({
-    mutationFn: (workId: string) => api.post(`/warehouse/work/${workId}/complete`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['warehouse-work'] }),
+  const [error, setError] = useState('');
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+
+  // Work is completed line by line: completing a PUT line moves the stock, and the
+  // work closes itself when its last line is done. There is no "complete all"
+  // shortcut — it used to mark work done without moving anything (WORK-043).
+  const completeLine = useMutation({
+    mutationFn: ({ workId, lineId, quantity }: { workId: string; lineId: string; quantity: number }) =>
+      api.post(`/warehouse/work/${workId}/lines/${lineId}/complete`, { quantity_done: quantity }),
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['warehouse-work'] }); },
+    onError: (e) => setError(apiErrorMessage(e, 'Could not complete the work line.')),
   });
 
   if (isLoading) return <div className="flex items-center justify-center h-64 text-gray-400">Loading work tasks...</div>;
@@ -42,6 +52,10 @@ export default function WarehouseWorkPage() {
         <h1 className="text-2xl font-bold text-gray-900">Warehouse Work</h1>
         <p className="text-gray-500">Pick, put-away, and transfer tasks</p>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+      )}
 
       <div className="grid gap-4">
         {(data ?? []).length === 0 && (
@@ -64,7 +78,7 @@ export default function WarehouseWorkPage() {
                   <Badge color="blue">{WORK_TYPE_LABELS[work.work_type] ?? work.work_type}</Badge>
                 </div>
                 <p className="text-sm text-gray-500">
-                  {work.reference_type === 'sales_order' ? `Order: ${work.reference_id}` : work.reference_type}
+                  {['SALES_ORDER', 'sales_order'].includes(work.reference_type) ? `Order: ${work.reference_id}` : work.reference_type}
                 </p>
               </div>
               <div className="flex gap-2">
@@ -77,16 +91,7 @@ export default function WarehouseWorkPage() {
                     Start
                   </Button>
                 )}
-                {work.status === 'IN_PROGRESS' && (
-                  <Button
-                    size="sm"
-                    variant="success"
-                    onClick={() => completeWork.mutate(work.id)}
-                    disabled={completeWork.isPending}
-                  >
-                    Complete
-                  </Button>
-                )}
+
               </div>
             </div>
 
@@ -109,6 +114,34 @@ export default function WarehouseWorkPage() {
                   {line.to_location && (
                     <span className="text-gray-400">To: {line.to_location.code}</span>
                   )}
+                  {Number(line.quantity_done ?? 0) > 0 && line.status !== 'DONE' && (
+                    <span className="text-red-600">Done: {line.quantity_done}</span>
+                  )}
+                  {work.status === 'IN_PROGRESS' && line.status !== 'DONE' && (() => {
+                    const remaining = Number(line.quantity) - Number(line.quantity_done ?? 0);
+                    const value = quantities[line.id] ?? String(remaining);
+                    return (
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={remaining}
+                          value={value}
+                          onChange={(e) => setQuantities((q) => ({ ...q, [line.id]: e.target.value }))}
+                          className="w-16 rounded border border-gray-300 px-2 py-1 text-sm"
+                          aria-label="Quantity done"
+                        />
+                        <Button
+                          size="sm"
+                          variant="success"
+                          disabled={completeLine.isPending || !(Number(value) > 0 && Number(value) <= remaining)}
+                          onClick={() => completeLine.mutate({ workId: work.id, lineId: line.id, quantity: Number(value) })}
+                        >
+                          Done
+                        </Button>
+                      </span>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

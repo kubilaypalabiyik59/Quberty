@@ -1,0 +1,27 @@
+# Aider configuration for the local implementer (Ornith-1.5-9B served by LM Studio).
+# The architect (Claude) writes one bounded task per run; Aider applies it and commits.
+# See docs/design/QUBERTY_LANDING_2026-09-25.md §5 for the rules every task follows.
+
+model: openai/ornith-1.5-9b
+openai-api-base: http://127.0.0.1:1234/v1
+openai-api-key: lm-studio            # LM Studio ignores the key; Aider requires one to be set
+model-settings-file: .aider.model.settings.yml
+model-metadata-file: .aider.model.metadata.json
+
+# Only the files named on the command line enter the context. A repo map would spend the
+# small context window on files the task is not allowed to touch.
+map-tokens: 0
+
+# One commit per task, prefixed "aider:", so the review sees exactly what the model changed.
+auto-commits: true
+dirty-commits: false
+attribute-commit-message-author: true
+
+# Match .gitattributes (eol=lf). Aider writes files itself, as UTF-8, never through a shell.
+line-endings: lf
+encoding: utf-8
+
+gitignore: false
+analytics-disable: true
+check-update: false
+show-model-warnings: false

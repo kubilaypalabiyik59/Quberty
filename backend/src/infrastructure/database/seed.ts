@@ -5,8 +5,14 @@
 
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { bootstrapTenantLedger } from '../../shared/services/currency/ledgerCurrency.service';
 
 const db = new PrismaClient();
+
+// The demo company is Istanbul-based, so its ledger is in Turkish lira. This is
+// demo data, not a default: real tenants are created by scripts/createTenant.ts
+// with an explicit currency.
+const DEMO_CURRENCY = 'TRY';
 
 async function main() {
   console.log('Seeding Skarpine demo data...');
@@ -21,9 +27,17 @@ async function main() {
       plan: 'professional',
       language: 'tr',
       timezone: 'Europe/Istanbul',
+      country: 'TR',
       modules: { sales: true, purchase: true, inventory: true, warehouse: true, hr: true, reporting: true, import: true },
     },
   });
+  // Idempotent: an existing ledger is left exactly as it is.
+  await db.$transaction((tx) => bootstrapTenantLedger(tx, {
+    tenantId: tenant.id,
+    accountingCurrency: DEMO_CURRENCY,
+    rateTypeCode: 'DEFAULT',
+    rateTypeName: 'Default',
+  }));
   console.log(`Tenant: ${tenant.name} (${tenant.id})`);
 
   // 2. Create admin user

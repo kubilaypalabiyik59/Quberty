@@ -15,7 +15,9 @@ export type AppVariables = {
   tenantId:     string;
   tenantSlug:   string;
   taxConfig:    any;
-  currencyCode: string;
+  // No currency here. It belongs to the ledger (FinanceParameters), and a posting
+  // path reads it through getLedgerCurrencies so a tenant without one fails there
+  // rather than on every request, including auth (WORK-025).
   user:         AppUser;
   requestId:    string;
   body:         Record<string, any>;

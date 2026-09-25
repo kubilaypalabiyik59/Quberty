@@ -1,4 +1,5 @@
 import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { formatMoney, safeLocale, type TenantCurrency } from '@/lib/money';
 
 const styles = StyleSheet.create({
   page: {
@@ -150,8 +151,8 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 7, color: '#9ca3af' },
 });
 
-function fmtDate(d: string | Date) {
-  return new Date(d).toLocaleDateString('es-BO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+function fmtDate(d: string | Date, locale: string | undefined) {
+  return new Date(d).toLocaleDateString(safeLocale(locale), { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 interface LineItem {
@@ -196,7 +197,13 @@ function variantLabel(line: LineItem): string {
   return ` (${line.variant.sku_variant})`;
 }
 
-export function FacturaPDF({ factura }: { factura: Factura }) {
+/**
+ * `currency` is the TENANT's, and it is only a fallback here: a factura carries
+ * the currency it was issued in, in `invoice_metadata`, and a document already
+ * filed must keep printing that whatever the ledger says today. The fallback used
+ * to be the literal 'BOB' (WORK-025).
+ */
+export function FacturaPDF({ factura, currency }: { factura: Factura; currency: TenantCurrency }) {
   const subtotal = Number(factura.subtotal);
   const iva = Number(factura.iva_amount);
   const it = Number(factura.it_amount);
@@ -206,10 +213,14 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
   const invoiceLabel      = factura.invoice_metadata?.invoice_label      ?? 'Factura';
   const vatLabel          = factura.invoice_metadata?.vat_label          ?? 'IVA';
   const secondaryTaxName  = factura.invoice_metadata?.secondary_tax_name ?? 'IT';
-  const currencyCode      = factura.invoice_metadata?.currency_code      ?? 'BOB';
+  const currencyCode      = factura.invoice_metadata?.currency_code      ?? currency.code;
 
   function fmtAmt(n: number) {
-    return `${currencyCode} ${Number(n).toFixed(2)}`;
+    // A factura issued in another currency must not borrow the tenant currency's
+    // symbol or rounding.
+    return currencyCode === currency.code
+      ? formatMoney(n, currency)
+      : formatMoney(n, { ...currency, code: currencyCode, symbol: null, rounding_precision: '0.01' });
   }
 
   return (
@@ -233,7 +244,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
         <View style={styles.metaRow}>
           <View style={styles.metaCard}>
             <Text style={styles.metaLabel}>FECHA DE EMISIÓN</Text>
-            <Text style={styles.metaValue}>{fmtDate(factura.invoice_date)}</Text>
+            <Text style={styles.metaValue}>{fmtDate(factura.invoice_date, currency.locale)}</Text>
           </View>
           <View style={styles.metaCard}>
             <Text style={styles.metaLabel}>CLIENTE</Text>
@@ -345,7 +356,7 @@ export function FacturaPDF({ factura }: { factura: Factura }) {
         {/* Footer */}
         <View style={styles.footer} fixed>
           <Text style={styles.footerText}>Quberty ERP • Sistema de Facturación Bolivia</Text>
-          <Text style={styles.footerText}>{invoiceLabel} N° {factura.factura_number} • {fmtDate(factura.invoice_date)}</Text>
+          <Text style={styles.footerText}>{invoiceLabel} N° {factura.factura_number} • {fmtDate(factura.invoice_date, currency.locale)}</Text>
         </View>
 
       </Page>

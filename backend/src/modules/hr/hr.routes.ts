@@ -7,6 +7,7 @@ import { postJournal } from '../../shared/services/journal.service';
 import { requireRole } from '../../shared/middleware/authMiddleware';
 import { ok, created } from '../../shared/response';
 import type { AppEnv } from '../../shared/context';
+import { EMPLOYEE_ROLE_VALUES } from '../../shared/schemas';
 
 const app = new Hono<AppEnv>();
 
@@ -21,16 +22,86 @@ app.get('/users', requireRole('admin', 'store_manager'), async (c) => {
   return ok(c, users);
 });
 
+/**
+ * Roles a store manager may hand out when adding staff: the store's own. Every
+ * other role — finance, purchasing authority, audit, admin — is given by an
+ * admin, or a store manager could mint the duties that are meant to check them.
+ */
+const STORE_MANAGER_GRANTABLE: readonly string[] = [
+  'employee', 'cashier', 'warehouse_worker', 'receiver', 'purchasing_requester',
+];
+
+/**
+ * An admin must never leave the company without an active admin — by demoting
+ * or deactivating the last one, or by demoting or locking out themselves.
+ */
+async function guardAdminContinuity(c: any, targetId: string, change: { role?: string; deactivate?: boolean }) {
+  const tenantId = c.get('tenantId');
+  const target = await db.user.findFirst({
+    where: { id: targetId, tenant_id: tenantId },
+    select: { id: true, role: true, is_active: true },
+  });
+  if (!target) throw new AppError('User not found', 404);
+  if (target.id === c.get('user').id) {
+    if (change.deactivate) throw new AppError('You cannot deactivate your own account', 409, 'SELF_LOCKOUT');
+    if (change.role && change.role !== target.role) {
+      throw new AppError('You cannot change your own role; ask another administrator', 409, 'SELF_LOCKOUT');
+    }
+  }
+  const losesAdmin = target.role === 'admin' && target.is_active && (change.deactivate || (change.role && change.role !== 'admin'));
+  if (losesAdmin) {
+    const admins = await db.user.count({ where: { tenant_id: tenantId, role: 'admin', is_active: true } });
+    if (admins <= 1) throw new AppError('This is the last active administrator; appoint another first', 409, 'LAST_ADMIN');
+  }
+  return target;
+}
+
+/**
+ * A sign-in account without an employee record — for someone who uses the
+ * system but is not on the payroll here (an outside accountant, an auditor).
+ * Staff who are employees are added through POST /employees.
+ */
+app.post('/users', requireRole('admin'), async (c) => {
+  const { email, password, first_name, last_name, role = 'employee' } = await c.req.json().catch(() => ({}));
+  if (!email || typeof email !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new AppError('A valid email is required', 400, 'VALIDATION');
+  if (!first_name || !last_name) throw new AppError('First and last name are required', 400, 'VALIDATION');
+  if (!password || String(password).length < 8) throw new AppError('The password needs at least 8 characters', 400, 'VALIDATION');
+  if (!(EMPLOYEE_ROLE_VALUES as readonly string[]).includes(role)) throw new AppError('Invalid role', 400, 'VALIDATION');
+  const tenantId = c.get('tenantId');
+  const exists = await db.user.findFirst({ where: { tenant_id: tenantId, email: email.trim() }, select: { id: true } });
+  if (exists) throw new AppError('A user with this email already exists', 409, 'DUPLICATE_EMAIL');
+  const user = await db.user.create({
+    data: {
+      email: email.trim(), first_name, last_name, role, tenant_id: tenantId,
+      password_hash: await bcrypt.hash(String(password), 12),
+    },
+    select: { id: true, email: true, first_name: true, last_name: true, role: true, is_active: true, created_at: true },
+  });
+  return created(c, user);
+});
+
 app.put('/users/:id/role', requireRole('admin'), async (c) => {
   const { role } = await c.req.json();
-  const validRoles = ['admin', 'store_manager', 'warehouse_worker', 'employee', 'customer', 'cashier'];
-  if (!validRoles.includes(role)) throw new AppError('Invalid role', 400);
+  // Workforce roles only: a shopper account is created by storefront sign-up,
+  // never by turning a colleague into a customer here.
+  if (!(EMPLOYEE_ROLE_VALUES as readonly string[]).includes(role)) throw new AppError('Invalid role', 400);
+  await guardAdminContinuity(c, c.req.param('id'), { role });
   await db.user.updateMany({ where: { id: c.req.param('id'), tenant_id: c.get('tenantId') }, data: { role } });
   return ok(c, null);
 });
 
 app.put('/users/:id/deactivate', requireRole('admin'), async (c) => {
+  await guardAdminContinuity(c, c.req.param('id'), { deactivate: true });
   await db.user.updateMany({ where: { id: c.req.param('id'), tenant_id: c.get('tenantId') }, data: { is_active: false } });
+  return ok(c, null);
+});
+
+app.put('/users/:id/reactivate', requireRole('admin'), async (c) => {
+  const { count } = await db.user.updateMany({
+    where: { id: c.req.param('id'), tenant_id: c.get('tenantId') },
+    data: { is_active: true },
+  });
+  if (count === 0) throw new AppError('User not found', 404);
   return ok(c, null);
 });
 
@@ -52,6 +123,19 @@ app.get('/employees', requireRole('admin', 'store_manager'), async (c) => {
 app.post('/employees', requireRole('admin', 'store_manager'), async (c) => {
   const body = await c.req.json();
   const { email, password, first_name, last_name, role = 'employee', pos_pin, phone: _phone, ...employeeData } = body;
+  if (!EMPLOYEE_ROLE_VALUES.includes(role)) throw new AppError('Invalid employee role', 400);
+  // Only an admin may create an admin. Otherwise a store manager could mint an
+  // admin account and bypass every admin-only control (segregation of duties).
+  if (role === 'admin' && c.get('user')?.role !== 'admin') {
+    throw new AppError('Only an admin can create an admin user', 403);
+  }
+  if (c.get('user')?.role !== 'admin' && !STORE_MANAGER_GRANTABLE.includes(role)) {
+    throw new AppError(`A store manager can give only store roles (${STORE_MANAGER_GRANTABLE.join(', ')})`, 403, 'ROLE_ESCALATION');
+  }
+  if (email) {
+    const exists = await db.user.findFirst({ where: { tenant_id: c.get('tenantId'), email }, select: { id: true } });
+    if (exists) throw new AppError('A user with this email already exists', 409, 'DUPLICATE_EMAIL');
+  }
 
   let userId: string | undefined;
   if (email && password) {

@@ -7,6 +7,7 @@ import { computeDocumentTax } from '../../shared/services/documentTax.service';
 import { nextSalesOrderNumber } from '../../shared/utils/orderCounter';
 import { convertLeadToCustomer } from '../crm/crm.service';
 import { siteOfWarehouse } from '../../shared/services/inventoryDimension.service';
+import { resolveDocumentCurrency, assertDocumentCurrencySupported } from '../../shared/services/currency/documentCurrency';
 import {
   QUOTATION_STATUS,
   QUOTATION_OPEN_STATUSES,
@@ -158,7 +159,16 @@ export async function createQuotation(
       opportunity_id: input.opportunity_id ?? null,
       site_id: input.site_id ?? null,
       warehouse_id: input.warehouse_id ?? null,
-      currency: input.currency ?? 'BOB',
+      // Refused here as well as at confirmation, so a dead-end quotation — one that
+      // could never become an order — is never created in the first place.
+      currency: await (async () => {
+        const code = await resolveDocumentCurrency(tenantId, input.currency);
+        await assertDocumentCurrencySupported(tenantId, code, {
+          errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+          capability: 'Sales quotations',
+        });
+        return code;
+      })(),
       discount_amount: discount,
       valid_until: validUntil,
       notes: input.notes ?? null,
@@ -383,6 +393,14 @@ export async function confirmQuotation(tenantId: string, quotationId: string, us
       'Lead converted to customer on quotation confirmation',
     );
   }
+
+  // This path creates a sales order without going through `SalesService.createOrder`,
+  // so it carries the same guard: a quotation in a currency the ledger does not
+  // account in must not become an order that can never be invoiced (WORK-025a).
+  await assertDocumentCurrencySupported(tenantId, q.currency, {
+    errorCode: 'SALES_FX_NOT_IMPLEMENTED',
+    capability: 'Sales orders and invoices',
+  });
 
   const orderNumber = await nextSalesOrderNumber(tenantId);
 

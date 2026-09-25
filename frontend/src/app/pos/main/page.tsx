@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
+import { Package } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/authStore';
@@ -8,9 +9,10 @@ import { usePosSessionStore } from '@/stores/posSessionStore';
 import { usePosCartStore, usePosCartTotals } from '@/stores/posCartStore';
 import { VariantPicker } from '@/components/pos/VariantPicker';
 import { CustomerSearch } from '@/components/pos/CustomerSearch';
-import { PaymentModal } from '@/components/pos/PaymentModal';
+import { PaymentModal, type TenderLine } from '@/components/pos/PaymentModal';
 import { api } from '@/lib/api';
 import { formatRate } from '@/lib/useTaxPreview';
+import { useMoney, currencyBlockingReason } from '@/components/CurrencyProvider';
 
 async function searchProducts(query: string) {
   const res = await api.get('/products', {
@@ -32,6 +34,8 @@ export default function PosMainPage() {
   const clearSession = usePosSessionStore((s) => s.clearSession);
   const { lines, customer, removeLine, updateQty, clearCart } = usePosCartStore();
   const { total, lineCount, tax, taxPreview } = usePosCartTotals();
+  const { money, status: currencyStatus } = useMoney();
+  const currencyProblem = currencyBlockingReason(currencyStatus);
 
   const [search,          setSearch]          = useState('');
   const [debouncedQ,      setDebouncedQ]      = useState('');
@@ -76,8 +80,8 @@ export default function PosMainPage() {
   }
 
   async function handlePaymentConfirm(
-    method: 'CASH' | 'CARD' | 'TRANSFER',
-    cashTendered?: number,
+    tenders: TenderLine[],
+    methodCodes: string,
     // Supplied by PaymentModal only when the FACTURA sequence is manual; left
     // undefined otherwise so the field is absent from the request.
     facturaNumber?: string,
@@ -86,9 +90,9 @@ export default function PosMainPage() {
     setSaleError('');
     const res = await api.post('/pos/sale', {
       session_id:     session.id,
+      customer_id:    (customer as { id?: string } | null)?.id ?? undefined,
       customer_name:  customer ? `${customer.first_name} ${customer.last_name}` : undefined,
-      payment_method: method,
-      cash_tendered:  cashTendered,
+      tenders,
       factura_number: facturaNumber,
       lines: lines.map((l) => ({
         product_id:   l.product_id,
@@ -111,7 +115,7 @@ export default function PosMainPage() {
       iva_amount:     String(result.iva_amount),
       it_amount:      String(result.it_amount),
       change_due:     String(result.change_due ?? 0),
-      payment_method: method,
+      payment_method: methodCodes,
       customer_name:  customer ? `${customer.first_name} ${customer.last_name}` : 'Walk-in',
     });
     router.push(`/pos/receipt?${params.toString()}`);
@@ -155,6 +159,13 @@ export default function PosMainPage() {
           </button>
         </div>
       </div>
+
+      {/* A till with blank totals must say why — not configured, or not loaded. */}
+      {currencyProblem && (
+        <div className="bg-amber-50 border-b border-amber-200 px-5 py-2 text-amber-800 text-sm shrink-0">
+          {currencyProblem}
+        </div>
+      )}
 
       {/* SPLIT BODY */}
       <div className="flex flex-1 min-h-0">
@@ -203,13 +214,14 @@ export default function PosMainPage() {
                     <button
                       key={item.id}
                       onClick={() => { setSelectedProduct(item); setShowVariants(true); }}
-                      className={`bg-white border border-slate-200 rounded-xl p-3 text-left transition-all hover:border-indigo-300 hover:shadow-md shadow-sm ${oos ? 'opacity-60' : ''}`}
+                      className={`bg-white border border-slate-200 rounded-xl p-3 text-left transition-all hover:border-indigo-300 hover:shadow-md shadow-sm flex items-start gap-2.5 ${oos ? 'opacity-60' : ''}`}
                     >
+                      <div className="flex-1 min-w-0">
                       <p className="text-slate-400 text-[10px] font-semibold mb-1">{item.sku}</p>
                       <p className="text-slate-900 font-semibold text-sm leading-snug mb-1 line-clamp-2">{item.name}</p>
                       {item.brand && <p className="text-slate-400 text-xs mb-1.5">{item.brand}</p>}
                       <p className="text-indigo-600 font-bold text-base mb-1.5">
-                        Bs. {Number(item.selling_price).toFixed(2)}
+                        {money(item.selling_price)}
                       </p>
                       <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
                         oos
@@ -218,6 +230,8 @@ export default function PosMainPage() {
                       }`}>
                         {oos ? 'Out of Stock' : `Stock: ${stock}`}
                       </span>
+                      </div>
+                      <PosThumb src={item.images?.[0]} />
                     </button>
                   );
                 })}
@@ -266,7 +280,7 @@ export default function PosMainPage() {
                   </p>
                   <p className="text-slate-400 text-xs mt-0.5">{line.product_sku}</p>
                   <p className="text-indigo-600 font-bold text-sm mt-1">
-                    Bs. {(line.unit_price * line.quantity).toFixed(2)}
+                    {money(line.unit_price * line.quantity)}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -291,7 +305,7 @@ export default function PosMainPage() {
               basket without a round trip.
 
               The SPLIT comes from the tax engine, so it can be briefly in flight
-              or unavailable. It is never rendered as zero — "Bs. 0.00 IVA" is a
+              or unavailable. It is never rendered as zero — a zeroed IVA line is a
               claim that this sale carries no tax, which is a different and much
               worse statement than "not known yet".
 
@@ -305,13 +319,13 @@ export default function PosMainPage() {
               <>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">Subtotal</span>
-                  <span className="text-slate-700">Bs. {tax.subtotal.toFixed(2)}</span>
+                  <span className="text-slate-700">{money(tax.subtotal)}</span>
                 </div>
                 {tax.lines.length > 0
                   ? tax.lines.map((l) => (
                       <div key={l.code} className="flex justify-between text-sm">
                         <span className="text-slate-500">{l.code} {formatRate(l.rate)}</span>
-                        <span className="text-slate-700">Bs. {l.amount.toFixed(2)}</span>
+                        <span className="text-slate-700">{money(l.amount)}</span>
                       </div>
                     ))
                   : (
@@ -322,13 +336,13 @@ export default function PosMainPage() {
                       {tax.vat > 0 && (
                         <div className="flex justify-between text-sm">
                           <span className="text-slate-500">IVA</span>
-                          <span className="text-slate-700">Bs. {tax.vat.toFixed(2)}</span>
+                          <span className="text-slate-700">{money(tax.vat)}</span>
                         </div>
                       )}
                       {tax.turnover > 0 && (
                         <div className="flex justify-between text-sm">
                           <span className="text-slate-500">IT</span>
-                          <span className="text-slate-700">Bs. {tax.turnover.toFixed(2)}</span>
+                          <span className="text-slate-700">{money(tax.turnover)}</span>
                         </div>
                       )}
                     </>
@@ -354,7 +368,7 @@ export default function PosMainPage() {
             )}
             <div className="flex justify-between items-center pt-1.5 border-t border-slate-200 mt-1">
               <span className="text-slate-900 font-bold text-base">TOTAL</span>
-              <span className="text-indigo-600 font-black text-xl">Bs. {total.toFixed(2)}</span>
+              <span className="text-indigo-600 font-black text-xl">{money(total)}</span>
             </div>
           </div>
 
@@ -371,15 +385,15 @@ export default function PosMainPage() {
               Clear
             </button>
             <button
-              onClick={() => lineCount > 0 && setShowPayment(true)}
-              disabled={lineCount === 0}
+              onClick={() => lineCount > 0 && !currencyProblem && setShowPayment(true)}
+              disabled={lineCount === 0 || !!currencyProblem}
               className={`flex-1 py-3.5 rounded-xl font-black text-base transition-colors ${
                 lineCount === 0
                   ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
                   : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200'
               }`}
             >
-              COBRAR  Bs. {total.toFixed(2)}
+              COBRAR  {money(total)}
             </button>
           </div>
         </div>
@@ -398,6 +412,27 @@ export default function PosMainPage() {
         onClose={() => setShowPayment(false)}
         onConfirm={handlePaymentConfirm}
       />
+    </div>
+  );
+}
+
+/**
+ * A small product photo beside the card's text, so a cashier recognises the
+ * article at a glance. A product without a photo — or one that fails to load —
+ * keeps the same footprint with a neutral mark, so the grid never reflows.
+ */
+function PosThumb({ src }: { src?: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-slate-100 bg-slate-50">
+      {src && !failed ? (
+        // eslint-disable-next-line @next/next/no-img-element -- product photos come from arbitrary tenant hosts
+        <img src={src} alt="" loading="lazy" onError={() => setFailed(true)} className="h-full w-full object-cover" />
+      ) : (
+        <div className="grid h-full w-full place-items-center text-slate-300" aria-hidden>
+          <Package className="h-5 w-5" />
+        </div>
+      )}
     </div>
   );
 }

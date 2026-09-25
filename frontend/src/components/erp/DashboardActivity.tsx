@@ -4,6 +4,7 @@ import { motion, type Variants } from 'framer-motion';
 import Link from 'next/link';
 import { ShoppingCart, BookOpen, Clock } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { useMoney } from '@/components/CurrencyProvider';
 
 const STATUS_COLORS: Record<string, 'gray' | 'blue' | 'yellow' | 'purple' | 'orange' | 'green' | 'red'> = {
   DRAFT: 'gray', CONFIRMED: 'blue', PICKING: 'yellow',
@@ -49,6 +50,7 @@ const itemVariants: Variants = {
 };
 
 export function DashboardActivity({ orders, journalEntries }: Props) {
+  const { money } = useMoney();
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Recent Orders */}
@@ -93,7 +95,7 @@ export function DashboardActivity({ orders, journalEntries }: Props) {
                 <div className="flex items-center gap-2">
                   <Badge color={STATUS_COLORS[order.status] ?? 'gray'}>{order.status}</Badge>
                   <span className="text-sm font-semibold text-gray-900 min-w-[5rem] text-right">
-                    Bs. {Number(order.total_amount).toLocaleString()}
+                    {money(order.total_amount)}
                   </span>
                 </div>
               </motion.li>

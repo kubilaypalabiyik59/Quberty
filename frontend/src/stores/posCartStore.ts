@@ -91,7 +91,7 @@ export interface PosCartTotals {
  * sale produced. It now comes from the engine that posts the journal.
  *
  * `tax` is null while unknown rather than zeroed. A price a customer is about to
- * pay must not carry a confident wrong breakdown, and "IVA Bs. 0.00" is a
+ * pay must not carry a confident wrong breakdown, and a zeroed IVA line is a
  * different and much worse claim than "not known yet".
  */
 export function usePosCartTotals(): PosCartTotals {

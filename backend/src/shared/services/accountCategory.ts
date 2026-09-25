@@ -55,6 +55,9 @@ export const ACCOUNT_CATEGORIES = [
   // Equity
   'SHARE_CAPITAL',
   'RETAINED_EARNINGS',
+  /// The counter-entry of balances brought in at onboarding (opening inventory),
+  /// cleared into retained earnings once the opening is agreed with the accountant.
+  'OPENING_BALANCE_EQUITY',
   'CURRENT_YEAR_RESULT',
   'OTHER_EQUITY',
   // P&L
@@ -73,10 +76,18 @@ export const ACCOUNT_CATEGORIES = [
   /// and invoice".
   'PRICE_VARIANCE',
   'TURNOVER_TAX_EXPENSE', // Bolivia IT is an expense, not a receivable
+  /// Stock found missing by a count or written off by an adjustment.
+  /// **[OFFICIAL]** *Inventory loss*:
+  /// learn.microsoft.com/dynamics365/supply-chain/inventory/inventory-journals
+  'INVENTORY_LOSS',
+  /// Over and short when a register is closed and counted.
+  'CASH_DIFFERENCE',
   'OPERATING_EXPENSE',
   'PAYROLL_EXPENSE',
   'FINANCIAL_EXPENSE',
   'OTHER_INCOME',
+  /// Stock found in excess by a count or added by an adjustment — *Inventory profit*.
+  'INVENTORY_PROFIT',
   // Structural
   'HEADING', // non-posting roll-up account (ACTIVO, PASIVO…)
 ] as const;
@@ -112,6 +123,10 @@ export const POSTING_TYPE_BY_CATEGORY: Record<PostingType, AccountCategory> = {
   PAYROLL_EXPENSE:      'PAYROLL_EXPENSE',
   PAYROLL_PAYABLE:      'PAYROLL_PAYABLE',
   PAYROLL_DEDUCTION_PAYABLE: 'PAYROLL_DEDUCTION_PAYABLE',
+  INVENTORY_LOSS:       'INVENTORY_LOSS',
+  INVENTORY_PROFIT:     'INVENTORY_PROFIT',
+  INVENTORY_OPENING_BALANCE: 'OPENING_BALANCE_EQUITY',
+  CASH_DIFFERENCE:      'CASH_DIFFERENCE',
   ROUNDING:             'OTHER_INCOME',
 };
 

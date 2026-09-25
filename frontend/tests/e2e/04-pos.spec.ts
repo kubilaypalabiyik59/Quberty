@@ -150,6 +150,40 @@ test.describe('POS Terminal', () => {
       await expect(page.getByText('Factura issued successfully')).toBeVisible();
     });
 
+    // Stops short of CONFIRM SALE on purpose: confirming issues a legal FACTURA
+    // number, and this only has to prove that cash is payable at all.
+    test('cash is payable straight away and keyed cash replaces the exact amount', async ({ page }) => {
+      if (page.url().includes('open-register')) {
+        await page.click('button:has-text("Open Register")');
+        await page.waitForURL('**/pos/main', { timeout: 8000 });
+      }
+      await expect(page.locator('.grid button').first()).toBeVisible({ timeout: 8000 });
+      const inStock = page.locator('.grid button').filter({ hasText: 'Stock:' });
+      const cobrar = page.locator('button:has-text("COBRAR")');
+      // A card can show stock that no variant can sell (stock held on the
+      // product, not on a size), so try candidates until one reaches the cart.
+      const candidates = Math.min(await inStock.count(), 8);
+      for (let i = 0; i < candidates && !(await cobrar.isEnabled()); i++) {
+        await inStock.nth(i).click();
+        const tile = page.locator('button.w-36:not([disabled])').first();
+        if (await tile.isVisible({ timeout: 1500 }).catch(() => false)) await tile.click();
+        else await page.getByRole('button', { name: 'Cancel' }).click({ timeout: 1500 }).catch(() => {});
+      }
+      if (!(await cobrar.isEnabled())) { test.skip(true, 'No sellable product in stock'); return; }
+      await cobrar.click();
+      await expect(page.getByText('Total to Collect')).toBeVisible({ timeout: 5000 });
+
+      await page.getByRole('button', { name: 'CASH', exact: false }).first().click();
+      const confirm = page.getByRole('button', { name: 'CONFIRM SALE' });
+      await expect(confirm).toBeEnabled();                       // exact cash by default
+
+      for (const key of ['9', '9', '9', '9', '9']) await page.getByRole('button', { name: key, exact: true }).click();
+      await expect(page.getByText(/Received .*99[.,]?999/)).toBeVisible(); // replaced, not appended
+      await expect(confirm).toBeEnabled();
+
+      await page.getByRole('button', { name: 'Cancel' }).click();
+    });
+
     test('Close Register navigates to z-report', async ({ page }) => {
       if (page.url().includes('open-register')) {
         await page.click('button:has-text("Open Register")');

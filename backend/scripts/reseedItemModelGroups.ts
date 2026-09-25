@@ -50,6 +50,10 @@ const ADD = {
 };
 
 (async () => {
+  // WORK-042: a stocked group valued at anything but FIFO is refused by the Setup
+  // API because only FIFO is implemented. This one-off script created exactly
+  // that group, so it no longer runs.
+  throw new Error('reseedItemModelGroups is retired (WORK-042): stocked non-FIFO groups are not implemented.');
   const tenants = await db.tenant.findMany({ select: { id: true, slug: true } });
 
   for (const t of tenants) {

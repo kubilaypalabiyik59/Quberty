@@ -62,7 +62,11 @@ export default function SetupPage() {
   const [country,  setCountry]  = useState('');
 
   // Step 1 — Tax & Currency (auto-filled from preset)
-  const [currency, setCurrency] = useState('USD');
+  //
+  // No starting currency. It used to default to USD, so a tenant that skipped
+  // past this step set its ledger to dollars by omission — the wizard is where
+  // that choice is made, not where it is assumed (WORK-025).
+  const [currency, setCurrency] = useState('');
   const [vatRate,  setVatRate]  = useState('0');
   const [vatLabel, setVatLabel] = useState('VAT');
   const [vatInc,   setVatInc]   = useState(false);
@@ -110,12 +114,40 @@ export default function SetupPage() {
 
   const finish = async () => {
     if (!tenantId) { setMsg('Tenant ID not found. Please log out and log in again.'); return; }
+    if (!/^[A-Z]{3}$/.test(currency)) {
+      setMsg('Choose the ledger currency (a three-letter ISO code) before finishing — it cannot be changed once anything has posted.');
+      setStep(1);
+      return;
+    }
     setBusy(true);
     setMsg('');
     try {
-      // 1. Save tax config + currency
-      await api.put(`/tenants/${tenantId}/setup`, {
-        currency_code: currency,
+      // 1. Ledger currency. It belongs to the ledger, not the tenant record: activate
+      // the currency if needed and point the ledger at it. The server refuses a
+      // change once anything has posted; re-sending the current one is a no-op.
+      // Admin-only (finance.setup.maintain).
+      const ledger = (await api.get('/finance/ledger-currencies')).data.data;
+      if (ledger.accountingCurrency !== currency) {
+        // Stop before writing anything: activating a currency the ledger then
+        // refuses would leave a stray active currency behind.
+        if (ledger.locked) {
+          setMsg(`The ledger currency is ${ledger.accountingCurrency} and can no longer change: transactions already exist.`);
+          return;
+        }
+        const rows = (await api.get('/finance/currencies')).data.data as Array<{ currency_code: string; is_active: boolean }>;
+        const row = rows.find((r) => r.currency_code === currency);
+        if (!row) await api.post('/finance/currencies', { currency_code: currency });
+        else if (!row.is_active) await api.put(`/finance/currencies/${currency}`, { is_active: true });
+        await api.put('/finance/ledger-currencies', {
+          accounting_currency_code: currency,
+          reporting_currency_code:  currency,
+          accounting_rate_type_id:  ledger.accountingRateTypeId,
+          exchange_rate_date_basis: 'POSTING_DATE',
+        });
+      }
+
+      // 2. Tax config (legacy fallback). Same tenant, same admin-only duty.
+      await api.put('/tenant/setup', {
         tax_config: {
           vat_rate:           parseFloat(vatRate) / 100,
           vat_inclusive:      vatInc,
@@ -247,7 +279,7 @@ export default function SetupPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Currency Code</label>
                   <input value={currency} onChange={e => setCurrency(e.target.value.toUpperCase())}
-                    placeholder="USD" maxLength={3} className="w-full border rounded-lg px-3 py-2 text-sm font-mono uppercase" />
+                    placeholder="e.g. USD" maxLength={3} className="w-full border rounded-lg px-3 py-2 text-sm font-mono uppercase" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Invoice Label</label>

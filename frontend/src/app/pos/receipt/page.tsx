@@ -3,10 +3,12 @@
 import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
+import { useMoney } from '@/components/CurrencyProvider';
 
 function ReceiptContent() {
   const router = useRouter();
   const p      = useSearchParams();
+  const { money } = useMoney();
   const [voiding, setVoiding] = useState(false);
 
   const total    = parseFloat(p.get('total')      ?? '0');
@@ -22,14 +24,18 @@ function ReceiptContent() {
 
   async function handleVoid() {
     if (!orderId) { alert('No order ID available to void'); return; }
-    if (!confirm(`Void sale ${orderNum}? This will reverse the sale and restore inventory.`)) return;
+    // A void annuls the factura, so it records why (WORK-047). It is only possible
+    // while this register session is still open; afterwards use a return.
+    const reason = window.prompt(`Void sale ${orderNum}? Its factura is annulled, every voucher reversed and stock restored.\n\nReason:`);
+    if (reason === null) return;
+    if (reason.trim().length < 3) { alert('State why the sale is voided (at least 3 characters).'); return; }
     setVoiding(true);
     try {
-      await api.post(`/pos/sales/${orderId}/void`);
+      await api.post(`/pos/sales/${orderId}/void`, { reason: reason.trim() });
       alert(`Sale ${orderNum} has been voided.`);
       router.replace('/pos/main');
     } catch (e: any) {
-      alert(e.response?.data?.message ?? e.message ?? 'Could not void this sale');
+      alert(e.response?.data?.error?.message ?? e.message ?? 'Could not void this sale');
     } finally {
       setVoiding(false);
     }
@@ -66,9 +72,9 @@ function ReceiptContent() {
           <div className="h-px bg-slate-100 my-2" />
 
           {[
-            ['Subtotal (sin IVA)', `Bs. ${subtotal.toFixed(2)}`],
-            ['IVA 13%',            `Bs. ${iva.toFixed(2)}`],
-            ['IT 3%',              `Bs. ${it.toFixed(2)}`],
+            ['Subtotal (sin IVA)', money(subtotal)],
+            ['IVA 13%',            money(iva)],
+            ['IT 3%',              money(it)],
           ].map(([label, value]) => (
             <div key={label} className="flex justify-between py-1.5 border-b border-slate-100">
               <span className="text-slate-400 text-sm">{label}</span>
@@ -78,13 +84,13 @@ function ReceiptContent() {
 
           <div className="flex justify-between items-center bg-slate-100 rounded-xl px-3.5 py-3 mt-2.5">
             <span className="text-slate-900 font-bold">TOTAL</span>
-            <span className="text-indigo-600 font-black text-2xl">Bs. {total.toFixed(2)}</span>
+            <span className="text-indigo-600 font-black text-2xl">{money(total)}</span>
           </div>
 
           {change > 0 && (
             <div className="flex justify-between items-center bg-emerald-50 border border-emerald-100 rounded-xl px-3.5 py-2.5 mt-2">
               <span className="text-emerald-700 font-semibold text-sm">Change Due</span>
-              <span className="text-emerald-600 font-black text-xl">Bs. {change.toFixed(2)}</span>
+              <span className="text-emerald-600 font-black text-xl">{money(change)}</span>
             </div>
           )}
 

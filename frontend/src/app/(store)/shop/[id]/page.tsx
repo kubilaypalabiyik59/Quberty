@@ -1,22 +1,20 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
 import { useCartStore } from '@/stores/cartStore';
+import { useMoney } from '@/components/CurrencyProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { ShoppingCart, ArrowLeft, CheckCircle } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
-
-function productFallbackImage(id: string) {
-  const num = parseInt(id.replace(/-/g, '').slice(0, 8), 16) % 100 || 1;
-  return `https://picsum.photos/seed/${num}/600/600`;
-}
+import { ProductImage } from '@/components/store/ProductImage';
+import { fetchProduct, isInStock, variantAvailable } from '@/lib/storeCatalog';
 
 export default function ProductDetailPage() {
   const { id } = useParams();
   const router = useRouter();
   const { addItem } = useCartStore();
+  const { money } = useMoney();
   const [selectedVariant, setSelectedVariant] = useState<string | undefined>();
   const [added, setAdded] = useState(false);
   const [activeImage, setActiveImage] = useState(0);
@@ -24,7 +22,7 @@ export default function ProductDetailPage() {
 
   const { data: product, isLoading } = useQuery({
     queryKey: ['product', id],
-    queryFn: () => api.get(`/products/${id}`).then(r => r.data.data),
+    queryFn: () => fetchProduct(id as string),
   });
 
   if (isLoading) return (
@@ -55,10 +53,8 @@ export default function ProductDetailPage() {
   const selectedVariantObj = hasVariants
     ? (product.variants as any[]).find((v: any) => v.id === selectedVariant)
     : null;
-  const isProductOutOfStock = product.total_stock !== undefined && product.total_stock <= 0;
-  const isVariantOutOfStock = selectedVariantObj
-    ? (selectedVariantObj.available_stock ?? 0) <= 0
-    : false;
+  const isProductOutOfStock = !isInStock(product);
+  const isVariantOutOfStock = selectedVariantObj ? !variantAvailable(selectedVariantObj) : false;
   const canAddToCart = !isProductOutOfStock && (!hasVariants || (selectedVariant && !isVariantOutOfStock));
 
   const handleAddToCart = () => {
@@ -82,11 +78,7 @@ export default function ProductDetailPage() {
         {/* Image */}
         <div className="space-y-3">
           <div className="relative aspect-square rounded-2xl overflow-hidden bg-gray-50">
-            <img
-              src={(product.images as string[])?.[activeImage] || productFallbackImage(product.id as string)}
-              alt={product.name}
-              className="w-full h-full object-cover"
-            />
+            <ProductImage src={(product.images as string[])?.[activeImage]} alt={product.name as string} />
             {isOnSale && (
               <span className="absolute top-4 left-4 bg-[#C65306] text-white text-sm font-bold px-3 py-1 rounded-xl">
                 -{discountPct}%
@@ -120,9 +112,9 @@ export default function ProductDetailPage() {
           <p className="text-xs text-gray-400">SKU: {product.sku}</p>
 
           <div className="flex items-baseline gap-3">
-            <span className="text-3xl font-bold text-gray-900">Bs. {Number(price).toLocaleString()}</span>
+            <span className="text-3xl font-bold text-gray-900">{money(price)}</span>
             {isOnSale && (
-              <span className="text-lg text-gray-400 line-through">Bs. {Number(product.selling_price).toLocaleString()}</span>
+              <span className="text-lg text-gray-400 line-through">{money(product.selling_price)}</span>
             )}
           </div>
 
@@ -146,7 +138,7 @@ export default function ProductDetailPage() {
                   const label = v.attributes
                     ? Object.values(v.attributes as Record<string, string>).join(' / ')
                     : [v.size, v.color].filter(Boolean).join(' / ') || v.sku_variant;
-                  const outOfStock = (v.available_stock ?? 0) <= 0;
+                  const outOfStock = !variantAvailable(v);
                   return (
                     <button
                       key={v.id}

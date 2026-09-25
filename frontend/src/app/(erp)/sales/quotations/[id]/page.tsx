@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/Button';
 import { StatusPill } from '@/components/erp/StatusPill';
 import { DocumentChain } from '@/components/erp/DocumentChain';
 import { PageHeader, TableShell, Th, Td, ErrorNote } from '@/components/erp/PageHeader';
-
-const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFractionDigits: 2 });
+import { useMoney } from '@/components/CurrencyProvider';
+import { AttachmentsPanel } from '@/components/erp/AttachmentsPanel';
 
 /**
  * One quotation.
@@ -22,6 +22,9 @@ const money = (n: any) => Number(n ?? 0).toLocaleString('es-BO', { minimumFracti
  * Everything downstream of the order is untouched by all of this.
  */
 export default function QuotationDetailPage() {
+  // The quotation's own currency is shown beside the total; the figures
+  // themselves render bare under it (WORK-025).
+  const { amount: money } = useMoney();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
@@ -235,6 +238,7 @@ export default function QuotationDetailPage() {
           ))}
         </tbody>
       </TableShell>
+      <AttachmentsPanel entityType="SALES_QUOTATION" entityId={id} />
     </div>
   );
 }

@@ -22,6 +22,9 @@ const FIELD_OPTIONS: Record<string, string[]> = {
   orders: ['order_number', 'customer_code', 'sku', 'quantity', 'unit_price', 'order_date', 'status'],
 };
 
+/** Flipped when the backend import executors write rows (WORK-054). */
+const IMPORT_AVAILABLE = false;
+
 export default function ImportPage() {
   const [step, setStep] = useState<'upload' | 'map' | 'validate' | 'execute'>('upload');
   const [importType, setImportType] = useState('products');
@@ -84,6 +87,19 @@ export default function ImportPage() {
         <p className="text-gray-500">Upload Excel or CSV files to import data</p>
       </div>
 
+      {/* WORK-042: the import executors do not write rows yet, so the server
+          refuses every step (501 IMPORT_NOT_IMPLEMENTED). Say so up front rather
+          than let a user map a file that will never load. */}
+      {!IMPORT_AVAILABLE && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <AlertCircle className="h-5 w-5 flex-shrink-0" />
+          <div>
+            <p className="font-medium">Data import is not available yet.</p>
+            <p>No rows would be written. Create customers, products and stock from their own screens for now.</p>
+          </div>
+        </div>
+      )}
+
       {/* Step indicator */}
       <div className="flex items-center gap-2 bg-white rounded-xl border border-gray-200 p-4">
         {STEPS.map((s, i) => (
@@ -100,7 +116,7 @@ export default function ImportPage() {
       </div>
 
       {/* STEP 1: Upload */}
-      {step === 'upload' && (
+      {IMPORT_AVAILABLE && step === 'upload' && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             {IMPORT_TYPES.map((t) => (

@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Plus, Trash2, Pencil, X, Check, Layers, Tag, Package } from 'lucide-react';
+import { useMoney } from '@/components/CurrencyProvider';
 
 export default function VariantTypesPage() {
+  const { money } = useMoney();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -123,7 +125,7 @@ export default function VariantTypesPage() {
                         <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{p.sku}</td>
                         <td className="px-4 py-2.5 font-medium text-gray-900 text-sm">{p.name}</td>
                         <td className="px-4 py-2.5 text-right text-xs text-gray-700">
-                          Bs. {Number(p.selling_price ?? p.sale_price ?? 0).toLocaleString()}
+                          {money(p.selling_price ?? p.sale_price ?? 0)}
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex flex-wrap gap-1">

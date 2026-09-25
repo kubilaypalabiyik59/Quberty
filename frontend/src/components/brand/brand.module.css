@@ -1,0 +1,230 @@
+/*
+ * Brand stage: the sign-in scene and the welcome curtain.
+ *
+ * Both are layered stills animated in the browser rather than video. The
+ * image models this was made with produce 1536px stills and no usable video,
+ * and a looped video would cost megabytes on a page every user loads daily.
+ * Layers give real, seamless motion for ~400 KB.
+ *
+ * Every effect here is decorative. Under prefers-reduced-motion the scene
+ * freezes into a composed still.
+ */
+
+/* ── wordmark ──────────────────────────────────────────────────────────── */
+
+.wordmark {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+  /* brushed silver, with a band of light that travels across it */
+  background:
+    linear-gradient(105deg, transparent 40%, rgb(255 255 255 / 0.95) 50%, transparent 60%) -150% 0 / 60% 100% no-repeat,
+    linear-gradient(180deg, #f4f7fa 0%, #b7c1cb 45%, #6f7b87 70%, #c9d2da 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 18px rgb(0 0 0 / 0.6));
+}
+.sweepLoop { animation: sweep 7s cubic-bezier(0.45, 0, 0.2, 1) 1.2s infinite; }
+.sweepOnce { animation: sweepOnce 2.4s cubic-bezier(0.45, 0, 0.2, 1) 0.5s forwards; }
+@keyframes sweep {
+  0%        { background-position: -150% 0, 0 0; }
+  45%, 100% { background-position: 250% 0, 0 0; }
+}
+@keyframes sweepOnce {
+  from { background-position: -150% 0, 0 0; }
+  to   { background-position: 250% 0, 0 0; }
+}
+
+/* ── sign-in stage ─────────────────────────────────────────────────────── */
+
+.stage {
+  --cube-x: 79%;               /* where the plate's beam lands */
+  --cube-y: 44%;
+  --cube-size: min(34vh, 30vw);
+  --teal: 26 154 154;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #0b121d;
+}
+.layer {
+  position: absolute;
+  inset: -3%;
+  will-change: transform;
+  transition: transform 1.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.plate {
+  background: url('/brand/login-stage.webp') 72% 50% / cover no-repeat;
+  animation: drift 38s ease-in-out infinite alternate;
+}
+@keyframes drift {
+  from { transform: scale(1); }
+  to   { transform: scale(1.06) translateX(-1%); }
+}
+.beam {
+  background:
+    radial-gradient(28% 60% at 88% 18%, rgb(var(--teal) / 0.22), transparent 70%),
+    radial-gradient(18% 10% at var(--cube-x) 64%, rgb(var(--teal) / 0.3), transparent 70%);
+  mix-blend-mode: screen;
+  animation: breathe 7s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+/* A transformed layer isolates blending inside it, so the whole cube layer
+   screens against the stage: the cube's black background drops out. */
+.cubeLayer { mix-blend-mode: screen; }
+.cubeAnchor {
+  position: absolute;
+  left: var(--cube-x);
+  top: var(--cube-y);
+  width: var(--cube-size);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  perspective: 900px;
+}
+.cube,
+.reflection {
+  position: absolute;
+  inset: 0;
+  background: url('/brand/login-cube.webp') center / contain no-repeat;
+}
+.cube {
+  animation:
+    float 8s ease-in-out infinite,
+    tilt 16s ease-in-out infinite,
+    glow 7s ease-in-out infinite;
+}
+@keyframes float {
+  0%, 100% { translate: 0 -2.2%; }
+  50%      { translate: 0 2.2%; }
+}
+@keyframes tilt {
+  0%, 100% { rotate: y -5deg; }
+  50%      { rotate: y 5deg; }
+}
+/* brightness only: a drop-shadow would outline the image's square edge */
+@keyframes glow {
+  0%, 100% { filter: brightness(0.92) saturate(1); }
+  50%      { filter: brightness(1.22) saturate(1.15); }
+}
+/* the cube's mirror on the stone, moving opposite to it */
+.reflection {
+  top: 118%;
+  transform: scaleY(-1);
+  opacity: 0.22;
+  filter: blur(6px);
+  -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 55%);
+  mask-image: linear-gradient(to top, #000 0%, transparent 55%);
+  animation: reflect 8s ease-in-out infinite;
+}
+@keyframes reflect {
+  0%, 100% { translate: 0 2.2%; opacity: 0.26; }
+  50%      { translate: 0 -2.2%; opacity: 0.16; }
+}
+.dust {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+/* Keeps the card and the wordmark legible without flattening the scene. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(34% 44% at 50% 54%, rgb(11 18 29 / 0.72), transparent 100%),
+    linear-gradient(rgb(11 18 29 / 0.55), transparent 22%, transparent 80%, rgb(11 18 29 / 0.85));
+}
+
+.loginWordmark {
+  position: absolute;
+  left: 6.5vw;
+  top: 12vh;
+  font-size: clamp(34px, 5.4vw, 104px);
+}
+.loginWordmark small {
+  display: block;
+  margin-top: 1.1em;
+  font-family: var(--font-sans), sans-serif;
+  font-weight: 500;
+  font-size: clamp(11px, 0.8vw, 14px);
+  letter-spacing: 0.5em;
+  -webkit-text-fill-color: hsl(176 52% 52%);
+}
+
+@media (max-width: 760px) {
+  .stage { --cube-x: 50%; --cube-y: 25%; --cube-size: 30vw; }
+  .loginWordmark {
+    left: 50%;
+    translate: -50% 0;
+    top: 8vh;
+    letter-spacing: 0.22em;
+    font-size: 8.5vw;
+  }
+  .loginWordmark small { display: none; }
+  .loginMain { padding-top: 30vh; }
+}
+
+/* ── welcome curtain ───────────────────────────────────────────────────── */
+
+.curtain { position: fixed; inset: 0; z-index: 50; overflow: hidden; background: #0b121d; cursor: pointer; }
+.city {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  transform-origin: 50% 10%;
+  animation: push var(--hold, 3200ms) cubic-bezier(0.3, 0, 0.2, 1) forwards;
+}
+@keyframes push {
+  from { transform: scale(1); }
+  to   { transform: scale(1.09); }
+}
+.cityScrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(40% 34% at 50% 55%, rgb(8 14 24 / 0.78), transparent 100%),
+    linear-gradient(rgb(8 14 24 / 0.25), transparent 30%, transparent 70%, rgb(8 14 24 / 0.92));
+}
+.curtainWordmark { font-size: clamp(28px, 4.2vw, 76px); padding-left: 0.32em; }
+.curtainText { text-shadow: 0 2px 16px rgb(0 0 0 / 0.8); }
+.pillar {
+  background: rgb(12 19 30 / 0.72);
+  border: 1px solid rgb(69 196 187 / 0.18);
+  backdrop-filter: blur(8px);
+}
+.pillarDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(176 52% 52%);
+  box-shadow: 0 0 10px hsl(176 52% 52%);
+}
+.progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: hsl(176 52% 52%);
+  transform-origin: left;
+  transform: scaleX(0);
+  animation: fill var(--hold, 3200ms) linear forwards;
+}
+@keyframes fill { to { transform: scaleX(1); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .sweepLoop, .sweepOnce, .plate, .beam, .cube, .reflection, .city { animation: none; }
+  .layer { transition: none; }
+}
