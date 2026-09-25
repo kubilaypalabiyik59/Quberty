@@ -22,12 +22,17 @@ change.
 - **Imports come first.** Every name you use must be imported at the top of the file. Before you
   finish, check each identifier in the file against the import list. Missing imports are the most
   common rejection.
+- **Never invent a value or a module path.** Do not declare an email address, URL, ID or other
+  constant yourself, and do not guess an import path. Everything the task references already
+  exists at the path the task gives, or in a file in the chat. If you cannot find where a name
+  comes from, import it from `@/app/(landing)/content` (for constants) or from the path in the
+  task's "What already exists" list. A fabricated value is the worst possible defect, because it
+  compiles and looks right. (Ledger: T5)
 - Use `import type` for type-only imports. Use named exports only, never default exports, except
   where Next.js requires a default (`page.tsx`, `layout.tsx`).
 - No `any`. No non-null `!` assertions. Casts only where a type guard cannot express the check.
 - Put a short doc comment on each exported symbol that says what it is for. Do not narrate the
   code line by line.
-
 - A JSX tag name must be a plain capitalised identifier. `<ICONS[i] />` is a syntax error
   (TS1003 "Identifier expected"). Assign the component to a variable first, then render it:
   `const Icon = ICONS[i];` followed by `<Icon aria-hidden className="h-5 w-5" />`. (Ledger: T3)
