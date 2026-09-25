@@ -13,14 +13,14 @@ export function LandingHeader({ t, locale }: { t: LandingDictionary; locale: Loc
         <Link href="/" aria-label="Quberty">
           <QubertyWordmark sweep="once" className="text-lg" />
         </Link>
-        <nav aria-label={t.nav.product} className="hidden items-center gap-6 md:flex">
-          <a href={`#${SECTION_IDS.product}`} className="text-body text-fg-muted transition-colors duration-quick hover:text-fg">
+        <nav aria-label={t.nav.product} className="hidden items-center gap-6 lg:flex">
+          <a href={`#${SECTION_IDS.product}`} className="whitespace-nowrap text-body text-fg-muted transition-colors duration-quick hover:text-fg">
             {t.nav.product}
           </a>
-          <a href={`#${SECTION_IDS.capabilities}`} className="text-body text-fg-muted transition-colors duration-quick hover:text-fg">
+          <a href={`#${SECTION_IDS.capabilities}`} className="whitespace-nowrap text-body text-fg-muted transition-colors duration-quick hover:text-fg">
             {t.nav.capabilities}
           </a>
-          <a href={`#${SECTION_IDS.how}`} className="text-body text-fg-muted transition-colors duration-quick hover:text-fg">
+          <a href={`#${SECTION_IDS.how}`} className="whitespace-nowrap text-body text-fg-muted transition-colors duration-quick hover:text-fg">
             {t.nav.how}
           </a>
         </nav>

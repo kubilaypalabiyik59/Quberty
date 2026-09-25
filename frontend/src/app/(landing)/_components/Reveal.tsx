@@ -1,19 +1,19 @@
 'use client';
 
-import { motion, useReducedMotion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import type { ReactNode } from 'react';
 
-/** Wraps children and animates them into view as they enter the viewport. */
+import { cn } from '@/lib/utils';
+
+/**
+ * Fades its children up once as they scroll into view. Reduced-motion users get the final
+ * state from CSS. The component must not branch on useReducedMotion(), because the server
+ * render and the hydrated render would disagree.
+ */
 export function Reveal({ children, className }: { children: ReactNode; className?: string }) {
-  const reducedMotion = useReducedMotion();
-
-  if (reducedMotion) {
-    return <div className={className}>{children}</div>;
-  }
-
   return (
     <motion.div
-      className={className}
+      className={cn('motion-reduce:!transform-none motion-reduce:!opacity-100', className)}
       initial={{ opacity: 0, y: 12 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-80px' }}
