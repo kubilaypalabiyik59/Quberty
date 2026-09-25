@@ -8,6 +8,10 @@ openai-api-key: lm-studio            # LM Studio ignores the key; Aider requires
 model-settings-file: .aider.model.settings.yml
 model-metadata-file: .aider.model.metadata.json
 
+# Standing rules the model sees on every run (read-only). Grown from review findings.
+read:
+  - docs/ai/IMPLEMENTER_CONVENTIONS.md
+
 # Only the files named on the command line enter the context. A repo map would spend the
 # small context window on files the task is not allowed to touch.
 map-tokens: 0
