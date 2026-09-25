@@ -10,8 +10,18 @@ outcome. It serves two purposes:
    `git diff <base>..<accepted> -- <files>`. A LoRA fine-tune can be evaluated once there are about
    100–200 accepted rows. Rejected rounds are kept as negative examples.
 
-Conventions every task inherits: `docs/ai/IMPLEMENTER_CONVENTIONS.md`. When a review finds a new
-failure pattern, add a rule there and cite the ledger row.
+The feedback loop runs in three layers, from strongest to weakest:
+
+1. **Gate** (`docs/ai/check.mjs`, Aider's test-cmd). A defect pattern that can be detected
+   mechanically becomes a check. The model gets the violation back as its next prompt and fixes it
+   in the same run, before review.
+2. **Conventions** (`docs/ai/IMPLEMENTER_CONVENTIONS.md`, read on every run). This layer is for
+   patterns that cannot be checked mechanically.
+3. **Task files.** Every task includes a "What already exists" import map, and it shows critical
+   patterns as code, not as prose.
+
+When a review finds a new failure pattern: add a gate check if the pattern is detectable,
+otherwise add a convention rule, and in both cases cite the ledger row.
 
 | Task | Task file | Base | Model commits | Rounds | Verdict | Failure causes | Notes |
 |---|---|---|---|---|---|---|---|

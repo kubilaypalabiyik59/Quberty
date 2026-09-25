@@ -25,10 +25,10 @@ attribute-commit-message-author: true
 line-endings: lf
 encoding: utf-8
 
-# Type-check after every edit and feed errors back to the model. Pinned to the frontend's own
-# TypeScript: a bare `npx tsc` from the repo root finds no local install and downloads the
-# unrelated npm package "tsc" instead.
-test-cmd: node frontend/node_modules/typescript/bin/tsc --noEmit -p frontend
+# After every edit: the implementer gate (docs/ai/check.mjs), which turns each defect a review
+# has caught into an automatic check and then type-checks with the frontend's own TypeScript.
+# Its output goes straight back to the model, so a known mistake is corrected in the same run.
+test-cmd: node docs/ai/check.mjs
 auto-test: true
 
 gitignore: false
