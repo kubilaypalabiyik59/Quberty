@@ -14,39 +14,31 @@ export function MosaicField({ className }: { className?: string }) {
     if (!ctx) return;
 
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timeAt = (now: number) => (reduce ? 0 : (now / 1000) * MOSAIC.waveSpeed);
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
       canvas.width = canvas.clientWidth * dpr;
       canvas.height = canvas.clientHeight * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawMosaic(ctx, canvas.clientWidth, canvas.clientHeight, (performance.now() / 1000) * MOSAIC.waveSpeed);
+      drawMosaic(ctx, canvas.clientWidth, canvas.clientHeight, timeAt(performance.now()));
     };
 
-    const tick = () => {
-      const now = performance.now();
-      if (now - last < 33) return;
-      if (document.hidden) return;
-      drawMosaic(ctx, canvas.clientWidth, canvas.clientHeight, (now / 1000) * MOSAIC.waveSpeed);
-      last = now;
-      requestAnimationFrame(tick);
-    };
-
-    let last = 0;
     let raf = 0;
-
-    const onResize = () => resize();
-
-    window.addEventListener('resize', onResize);
-
-    if (reduce) {
-      drawMosaic(ctx, canvas.clientWidth, canvas.clientHeight, 0);
-    } else {
+    let last = 0;
+    const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
-    }
+      if (now - last < 33 || document.hidden) return;
+      last = now;
+      drawMosaic(ctx, canvas.clientWidth, canvas.clientHeight, timeAt(now));
+    };
+
+    resize();
+    window.addEventListener('resize', resize);
+    if (!reduce) raf = requestAnimationFrame(tick);
 
     return () => {
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', resize);
       cancelAnimationFrame(raf);
     };
   }, []);
