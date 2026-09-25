@@ -199,8 +199,8 @@ This way TypeScript rejects a missing or extra key in either translation.
 
 ### T3 — Hero
 
-- A `<section>` with `relative min-h-[100svh]` (the one allowed arbitrary value) and no background
-  of its own.
+- A `<section>` with `relative flex min-h-[calc(100svh-4rem)] items-center` (the one allowed
+  arbitrary value; 4rem is the sticky header) and no background of its own.
 - `<LoginStage />` is rendered once, as the first child of the page (T10), not inside Hero.
   **Note:** `.stage` is `position: fixed` (`brand.module.css:49`). It therefore stays behind the
   whole page, which is intended: the hero is transparent over it, and **every section after the
@@ -234,7 +234,7 @@ This way TypeScript rejects a missing or extra key in either translation.
 
 - Title and intro.
 - Eight cards (`grid sm:grid-cols-2 lg:grid-cols-4 gap-4`), with content from
-  `t.capabilities.items`. Icons in order: `Handshake`, `ShoppingCart`, `Package`, `Warehouse`,
+  `t.capabilities.items`. Icons in order: `Contact` (`Handshake` does not exist in the installed lucide-react 0.312), `ShoppingCart`, `Package`, `Warehouse`,
   `Landmark`, `Users`, `BarChart3`, `ShieldCheck`.
 - Each card has an icon, a title, a body, and 3 bullet "includes" items in `text-caption
   text-fg-muted`.
@@ -592,6 +592,6 @@ sound, and anything found not to hold is fixed in the product rather than remove
 4. Under reduced motion (Playwright `reducedMotion: 'reduce'`) all sections are visible without
    scrolling animations.
 5. `grep` over `(landing)/_components` finds no hex colours, no `text-[`/`bg-[` arbitrary values
-   (except `min-h-[100svh]`), and no user-visible string literals.
+   (except `min-h-[calc(100svh-4rem)]`), and no user-visible string literals.
 6. The updated `10-session.spec.ts` passes.
 7. Architect review of the diff against §5 → ACCEPTED.

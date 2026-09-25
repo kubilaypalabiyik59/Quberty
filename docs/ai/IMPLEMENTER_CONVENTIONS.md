@@ -46,6 +46,11 @@ change.
 - Never use hex colours, `rgb()`, palette classes (`bg-gray-900`, `text-blue-500`), or arbitrary
   values (`text-[13px]`, `bg-[#...]`) unless the task explicitly allows one.
 - Merge class names with `cn()` from `@/lib/utils`.
+- If a component accepts `className`, **every** render branch applies it, including the
+  `motion.*` branch and any early return. (Ledger: T2)
+- Put responsive visibility (`hidden md:flex`) on the semantic element itself (`<nav>`,
+  `<section>`), not on a wrapper inside it. Otherwise an empty landmark stays in the page.
+  (Ledger: T2)
 
 ## Copy and accessibility
 

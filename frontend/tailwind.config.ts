@@ -112,6 +112,13 @@ const config: Config = {
         lead: ['1rem', { lineHeight: '1.5rem' }],
         title: ['1.25rem', { lineHeight: '1.75rem', letterSpacing: '-0.01em' }],
         display: ['1.875rem', { lineHeight: '2.25rem', letterSpacing: '-0.02em' }],
+        /**
+         * Marketing only — the landing page. The six steps above are sized for a
+         * dense ERP and top out at 30px; a product page needs larger headings.
+         * Never used inside the app.
+         */
+        hero: ['clamp(2.5rem, 6vw, 4.5rem)', { lineHeight: '1.05', letterSpacing: '-0.03em' }],
+        section: ['clamp(1.75rem, 3.5vw, 2.5rem)', { lineHeight: '1.15', letterSpacing: '-0.02em' }],
       },
 
       fontFamily: {
