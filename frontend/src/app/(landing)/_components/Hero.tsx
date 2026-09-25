@@ -5,6 +5,7 @@ import { CtaLink } from '@/app/(landing)/_components/CtaLink';
 import { DEMO_EMAIL, SECTION_IDS } from '@/app/(landing)/content';
 import type { LandingDictionary } from '@/app/(landing)/i18n/types';
 
+/** Landing hero: headline, subheading, demo CTA and proof points over the brand stage. */
 export function Hero({ t }: { t: LandingDictionary }) {
   return (
     <section className="relative flex min-h-[calc(100svh-4rem)] items-center">
