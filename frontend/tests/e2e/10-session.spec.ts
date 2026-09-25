@@ -18,11 +18,13 @@ async function backdate(page: Page, msAgo: number) {
 }
 
 test.describe('Session', () => {
-  test('a live session survives opening the site again', async ({ page, context }) => {
+  test('a live session reaches the app from the landing page', async ({ page, context }) => {
     await erpLogin(page, TEST_ADMIN.email, TEST_ADMIN.password);
     const again = await context.newPage();
-    await again.goto('/');
-    await again.waitForURL('**/dashboard', { timeout: 10_000 });
+    // `/` is the public landing page now; a signed-in user goes through "Sign in",
+    // which forwards a live session straight to the dashboard.
+    await again.goto('/?lang=en');
+    await expect(again.getByRole('link', { name: 'Sign in' }).first()).toBeVisible();
     await again.goto('/login');
     await again.waitForURL('**/dashboard', { timeout: 10_000 });
   });
