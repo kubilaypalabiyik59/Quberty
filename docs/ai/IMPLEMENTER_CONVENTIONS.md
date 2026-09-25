@@ -28,6 +28,10 @@ change.
 - Put a short doc comment on each exported symbol that says what it is for. Do not narrate the
   code line by line.
 
+- A JSX tag name must be a plain capitalised identifier. `<ICONS[i] />` is a syntax error
+  (TS1003 "Identifier expected"). Assign the component to a variable first, then render it:
+  `const Icon = ICONS[i];` followed by `<Icon aria-hidden className="h-5 w-5" />`. (Ledger: T3)
+
 ## Next.js 14 (App Router)
 
 - Files are server components by default. Add `'use client'` as the **first line** only when the
