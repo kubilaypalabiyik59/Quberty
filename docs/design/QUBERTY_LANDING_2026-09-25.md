@@ -1,7 +1,7 @@
 # Quberty ERP — Marketing Landing Page (spec)
 
 Date: 2026-09-25 · Author: Claude (architect) · Implementer: local model (Ornith-1.5-9B via Aider)
-Status: **DRAFT — awaiting Kubi's approval of the decisions in §2.**
+Status: **APPROVED 2026-09-25** — D1 accepted, D3 address supplied, §7 claims accepted by Kubi.
 
 ---
 
@@ -58,9 +58,9 @@ tax claim. If a sentence needs one of these to work, it is cut.
 
 | # | Decision | Recommendation | Consequence |
 |---|---|---|---|
-| D1 | Route | Landing at `/`. Replaces the redirect in `frontend/src/app/page.tsx`. | A signed-in user who opens `/` now sees the landing page and reaches the app via "Sign in", because `/login` already forwards a live session to `/dashboard` (`tests/e2e/10-session.spec.ts:26-27`). `10-session.spec.ts:24-25` must change (see T10). Long term the ERP belongs on an `app.` subdomain; this spec does not depend on that. |
+| D1 | Route — **accepted** | Landing at `/`. Replaces the redirect in `frontend/src/app/page.tsx`. | A signed-in user who opens `/` now sees the landing page and reaches the app via "Sign in", because `/login` already forwards a live session to `/dashboard` (`tests/e2e/10-session.spec.ts:26-27`). `10-session.spec.ts:24-25` must change (see T10). Long term the ERP belongs on an `app.` subdomain; this spec does not depend on that. |
 | D2 | Theme | Landing is **always dark**, independent of the ERP theme toggle. | Same reasoning as the sign-in panel (`globals.css`, "brand panel" comment): the brand imagery needs a dark surround, and the brand looks the same to every visitor. |
-| D3 | Primary CTA | "Request a demo" → `mailto:` address | **Open: Kubi to supply the address.** Until then the implementer uses the constant `DEMO_EMAIL = 'hello@quberty.com'` in one place (`content.ts`), marked `// TODO(kubi): confirm`. |
+| D3 | Primary CTA — **decided** | "Request a demo" → `mailto:` address | `DEMO_EMAIL = 'kubilaypalabiyik@gmail.com'`, defined once in `content.ts` (Kubi, 2026-09-25). |
 | D4 | Language selection | `?lang=` query param, then cookie `quberty_lang`, then `Accept-Language`, then `en`. | No i18n library. No locale path segments (`/tr/...`), which keeps the route tree unchanged. |
 | D5 | Hero visual | Reuse the existing sign-in stage (`components/brand/LoginStage.tsx`) and wordmark (`components/brand/QubertyWordmark.tsx`) unchanged. | One brand across sign-in and marketing. See the §4 note on `position: fixed`. |
 
@@ -105,9 +105,10 @@ unless it is marked *client*.
 ```
 app/page.tsx                          ← D1: delete (route moves to the group below)
 app/(landing)/page.tsx                ← T10 assembly
+app/(landing)/i18n/{en,tr,es}.ts      ← T0 (architect: generated from §6, not by the model)
 app/(landing)/i18n/types.ts           ← T1
-app/(landing)/i18n/{en,tr,es}.ts      ← T1 (content given in §6, copy verbatim)
 app/(landing)/i18n/getLocale.ts       ← T1
+app/(landing)/i18n/getDictionary.ts   ← T1
 app/(landing)/content.ts              ← T1 (DEMO_EMAIL, section ids)
 app/(landing)/_components/Reveal.tsx          ← T2 (client)
 app/(landing)/_components/CtaLink.tsx         ← T2 (client)
@@ -126,18 +127,43 @@ app/(landing)/_components/LandingFooter.tsx   ← T9
 Every component receives `t: LandingDictionary` (and `locale` where needed) as props. **No
 component contains user-visible text of its own.** All text comes from `t`.
 
-### T1 — Dictionaries and locale resolution
+### T0 — Dictionary files (architect)
 
-- `types.ts`: export `type Locale = 'en' | 'tr' | 'es'`, `const LOCALES`, and
-  `type LandingDictionary` whose shape exactly matches the object in §6.
-- `en.ts`, `tr.ts`, `es.ts`: each `export const en: LandingDictionary = {...}` with the §6 content
-  copied verbatim. TypeScript must reject a missing key.
-- `getLocale.ts`: `getLocale(searchParams: { lang?: string }): Locale`. It reads, in order,
-  `searchParams.lang`, the `quberty_lang` cookie (`cookies()` from `next/headers`), then the first
-  supported language in `headers().get('accept-language')`, then falls back to `'en'`. Unknown
-  values are ignored, never thrown on.
-- `content.ts`: `DEMO_EMAIL` (D3) and `SECTION_IDS = { product: 'product', capabilities:
-  'capabilities', how: 'how-it-works' }`.
+`en.ts`, `tr.ts` and `es.ts` are generated mechanically from §6 by the architect. Copying 600 lines
+of text verbatim is not a meaningful task for the model, and it is where a small model is most
+likely to "improve" the copy. `en.ts` is the source of truth and is **not** annotated.
+`tr.ts` and `es.ts` import `type { LandingDictionary } from './types'` and are annotated with it.
+This way TypeScript rejects a missing or extra key in either translation.
+
+### T1 — Locale types, resolution and dictionary lookup
+
+- `types.ts`:
+  - `export const LOCALES = ['en', 'tr', 'es'] as const;`
+  - `export type Locale = (typeof LOCALES)[number];`
+  - `export type LandingDictionary = typeof en;`, with `import type { en }` taken from `./en`.
+    Do not annotate `en` itself, because that would be a circular type reference.
+  - `export function isLocale(value: unknown): value is Locale`.
+- `getLocale.ts`: `export function getLocale(searchParams: { lang?: string | string[] }): Locale`.
+  It returns the first supported value from the following sources, in order:
+  1. `searchParams.lang`. If it is an array, use its first element.
+  2. The `quberty_lang` cookie, read with `cookies().get('quberty_lang')?.value` from
+     `next/headers`. In Next 14.1 this is synchronous.
+  3. `headers().get('accept-language')`:
+     - Split on `,` and parse each entry's `q=` weight, defaulting to 1.
+     - **Drop entries with `q=0`.**
+     - Sort by weight, highest first. The sort must be stable, so that header order breaks ties.
+     - Reduce each tag to its primary subtag, lower-cased (`tr-TR` → `tr`, `es-419` → `es`).
+     - Take the first entry that `isLocale` accepts.
+  4. `'en'`.
+
+  Values are trimmed and lower-cased before they are checked. Malformed input never throws.
+- `getDictionary.ts`: `export function getDictionary(locale: Locale): LandingDictionary`, which
+  returns `en`, `tr` or `es` through a `Record<Locale, LandingDictionary>` map.
+- `content.ts`:
+  - `export const DEMO_EMAIL = 'kubilaypalabiyik@gmail.com';`
+  - `export const SECTION_IDS = { product: 'product', capabilities: 'capabilities', how: 'how-it-works' } as const;`
+  - `export const LANG_COOKIE = 'quberty_lang';`. `getLocale.ts` imports this constant rather than
+    repeating the string.
 
 ### T2 — Header, language switcher, reveal wrapper
 
@@ -539,9 +565,11 @@ export const es: LandingDictionary = {
 
 ---
 
-## 7. Claims needing Kubi's confirmation before publishing
+## 7. Claims accepted by Kubi (2026-09-25)
 
-These pass the §1 policy on repo evidence, but the wording promises more than the evidence proves:
+These pass the §1 policy on repo evidence, but the wording promises more than the evidence proves.
+Kubi accepted all of them on 2026-09-25. None has been smoke-tested; he judges each one technically
+sound, and anything found not to hold is fixed in the product rather than removed from the page:
 
 | Copy | Concern |
 |---|---|
