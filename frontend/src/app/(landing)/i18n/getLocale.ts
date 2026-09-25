@@ -1,3 +1,7 @@
+import { cookies, headers } from 'next/headers';
+import { LANG_COOKIE } from '../content';
+import { isLocale, type Locale } from './types';
+
 /**
  * Reduce an `Accept-Language` header to the most preferred supported locale,
  * or `undefined` when nothing supported is present.

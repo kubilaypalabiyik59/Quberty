@@ -1,3 +1,5 @@
+import type { en } from './en';
+
 /** The locales this site ships copy for, in priority order. */
 export const LOCALES = ['en', 'tr', 'es'] as const;
 
@@ -5,7 +7,6 @@ export const LOCALES = ['en', 'tr', 'es'] as const;
 export type Locale = (typeof LOCALES)[number];
 
 /** The landing-page copy shape; derived from the English source of truth. */
-import type { en } from './en';
 export type LandingDictionary = typeof en;
 
 /**
