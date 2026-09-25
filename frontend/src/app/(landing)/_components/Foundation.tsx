@@ -2,11 +2,11 @@ import { Building2, BookOpen, History, Layers } from 'lucide-react';
 
 import { Reveal } from '@/app/(landing)/_components/Reveal';
 
-import { LandingDictionary } from '@/app/(landing)/i18n/types';
+import type { LandingDictionary } from '@/app/(landing)/i18n/types';
 
 const ICONS = [BookOpen, Layers, Building2, History] as const;
 
-/** Foundation section: the company background and principles. */
+/** Foundation section: why the product is simple to start and serious underneath. */
 export function Foundation({ t }: { t: LandingDictionary }) {
   return (
     <section className="bg-bg py-24 sm:py-32">
