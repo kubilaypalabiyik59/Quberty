@@ -41,9 +41,16 @@
 
 /* ── sign-in stage ─────────────────────────────────────────────────────── */
 
+/*
+ * Scroll hooks. Every `--stage-*` variable below defaults to the sign-in
+ * value, so the sign-in page is unchanged. The landing page sets them on an
+ * ancestor (see app/(landing)/_components/landing.module.css) to glide the cube
+ * to the centre and fade the photograph as the visitor scrolls.
+ */
+
 .stage {
-  --cube-x: 79%;               /* where the plate's beam lands */
-  --cube-y: 44%;
+  --cube-x: var(--stage-cube-x, 79%);   /* where the plate's beam lands */
+  --cube-y: var(--stage-cube-y, 44%);
   --cube-size: min(34vh, 30vw);
   --teal: 26 154 154;
   position: fixed;
@@ -60,6 +67,7 @@
 .plate {
   background: url('/brand/login-stage.webp') 72% 50% / cover no-repeat;
   animation: drift 38s ease-in-out infinite alternate;
+  opacity: var(--stage-plate-opacity, 1);
 }
 @keyframes drift {
   from { transform: scale(1); }
@@ -71,6 +79,8 @@
     radial-gradient(18% 10% at var(--cube-x) 64%, rgb(var(--teal) / 0.3), transparent 70%);
   mix-blend-mode: screen;
   animation: breathe 7s ease-in-out infinite;
+  /* `breathe` owns opacity, so the scroll fade goes through filter instead */
+  filter: opacity(var(--stage-beam-opacity, 1));
 }
 @keyframes breathe {
   0%, 100% { opacity: 0.55; }
@@ -88,6 +98,9 @@
   aspect-ratio: 1;
   translate: -50% -50%;
   perspective: 900px;
+  scale: var(--stage-cube-scale, 1);
+  rotate: var(--stage-cube-spin, 0deg);
+  opacity: var(--stage-cube-opacity, 1);
 }
 .cube,
 .reflection {
@@ -135,12 +148,14 @@
   height: 100%;
   mix-blend-mode: screen;
   pointer-events: none;
+  opacity: var(--stage-dust-opacity, 1);
 }
 /* Keeps the card and the wordmark legible without flattening the scene. */
 .scrim {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  opacity: var(--stage-scrim-opacity, 1);
   background:
     radial-gradient(34% 44% at 50% 54%, rgb(11 18 29 / 0.72), transparent 100%),
     linear-gradient(rgb(11 18 29 / 0.55), transparent 22%, transparent 80%, rgb(11 18 29 / 0.85));
@@ -163,7 +178,7 @@
 }
 
 @media (max-width: 760px) {
-  .stage { --cube-x: 50%; --cube-y: 25%; --cube-size: 30vw; }
+  .stage { --cube-x: var(--stage-cube-x-sm, 50%); --cube-y: var(--stage-cube-y-sm, 25%); --cube-size: 30vw; }
   .loginWordmark {
     left: 50%;
     translate: -50% 0;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import styles from './brand.module.css';
 
 /**
@@ -10,8 +10,12 @@ import styles from './brand.module.css';
  * The cube is a separate layer screen-blended over the stage, which is what
  * lets it float and turn without re-rendering the photograph around it.
  * Decorative throughout and `aria-hidden`.
+ *
+ * `children` are painted between the light beam and the cube, inside the
+ * stage's own stacking context, so the cube still screens against them. The
+ * landing page puts its mosaic field there; the sign-in page passes nothing.
  */
-export function LoginStage() {
+export function LoginStage({ children }: { children?: ReactNode }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const dustRef = useRef<HTMLCanvasElement>(null);
 
@@ -87,6 +91,7 @@ export function LoginStage() {
     <div ref={rootRef} className={styles.stage} aria-hidden>
       <div className={`${styles.layer} ${styles.plate}`} data-depth="0.6" />
       <div className={`${styles.layer} ${styles.beam}`} data-depth="0.8" />
+      {children}
       <div className={`${styles.layer} ${styles.cubeLayer}`} data-depth="1.6">
         <div className={styles.cubeAnchor}>
           <div className={styles.reflection} />

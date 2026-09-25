@@ -1,0 +1,40 @@
+/*
+ * Landing scroll choreography — the design, as data.
+ *
+ * LandingStage writes two numbers on this wrapper, and everything else is derived here:
+ *   --p  hero progress, 0 at the top and 1 once the visitor has scrolled 80% of a viewport
+ *   --q  page progress, 0 at the top and 1 at the bottom
+ *
+ * The brand stage (components/brand/brand.module.css) reads the --stage-* variables with the
+ * sign-in values as defaults, so these overrides reach only the landing page.
+ *
+ * The story: at the top the page looks exactly like the sign-in stage, which is the look that
+ * was signed off. As the hero leaves, the photograph and beam fade, the cube glides from the
+ * beam to the centre, shrinks and dims so it can sit behind glass cards without hurting
+ * legibility, and the mosaic field fades in. From there the cube keeps turning with the page,
+ * so it seems to travel down with the reader.
+ */
+.scrollStage {
+  --stage-cube-x: calc(79% - 29% * var(--p, 0));
+  --stage-cube-y: calc(44% + 6% * var(--p, 0));
+  --stage-cube-x-sm: 50%;
+  --stage-cube-y-sm: calc(25% + 25% * var(--p, 0));
+  --stage-cube-scale: calc(1 - 0.22 * var(--p, 0));
+  --stage-cube-opacity: calc(1 - 0.55 * var(--p, 0));
+  --stage-cube-spin: calc(var(--q, 0) * 50deg);
+  --stage-plate-opacity: calc(1 - 0.85 * var(--p, 0));
+  --stage-beam-opacity: calc(1 - 0.7 * var(--p, 0));
+  --stage-dust-opacity: calc(1 - 0.6 * var(--p, 0));
+  /* the scrim darkens the centre for the hero text; the mosaic's bloom lives there */
+  --stage-scrim-opacity: calc(1 - 0.8 * var(--p, 0));
+}
+
+/* The mosaic field sits inside the stage, under the cube, and appears as the photograph fades. */
+.mosaic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: var(--p, 0);
+}
