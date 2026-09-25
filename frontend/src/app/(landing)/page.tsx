@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-import { LoginStage } from '@/components/brand/LoginStage';
+import { LandingStage } from '@/app/(landing)/_components/LandingStage';
 import { Capabilities } from '@/app/(landing)/_components/Capabilities';
 import { FinalCta } from '@/app/(landing)/_components/FinalCta';
 import { Flows } from '@/app/(landing)/_components/Flows';
@@ -32,7 +32,7 @@ export default function LandingPage({ searchParams }: LandingPageProps) {
 
   return (
     <div lang={locale} className="dark relative min-h-screen bg-bg text-fg">
-      <LoginStage />
+      <LandingStage />
       <LandingHeader t={t} locale={locale} />
       <main className="relative">
         <Hero t={t} />
