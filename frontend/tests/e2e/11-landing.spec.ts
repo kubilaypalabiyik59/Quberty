@@ -16,7 +16,7 @@ test.describe('Landing page', () => {
     });
   }
 
-  for (const [lang, t] of Object.entries(DICTIONARIES)) {
+  for (const lang of Object.keys(DICTIONARIES)) {
     for (const width of [360, 768, 1440]) {
       test(`no horizontal scroll (${width}x900, ${lang})`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
@@ -30,7 +30,7 @@ test.describe('Landing page', () => {
   test('the switcher persists the choice', async ({ page }) => {
     await page.goto('/?lang=en');
     await page.getByRole('button', { name: 'ES' }).click();
-    await page.waitForURL('??lang=es');
+    await page.waitForURL(/\?lang=es$/);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(es.hero.title);
 
     await page.goto('/');
