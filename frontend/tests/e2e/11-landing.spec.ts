@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { en, tr, es } from '../../src/app/(landing)/i18n/en';
+import { en } from '../../src/app/(landing)/i18n/en';
+import { tr } from '../../src/app/(landing)/i18n/tr';
+import { es } from '../../src/app/(landing)/i18n/es';
 import { DEMO_EMAIL, SECTION_IDS } from '../../src/app/(landing)/content';
 
 const DICTIONARIES = { en, tr, es } as const;
@@ -53,7 +55,7 @@ test.describe('Landing page', () => {
     try {
       await page.goto('/?lang=en');
       const heading = page.getByRole('heading', { name: en.problem.title, level: 2 });
-      await heading.locator('..').toHaveCSS('opacity', '1');
+      await expect(heading.locator('..')).toHaveCSS('opacity', '1');
     } finally {
       await context.close();
     }
@@ -71,7 +73,7 @@ test.describe('Landing page', () => {
   test('the header anchors have targets', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/?lang=en');
-    for (const id of SECTION_IDS) {
+    for (const id of Object.values(SECTION_IDS)) {
       await expect(page.locator(`section[id="${id}"]`)).toHaveCount(1);
     }
   });
