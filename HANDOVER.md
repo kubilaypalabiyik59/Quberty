@@ -51,8 +51,8 @@ switcher, always dark, reusing the sign-in brand stage.
 3. The `skarpine-second-opinion` router scripts are still on the old machine.
 4. ESLint is not installed in `frontend/`, and `npm run lint` stops at a setup prompt.
 5. The app has no favicon (404 everywhere).
-6. Landing follow-ups:
-   - a permanent Playwright spec (`11-landing.spec.ts`), a good implementer task;
+6. Landing follow-ups (the Playwright spec `frontend/tests/e2e/11-landing.spec.ts` is done:
+   17/17 against the production build, written by the implementer):
    - `hreflang` alternates and an Open Graph image;
    - with JavaScript disabled, the sections below the hero stay hidden (an accepted trade-off).
 7. 491 design-token violations in legacy ERP components (palette classes, `rgb()`, arbitrary
