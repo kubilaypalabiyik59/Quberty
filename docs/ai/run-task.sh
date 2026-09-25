@@ -11,7 +11,9 @@ task="$1"; shift
 # yet it silently runs with "Git repo: none": no commit, and test-cmd runs from the wrong place.
 for f in "$@"; do mkdir -p "$(dirname "$f")"; done
 AIDER="${AIDER:-$HOME/.local/bin/aider.exe}"
-PYTHONIOENCODING=utf-8 "$AIDER" --edit-format "${EDIT_FORMAT:-whole}" --message-file "$task" \
+extra=()
+[ -n "${TEST_CMD:-}" ] && extra=(--test-cmd "$TEST_CMD")
+PYTHONIOENCODING=utf-8 "$AIDER" --edit-format "${EDIT_FORMAT:-whole}" --message-file "$task" "${extra[@]}" \
   --yes-always --no-pretty "$@" > .aider.run.log 2>&1
 code=$?
 echo "EXIT $code" >> .aider.run.log
