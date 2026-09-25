@@ -10,7 +10,7 @@ const ICONS = [LayoutDashboard, Store, ShoppingBag, Warehouse] as const;
 /** One-system section: the four channels and the shared-ledger line. */
 export function OneSystem({ t }: { t: LandingDictionary }) {
   return (
-    <section id={SECTION_IDS.product} className="bg-bg py-24 sm:py-32">
+    <section id={SECTION_IDS.product} className="scroll-mt-16 bg-bg py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <h2 className="text-section font-semibold text-fg">{t.oneSystem.title}</h2>
