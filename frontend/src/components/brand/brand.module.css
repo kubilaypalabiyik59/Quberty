@@ -99,7 +99,9 @@
   translate: -50% -50%;
   perspective: 900px;
   scale: var(--stage-cube-scale, 1);
-  rotate: var(--stage-cube-spin, 0deg);
+  /* spin about the vertical axis; its own perspective, since the anchor's
+     `perspective` only applies to its children */
+  transform: perspective(900px) rotateY(var(--stage-cube-spin, 0deg));
   opacity: var(--stage-cube-opacity, 1);
 }
 .cube,

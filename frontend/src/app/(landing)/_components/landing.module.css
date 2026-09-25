@@ -21,7 +21,9 @@
   --stage-cube-y-sm: calc(25% + 25% * var(--p, 0));
   --stage-cube-scale: calc(1 - 0.22 * var(--p, 0));
   --stage-cube-opacity: calc(1 - 0.55 * var(--p, 0));
-  --stage-cube-spin: calc(var(--q, 0) * 50deg);
+  /* Turn about its own vertical axis as the page scrolls: 1.5 swings over the page, never past
+     28 degrees. The cube is a flat render, so a full turn would show it edge-on and mirrored. */
+  --stage-cube-spin: calc(sin(var(--q, 0) * 540deg) * 28deg);
   --stage-plate-opacity: calc(1 - 0.85 * var(--p, 0));
   --stage-beam-opacity: calc(1 - 0.7 * var(--p, 0));
   --stage-dust-opacity: calc(1 - 0.6 * var(--p, 0));
