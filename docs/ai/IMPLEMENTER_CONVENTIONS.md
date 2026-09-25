@@ -49,6 +49,23 @@ change.
   reduced-motion users of the landing page got content stuck at `opacity: 0`. Express
   browser-dependent styling in CSS instead (`motion-reduce:`, `md:`). (Ledger: landing
   integration)
+- A `requestAnimationFrame` loop reschedules itself **first**, before any early return, and
+  always stores the newest id so the cleanup can cancel it. Throttling and pausing are *skips*,
+  not *stops*. A canvas is sized once when the effect starts, not only on `resize`. (Ledger: T8)
+
+  ```ts
+  let raf = 0;
+  let last = 0;
+  const tick = (now: number) => {
+    raf = requestAnimationFrame(tick); // keep the loop alive whatever happens below
+    if (now - last < 33 || document.hidden) return;
+    last = now;
+    draw(now);
+  };
+  resize();                            // size the canvas and draw the first frame
+  raf = requestAnimationFrame(tick);
+  return () => cancelAnimationFrame(raf);
+  ```
 - Import `cookies()` and `headers()` from `next/headers`. They are synchronous in Next 14.1.
 - Use `next/link` for internal links and a plain `<a>` for `mailto:` and external links.
 

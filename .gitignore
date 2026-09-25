@@ -76,4 +76,4 @@ frontend/tsconfig.tsbuildinfo
 .aider.chat.history.md
 .aider.input.history
 .aider.tags.cache.v*/
-.aider.run.log
+.aider.run*.log
