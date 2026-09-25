@@ -10,7 +10,7 @@ const ICONS = [LayoutDashboard, Store, ShoppingBag, Warehouse] as const;
 /** One-system section: the four channels and the shared-ledger line. */
 export function OneSystem({ t }: { t: LandingDictionary }) {
   return (
-    <section id={SECTION_IDS.product} className="scroll-mt-16 bg-bg py-24 sm:py-32">
+    <section id={SECTION_IDS.product} className="scroll-mt-16 py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <h2 className="text-section font-semibold text-fg">{t.oneSystem.title}</h2>
@@ -19,7 +19,7 @@ export function OneSystem({ t }: { t: LandingDictionary }) {
             {t.oneSystem.tiles.map((tile, i) => {
               const Icon = ICONS[i];
               return (
-                <div key={tile.title} className="rounded-surface border border-border bg-surface p-6">
+                <div key={tile.title} className="rounded-surface border border-border bg-surface/60 backdrop-blur-md p-6">
                   <Icon aria-hidden className="h-5 w-5 text-accent" />
                   <h3 className="mt-4 text-title font-semibold text-fg">{tile.title}</h3>
                   <p className="mt-2 text-body text-fg-muted">{tile.body}</p>
@@ -27,7 +27,7 @@ export function OneSystem({ t }: { t: LandingDictionary }) {
               );
             })}
           </div>
-          <p className="mt-4 rounded-surface border border-border bg-surface px-6 py-4 text-center text-lead text-fg">
+          <p className="mt-4 rounded-surface border border-border bg-surface/60 backdrop-blur-md px-6 py-4 text-center text-lead text-fg">
             {t.oneSystem.ledgerLine}
           </p>
         </Reveal>

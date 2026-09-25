@@ -19,7 +19,7 @@ const ICONS = [Contact, ShoppingCart, Package, Warehouse, Landmark, Users, BarCh
 /** Capabilities section: the eight modules and what each includes. */
 export function Capabilities({ t }: { t: LandingDictionary }) {
   return (
-    <section id={SECTION_IDS.capabilities} className="scroll-mt-16 bg-bg py-24 sm:py-32">
+    <section id={SECTION_IDS.capabilities} className="scroll-mt-16 py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <h2 className="text-section font-semibold text-fg">{t.capabilities.title}</h2>
@@ -28,7 +28,7 @@ export function Capabilities({ t }: { t: LandingDictionary }) {
             {t.capabilities.items.map((item, i) => {
               const Icon = ICONS[i];
               return (
-                <div key={item.title} className="rounded-surface border border-border bg-surface p-6">
+                <div key={item.title} className="rounded-surface border border-border bg-surface/60 backdrop-blur-md p-6">
                   <Icon aria-hidden className="h-5 w-5 text-accent" />
                   <h3 className="mt-4 text-title font-semibold text-fg">{item.title}</h3>
                   <p className="mt-2 text-body text-fg-muted">{item.body}</p>

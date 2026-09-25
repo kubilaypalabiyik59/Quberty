@@ -9,7 +9,7 @@ const ICONS = [FileSpreadsheet, Boxes, Clock] as const;
 /** "Sound familiar?" section: three pains of the spreadsheet stage. */
 export function Problem({ t }: { t: LandingDictionary }) {
   return (
-    <section className="bg-bg py-24 sm:py-32">
+    <section className="py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <h2 className="text-section font-semibold text-fg">{t.problem.title}</h2>
@@ -18,7 +18,7 @@ export function Problem({ t }: { t: LandingDictionary }) {
             {t.problem.items.map((item, i) => {
               const Icon = ICONS[i];
               return (
-                <div key={item.title} className="rounded-surface border border-border bg-surface p-6">
+                <div key={item.title} className="rounded-surface border border-border bg-surface/60 backdrop-blur-md p-6">
                   <Icon aria-hidden className="h-5 w-5 text-accent" />
                   <h3 className="mt-4 text-title font-semibold text-fg">{item.title}</h3>
                   <p className="mt-2 text-body text-fg-muted">{item.body}</p>

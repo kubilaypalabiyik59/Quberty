@@ -8,7 +8,7 @@ import type { LandingDictionary } from '@/app/(landing)/i18n/types';
 export function LandingFooter({ t }: { t: LandingDictionary }) {
   const year = new Date().getFullYear();
   return (
-    <footer className="relative border-t border-border bg-bg">
+    <footer className="relative border-t border-border bg-bg/70 backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-10 sm:flex-row sm:px-6">
         <QubertyWordmark sweep="once" className="text-sm" />
         <p className="text-caption text-fg-subtle">

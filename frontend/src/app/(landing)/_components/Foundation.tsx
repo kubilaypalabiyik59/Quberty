@@ -9,7 +9,7 @@ const ICONS = [BookOpen, Layers, Building2, History] as const;
 /** Foundation section: why the product is simple to start and serious underneath. */
 export function Foundation({ t }: { t: LandingDictionary }) {
   return (
-    <section className="bg-bg py-24 sm:py-32">
+    <section className="py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <div className="grid gap-12 lg:grid-cols-2">

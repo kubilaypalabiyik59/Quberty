@@ -8,7 +8,7 @@ import type { LandingDictionary } from '@/app/(landing)/i18n/types';
 /** How section: the selling and buying flows. */
 export function Flows({ t }: { t: LandingDictionary }) {
   return (
-    <section id={SECTION_IDS.how} className="scroll-mt-16 bg-bg py-24 sm:py-32">
+    <section id={SECTION_IDS.how} className="scroll-mt-16 py-24 sm:py-32">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <Reveal>
           <h2 className="text-section font-semibold text-fg">{t.flows.title}</h2>
@@ -19,7 +19,7 @@ export function Flows({ t }: { t: LandingDictionary }) {
               <ol className="mt-4 flex flex-col items-start gap-2 md:flex-row md:flex-wrap md:items-center">
                 {flow.steps.map((step, i) => (
                   <li key={step} className="flex flex-col items-start gap-2 md:flex-row md:items-center">
-                    <span className="rounded-control border border-border bg-surface px-3 py-2 text-body text-fg">
+                    <span className="rounded-control border border-border bg-surface/60 backdrop-blur-md px-3 py-2 text-body text-fg">
                       {step}
                     </span>
                     {i < flow.steps.length - 1 && (
