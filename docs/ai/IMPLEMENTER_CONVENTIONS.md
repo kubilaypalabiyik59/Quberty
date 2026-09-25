@@ -43,6 +43,12 @@ change.
   file uses state, effects, event handlers, browser APIs, `useRouter`, or framer-motion.
 - A server component must not call a function exported from a `'use client'` module. For example,
   `buttonVariants` from `@/components/ui/Button` may only be called inside a client component.
+- Never choose *what to render* from a browser-only value (`useReducedMotion()`, `window`,
+  `matchMedia`) in a component that is server-rendered. The server renders one branch and the
+  browser another, and React keeps the server's attributes during hydration. That is how the
+  reduced-motion users of the landing page got content stuck at `opacity: 0`. Express
+  browser-dependent styling in CSS instead (`motion-reduce:`, `md:`). (Ledger: landing
+  integration)
 - Import `cookies()` and `headers()` from `next/headers`. They are synchronous in Next 14.1.
 - Use `next/link` for internal links and a plain `<a>` for `mailto:` and external links.
 
