@@ -21,6 +21,12 @@ attribute-commit-message-author: true
 line-endings: lf
 encoding: utf-8
 
+# Type-check after every edit and feed errors back to the model. Pinned to the frontend's own
+# TypeScript: a bare `npx tsc` from the repo root finds no local install and downloads the
+# unrelated npm package "tsc" instead.
+test-cmd: node frontend/node_modules/typescript/bin/tsc --noEmit -p frontend
+auto-test: true
+
 gitignore: false
 analytics-disable: true
 check-update: false
